@@ -1,10 +1,10 @@
 # Changelog
 
-## [0.1.0] - 2026-07-23
+## [1.0.0] - 2026-07-23
 
 ### Added
 
-- Native `pi-cursor` provider (`@rahularya01/pi-cursor`) for Pi Coding Agent.
+- Initial stable release of `@rahularya01/pi-cursor` provider for Pi Coding Agent.
 - 4-tier authentication resolution cascade: automatically resolves tokens from `CURSOR_ACCESS_TOKEN` env var, macOS Keychain (Cursor CLI), Cursor IDE local state (`state.vscdb`), and Pi OAuth store (`~/.pi/agent/auth.json`).
 - Automatic WSL (Windows Subsystem for Linux) host Windows AppData credential auto-discovery.
 - Deep-link PKCE browser OAuth (`/login cursor`) with token refresh.
