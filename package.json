@@ -1,0 +1,67 @@
+{
+  "name": "@rahularya01/pi-cursor",
+  "version": "0.1.0",
+  "description": "Native Cursor provider for Pi Coding Agent (OAuth + Connect/protobuf streamSimple)",
+  "author": "Rahul Arya",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rahularya01/pi-cursor.git"
+  },
+  "homepage": "https://github.com/Rahularya01/pi-cursor#readme",
+  "bugs": {
+    "url": "https://github.com/Rahularya01/pi-cursor/issues"
+  },
+  "type": "module",
+  "main": "./src/index.ts",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "cursor",
+    "oauth",
+    "provider"
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "src",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "security-check": "tsx scripts/security-check.ts",
+    "test": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
+    "smoke:auth": "node --import tsx scripts/smoke-auth.mjs",
+    "smoke:models": "node --import tsx scripts/smoke-models.mjs",
+    "smoke:stream": "node --import tsx scripts/smoke-stream.mjs",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run security-check && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.80.0",
+    "@earendil-works/pi-coding-agent": ">=0.80.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.5",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0"
+  }
+}

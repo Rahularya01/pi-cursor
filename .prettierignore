@@ -1,0 +1,6 @@
+node_modules
+package-lock.json
+scripts/**
+src/proto/**
+src/stream/native-core.ts
+src/client/h2-bridge.mjs
