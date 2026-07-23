@@ -18,6 +18,9 @@ describe("idle progress classification", () => {
   it("treats tokenDelta and toolCallCompleted as watchdog progress", () => {
     expect(interactionUpdateCountsAsProgress("tokenDelta")).toBe(true);
     expect(interactionUpdateCountsAsProgress("toolCallCompleted")).toBe(true);
+    expect(interactionUpdateCountsAsProgress("heartbeat")).toBe(true);
+    expect(interactionUpdateCountsAsProgress("thinkingCompleted")).toBe(true);
+    expect(interactionUpdateCountsAsProgress("toolCallStarted")).toBe(true);
   });
 
   it("requires non-empty text for text/thinking deltas", () => {

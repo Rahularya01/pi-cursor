@@ -147,7 +147,8 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 | `PI_CURSOR_CLIENT_VERSION`                 | Pin `x-cursor-client-version` header sent by the HTTP/2 bridge.                                              |
 | `PI_CURSOR_SYSTEM_CREDENTIALS`             | `0`/`false` to disable Keychain/IDE credential reuse (default: allow).                                       |
 | `PI_CURSOR_RAW_MODELS`                     | Disable effort-suffix model collapse.                                                                        |
-| `PI_CURSOR_PROVIDER_DEBUG`                 | Enable JSONL debug logging (`/tmp/pi-cursor-debug.jsonl`).                                                   |
+| `PI_CURSOR_PROVIDER_DEBUG`                 | Enable verbose JSONL debug logging.                                                                          |
+| `PI_CURSOR_LIFECYCLE_LOG`                  | Always-on compact lifecycle log path (default: `$TMPDIR/pi-cursor-lifecycle.jsonl`).                         |
 | `CURSOR_USAGE_SESSION_TOKEN`               | Optional `WorkosCursorSessionToken` fallback cookie for `/cursor.usage`.                                     |
 | `PI_OFFLINE`                               | Skip live model discovery on startup.                                                                        |
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream idle watchdog. **Default `0` (disabled)** so turns can run unbounded. Set e.g. `600000` to re-enable. |
@@ -179,7 +180,7 @@ The OpenAI-compatible local proxy remains **internal/quarantined** (not exported
 
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
-- **Stuck / dies after a few minutes of work:** Idle watchdogs are **off by default**. If you re-enabled them via env, set `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS=0` and `PI_CURSOR_H2_IDLE_TIMEOUT_MS=0`. Check `/cursor.doctor` for `lastIdleTimeoutAt` / `lastStreamEvent`. Enable `PI_CURSOR_PROVIDER_DEBUG=1` and inspect `/tmp/pi-cursor-debug.jsonl`.
+- **Stuck / dies after a few minutes of work:** v1.2.2 answers all Cursor `InteractionQuery` permission prompts (web search / ask-question / etc.) that previously parked the stream. Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
 - **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
 

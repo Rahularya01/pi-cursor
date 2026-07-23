@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.2] - 2026-07-23
+
+### Fixed
+
+- **Root hang:** Cursor `InteractionQuery` messages (web search, Exa, ask-question, switch-mode, create-plan, WebFetch field #9, unknown fields) are now always answered. Previously only WebFetch field #9 was handled — any other permission/query left the AgentService stream parked forever ("stops after a few minutes").
+- Always-on lifecycle log at `$TMPDIR/pi-cursor-lifecycle.jsonl` (override with `PI_CURSOR_LIFECYCLE_LOG`) for stream start/close and interaction handling.
+- h2-bridge: HTTP/2 PING every 20s to prevent intermediary idle GOAWAY; stderr/errors are surfaced instead of swallowed.
+- Parent bridge now captures child stderr; heartbeats stay referenced during long tool pauses.
+- Treat `heartbeat` / tool-call start / thinking-completed / summary updates as stream progress.
+
 ## [1.2.1] - 2026-07-23
 
 ### Fixed

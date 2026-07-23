@@ -1301,12 +1301,13 @@ export default async function (pi: ExtensionAPI) {
         `resumeIdleTimeoutMs=${process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS || "0(disabled)"}`,
         `streamIdleMaxRetries=${process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES || "0(disabled)"}`,
         `h2IdleTimeoutMs=${process.env.PI_CURSOR_H2_IDLE_TIMEOUT_MS || "0(disabled)"}`,
+        `lifecycleLog=${process.env.PI_CURSOR_LIFECYCLE_LOG || "$TMPDIR/pi-cursor-lifecycle.jsonl"}`,
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
         "runtimeCli=not-used",
         "proxyPath=quarantined-internal",
         "commands=/cursor.models /cursor.usage /cursor.doctor",
-        "hint=On wire errors set PI_CURSOR_CLIENT_VERSION or re-login; idle stalls: raise PI_CURSOR_STREAM_IDLE_TIMEOUT_MS; opt out of Keychain/IDE scrape with PI_CURSOR_SYSTEM_CREDENTIALS=0",
+        "hint=On stalls check lifecycle log + lastStreamEvent; InteractionQuery hangs fixed in 1.2.2; re-login or PI_CURSOR_CLIENT_VERSION on wire errors",
       ];
       const text = lines.join("\n");
       if (ctx.hasUI) ctx.ui.notify(`Cursor doctor\n${text}`, "info");

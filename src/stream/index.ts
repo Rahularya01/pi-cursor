@@ -40,3 +40,4 @@ export {
   isAuthErrorMessage,
   isProtocolMismatchMessage,
 } from "./protocol.js";
+export { handleInteractionQuery } from "./interaction-query.js";

@@ -162,6 +162,7 @@ import {
   type ToolResultInfo as ExtractedToolResultInfo,
 } from "./recovery.js";
 import { enhanceCursorStreamError, isAuthErrorMessage } from "./protocol.js";
+import { handleInteractionQuery } from "./interaction-query.js";
 import {
   setLastIdleTimeout,
   setLastRecoverySkipReason,
@@ -461,6 +462,13 @@ export function interactionUpdateCountsAsProgress(
   if (updateCase === "textDelta" || updateCase === "thinkingDelta") return hasNonEmptyText;
   if (updateCase === "tokenDelta") return true;
   if (updateCase === "toolCallCompleted") return true;
+  if (updateCase === "toolCallStarted") return true;
+  if (updateCase === "partialToolCall") return true;
+  if (updateCase === "toolCallDelta") return true;
+  if (updateCase === "thinkingCompleted") return true;
+  if (updateCase === "heartbeat") return true;
+  if (updateCase === "summary" || updateCase === "summaryStarted" || updateCase === "summaryCompleted")
+    return true;
   return false;
 }
 
@@ -672,6 +680,32 @@ function debugLog(event: string, data?: Record<string, unknown>): void {
     console.error("[pi-cursor-provider] failed to write debug log", error);
     console.error(`[pi-cursor-provider] ${line}`);
   }
+}
+
+/** Always-on compact lifecycle log for diagnosing multi-minute stalls. */
+let lifecycleLogPath: string | undefined;
+function getLifecycleLogPath(): string {
+  const configured = process.env.PI_CURSOR_LIFECYCLE_LOG?.trim();
+  if (configured) return configured;
+  if (lifecycleLogPath) return lifecycleLogPath;
+  lifecycleLogPath = pathJoin(tmpdir(), "pi-cursor-lifecycle.jsonl");
+  return lifecycleLogPath;
+}
+
+function lifecycleLog(event: string, data?: Record<string, unknown>): void {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    pid: process.pid,
+    event,
+    ...(data ? (sanitizeForDebug(data) as Record<string, unknown>) : {}),
+  });
+  try {
+    appendFileSync(getLifecycleLogPath(), `${line}\n`, "utf8");
+  } catch {
+    // Never throw from diagnostics.
+  }
+  // Also mirror into verbose debug log when enabled.
+  debugLog(`lifecycle.${event}`, data);
 }
 
 type MetricEmitter = (event: string, data: Record<string, unknown>) => void;
@@ -1918,6 +1952,13 @@ function writeNativeStream(
     attempt: idleRetry?.currentAttempt ?? 1,
     maxRetries: idleRetry?.maxRetries ?? 0,
   });
+  lifecycleLog("stream_start", {
+    requestId,
+    bridgeKey: bridgeKeyPrefix(bridgeKey),
+    convKey,
+    modelId,
+    attempt: idleRetry?.currentAttempt ?? 1,
+  });
   const state: StreamState = {
     toolCallIndex: 0,
     pendingExecs: [],
@@ -2210,6 +2251,16 @@ function writeNativeStream(
       mcpExecReceived,
       currentTurn,
       latestCheckpoint,
+    });
+    lifecycleLog("bridge_close", {
+      requestId,
+      bridgeKey: bridgeKeyPrefix(bridgeKey),
+      convKey,
+      code,
+      cancelled,
+      mcpExecReceived,
+      emittedUserVisibleContent,
+      hasCheckpoint: !!latestCheckpoint,
     });
     idleWatchdog.clear();
     clearInterval(heartbeatTimer);
@@ -4239,17 +4290,39 @@ function processServerMessage(
   }
   if (msgCase === "interactionQuery") {
     const query = msg.message.value as InteractionQuery;
-    const handled = handleCursorWebFetchInteractionQuery(query, sendFrame);
-    if (!handled) {
-      debugLog("native.interaction_query.unhandled", {
+    const result = handleInteractionQuery(query, sendFrame);
+    lifecycleLog("interaction_query", {
+      id: query.id,
+      queryCase: result.queryCase,
+      action: result.action,
+      handled: result.handled,
+    });
+    debugLog(
+      result.handled
+        ? "native.interaction_query.handled"
+        : "native.interaction_query.unhandled",
+      {
         id: query.id,
-        queryCase: query.query.case,
-        hint: "Unhandled Cursor InteractionQuery — wire may have new fields; check clientVersion via /cursor.doctor",
+        queryCase: result.queryCase,
+        action: result.action,
         clientVersion: process.env.PI_CURSOR_CLIENT_VERSION || "default",
-      });
-      setLastStreamEvent("interaction_query_unhandled");
-    }
-    return handled;
+      },
+    );
+    setLastStreamEvent(
+      result.handled
+        ? `interaction_query:${result.action}`
+        : `interaction_query_unhandled:${result.queryCase ?? "unknown"}`,
+    );
+    // Treated as progress either way if we answered — prevents stall detectors from firing.
+    return result.handled;
+  }
+  if (msgCase === "execServerControlMessage") {
+    const control = msg.message.value as { message?: { case?: string } };
+    const controlCase = control.message?.case;
+    debugLog("native.exec_server_control", { controlCase });
+    lifecycleLog("exec_server_control", { controlCase });
+    // Abort notices are informational; the stream may continue or end separately.
+    return controlCase === "abort";
   }
   if (msgCase === "conversationCheckpointUpdate") {
     const stateStructure = msg.message.value as ConversationStateStructure;
@@ -4263,61 +4336,6 @@ function processServerMessage(
     return false;
   }
   return false;
-}
-
-const CURSOR_WEB_FETCH_INTERACTION_FIELD = 9;
-const CURSOR_WEB_FETCH_APPROVED_RESPONSE = new Uint8Array([0x0a, 0x00]);
-
-function encodeVarint(value: number): number[] {
-  const bytes: number[] = [];
-  let remaining = value >>> 0;
-  while (remaining >= 0x80) {
-    bytes.push((remaining & 0x7f) | 0x80);
-    remaining >>>= 7;
-  }
-  bytes.push(remaining);
-  return bytes;
-}
-
-function encodeLengthDelimitedField(fieldNo: number, data: Uint8Array): number[] {
-  return [(fieldNo << 3) | 2, ...encodeVarint(data.length), ...data];
-}
-
-function buildCursorWebFetchInteractionApprovalBytes(id: number): Uint8Array {
-  // Field #9 follows Cursor's request/response pattern used by named web
-  // interactions in this proto: response field #1 is an empty Approved message.
-  const interactionResponse = new Uint8Array([
-    0x08,
-    ...encodeVarint(id),
-    ...encodeLengthDelimitedField(
-      CURSOR_WEB_FETCH_INTERACTION_FIELD,
-      CURSOR_WEB_FETCH_APPROVED_RESPONSE,
-    ),
-  ]);
-  return new Uint8Array(encodeLengthDelimitedField(6, interactionResponse));
-}
-
-function hasUnknownInteractionField(query: InteractionQuery, fieldNo: number): boolean {
-  return ((query as unknown as { $unknown?: Array<{ no: number }> }).$unknown ?? []).some(
-    (field) => field.no === fieldNo,
-  );
-}
-
-function handleCursorWebFetchInteractionQuery(
-  query: InteractionQuery,
-  sendFrame: (data: Uint8Array) => void,
-): boolean {
-  if (!hasUnknownInteractionField(query, CURSOR_WEB_FETCH_INTERACTION_FIELD)) {
-    return false;
-  }
-
-  // Cursor currently sends native WebFetch permission prompts as InteractionQuery
-  // field #9, but the committed generated proto has not named that field yet.
-  // Approve the read-only web request so Cursor can complete the pending
-  // WebFetch tool call instead of leaving the bridge idle.
-  sendFrame(frameConnectMessage(buildCursorWebFetchInteractionApprovalBytes(query.id)));
-  debugLog("native.interaction_query.web_fetch_approved", { id: query.id });
-  return true;
 }
 
 function sendKvResponse(
@@ -4894,9 +4912,8 @@ function startBridge(accessToken: string, requestBytes: Uint8Array) {
   });
   debugLog("bridge.start_run", { requestBytes });
   bridge.write(frameConnectMessage(requestBytes));
+  // Keep heartbeats referenced so long tool pauses do not look idle to the process.
   const heartbeatTimer = setInterval(() => bridge.write(makeHeartbeatBytes()), 5_000);
-  // Avoid pinning the event loop solely on heartbeats during long tool pauses.
-  (heartbeatTimer as { unref?: () => void }).unref?.();
   return { bridge, heartbeatTimer };
 }
 

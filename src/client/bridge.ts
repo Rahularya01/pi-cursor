@@ -35,6 +35,7 @@ type BridgeChildProcess = Pick<ChildProcess, "kill"> & {
   on(event: string | symbol, listener: (...args: any[]) => void): unknown;
   stdin?: NodeJS.WritableStream | null;
   stdout?: NodeJS.ReadableStream | null;
+  stderr?: NodeJS.ReadableStream | null;
 };
 
 export function lpEncode(data: Uint8Array): Buffer {
@@ -63,7 +64,8 @@ export function spawnBridge(
     cursorClientVersion: process.env.PI_CURSOR_CLIENT_VERSION || "cli-2026.05.01-eea359f",
   });
   const proc = spawn(process.execPath, [BRIDGE_PATH], {
-    stdio: ["pipe", "pipe", "ignore"],
+    // Capture stderr so bridge deaths (HTTP/2 errors, panics) are diagnosable.
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   return createBridgeHandleForChild(proc, options, debugLog);
@@ -76,11 +78,25 @@ function createBridgeHandleForChild(
 ): BridgeHandle {
   const stdin = proc.stdin;
   const stdout = proc.stdout;
+  const stderr = proc.stderr;
 
   const cbs = {
     data: null as ((chunk: Buffer) => void) | null,
     close: null as ((code: number) => void) | null,
   };
+
+  let stderrBuf = "";
+  stderr?.on?.("data", (chunk: Buffer) => {
+    stderrBuf += chunk.toString("utf8");
+    if (stderrBuf.length > 8_000) stderrBuf = stderrBuf.slice(-8_000);
+    const lines = stderrBuf.split("\n");
+    // Keep incomplete trailing line in the buffer.
+    stderrBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) debugLog("bridge.stderr", { line: trimmed.slice(0, 500) });
+    }
+  });
 
   let exited = false;
   let exitCode = 1;

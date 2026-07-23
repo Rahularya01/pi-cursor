@@ -125,6 +125,28 @@ function optionalMs(value, fallback) {
 
 const client = http2.connect(url || "https://api2.cursor.sh");
 
+// HTTP/2 PING keeps intermediary/load-balancer sessions alive during long pure-thinking
+// stretches where no DATA frames flow. Cursor may otherwise GOAWAY the stream mid-turn.
+const pingEveryMs = optionalMs(config.pingIntervalMs, 20_000);
+let pingTimer = undefined;
+if (pingEveryMs > 0) {
+  pingTimer = setInterval(() => {
+    if (client.destroyed || client.closed) return;
+    try {
+      client.ping((err) => {
+        if (err) {
+          process.stderr.write(`[h2-bridge] ping failed: ${err.message}\n`);
+        }
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[h2-bridge] ping threw: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }, pingEveryMs);
+  pingTimer.unref?.();
+}
+
 // Optional watchdog: connect timeout until first activity, then activity idle.
 let timeout = undefined;
 
@@ -146,6 +168,7 @@ function resetTimeout() {
 
 function killBridge() {
   clearBridgeTimeout();
+  if (pingTimer) clearInterval(pingTimer);
   client.destroy();
   process.exit(1);
 }
@@ -153,9 +176,19 @@ function killBridge() {
 // Initial connect guard only (skipped when connectTimeoutMs is 0).
 armBridgeTimeout(connectTimeoutMs);
 
-client.on("error", () => {
+client.on("error", (err) => {
   clearBridgeTimeout();
+  if (pingTimer) clearInterval(pingTimer);
+  process.stderr.write(
+    `[h2-bridge] client error: ${err instanceof Error ? err.message : String(err)}\n`,
+  );
   process.exit(1);
+});
+
+client.on("goaway", (errorCode, _lastStreamId, opaqueData) => {
+  process.stderr.write(
+    `[h2-bridge] GOAWAY errorCode=${errorCode} opaque=${opaqueData ? opaqueData.toString("utf8").slice(0, 200) : ""}\n`,
+  );
 });
 
 const headers = {
@@ -195,6 +228,7 @@ h2Stream.on("data", (chunk) => {
 
 h2Stream.on("end", () => {
   clearBridgeTimeout();
+  if (pingTimer) clearInterval(pingTimer);
   client.close();
   if (isErrorStatus()) {
     const body = Buffer.concat(errorChunks).toString("utf8").trim();
@@ -209,8 +243,12 @@ h2Stream.on("end", () => {
   setTimeout(() => process.exit(0), 100);
 });
 
-h2Stream.on("error", () => {
+h2Stream.on("error", (err) => {
   clearBridgeTimeout();
+  if (pingTimer) clearInterval(pingTimer);
+  process.stderr.write(
+    `[h2-bridge] stream error: ${err instanceof Error ? err.message : String(err)}\n`,
+  );
   client.close();
   process.exit(1);
 });
