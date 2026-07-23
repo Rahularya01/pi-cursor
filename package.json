@@ -1,6 +1,6 @@
 {
   "name": "@rahularya01/pi-cursor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Native Cursor provider for Pi Coding Agent (OAuth + Connect/protobuf streamSimple)",
   "author": "Rahul Arya",
   "license": "MIT",
@@ -30,12 +30,14 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src",
-    "lint:fix": "eslint src --fix",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "security-check": "tsx scripts/security-check.ts",
-    "test": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:legacy": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
     "smoke:auth": "node --import tsx scripts/smoke-auth.mjs",
     "smoke:models": "node --import tsx scripts/smoke-models.mjs",
     "smoke:stream": "node --import tsx scripts/smoke-stream.mjs",
@@ -62,6 +64,7 @@
     "prettier": "^3.9.5",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.64.0"
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^3.2.4"
   }
 }

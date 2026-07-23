@@ -31,9 +31,17 @@ import {
   refreshCursorToken,
 } from "./auth/oauth.js";
 import { resolveSystemCursorAccessToken, type CredentialSource } from "./auth/cli-credentials.js";
-import { getLastDiagnostics, setLastAvailableModels } from "./diagnostics/index.js";
+import { resolveSystemCredentialPolicy, systemCredentialsAllowed } from "./auth/consent.js";
+import {
+  getLastDiagnostics,
+  setLastAvailableModels,
+  setLastClientVersion,
+  setLastTokenSource,
+  setSystemCredentialsPolicy,
+} from "./diagnostics/index.js";
 import { redactSecrets } from "./utils/security.js";
 import { formatCursorUsage, getCursorUsageSummary } from "./usage.js";
+import { getCursorClientVersion } from "./stream/config.js";
 import {
   cleanupSessionState,
   createCursorNativeStream,
@@ -1042,12 +1050,20 @@ async function getStoredCursorOAuthAccessToken(): Promise<
   return undefined;
 }
 
-async function getStartupCursorAccessToken(): Promise<
-  { accessToken: string; source: CredentialSource } | undefined
-> {
-  const systemToken = await resolveSystemCursorAccessToken();
+async function getStartupCursorAccessToken(options?: {
+  forceRefresh?: boolean;
+}): Promise<{ accessToken: string; source: CredentialSource } | undefined> {
+  const systemToken = await resolveSystemCursorAccessToken(options);
   if (systemToken) return systemToken;
   return getStoredCursorOAuthAccessToken();
+}
+
+function isTokenNearExpiry(token: string, skewMs = 60_000): boolean {
+  try {
+    return Date.now() >= getTokenExpiry(token) - skewMs;
+  } catch {
+    return true;
+  }
 }
 
 export function registerSessionLifecycleCleanup(pi: ExtensionAPI) {
@@ -1159,16 +1175,38 @@ export default async function (pi: ExtensionAPI) {
   let rawModelByEffortByModelId = new Map<string, Record<string, CursorModelRouting>>();
   let lastRegisteredModels: ProcessedModel[] = [];
 
-  const getAccessToken = async () => {
-    if (!currentToken) {
-      const resolved = await getStartupCursorAccessToken();
+  setSystemCredentialsPolicy(resolveSystemCredentialPolicy());
+  setLastClientVersion(getCursorClientVersion());
+
+  const getAccessToken = async (options?: { forceRefresh?: boolean }) => {
+    const needsRefresh =
+      options?.forceRefresh ||
+      !currentToken ||
+      (currentTokenSource !== "env" && isTokenNearExpiry(currentToken));
+
+    if (needsRefresh) {
+      const resolved = await getStartupCursorAccessToken({
+        forceRefresh: options?.forceRefresh || isTokenNearExpiry(currentToken || "x"),
+      });
       if (resolved) {
         currentToken = resolved.accessToken;
         currentTokenSource = resolved.source;
+        setLastTokenSource(resolved.source);
+      } else if (options?.forceRefresh) {
+        // Keep previous token only if force refresh failed and we still have one.
+        setLastTokenSource(currentTokenSource || "none");
       }
     }
-    if (!currentToken)
-      throw new Error("Not logged in to Cursor. Run /login cursor or log in via Cursor CLI");
+
+    if (!currentToken) {
+      const consentHint = systemCredentialsAllowed()
+        ? ""
+        : " System credential reuse is disabled (PI_CURSOR_SYSTEM_CREDENTIALS=0).";
+      throw new Error(
+        `Not logged in to Cursor. Run /login cursor or log in via Cursor CLI.${consentHint}`,
+      );
+    }
+    setLastTokenSource(currentTokenSource);
     return currentToken;
   };
 
@@ -1245,17 +1283,22 @@ export default async function (pi: ExtensionAPI) {
       const lines = [
         `provider=${CURSOR_PROVIDER_ID}`,
         `agentUrl=${getCursorAgentUrl()}`,
-        `tokenSource=${currentTokenSource || "none"}`,
+        `clientVersion=${d.clientVersion || getCursorClientVersion()}`,
+        `tokenSource=${d.tokenSource || currentTokenSource || "none"}`,
+        `systemCredentials=${d.systemCredentials || resolveSystemCredentialPolicy()}`,
         `lastResolvedRuntimeModel=${d.resolvedRuntimeModel || "none"}`,
         `availableModels=${d.availableModels || lastRegisteredModels.length || "none"}`,
         `matchedModel=${d.matchedModelDebug || "none"}`,
         `lastEndpoint=${d.endpoint || "none"}`,
         `lastStatus=${d.status ?? "none"}`,
         `lastRpc=${d.lastRpc || "none"}`,
+        `lastRecoverySkipReason=${d.lastRecoverySkipReason || "none"}`,
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
         "runtimeCli=not-used",
+        "proxyPath=quarantined-internal",
         "commands=/cursor.models /cursor.usage /cursor.doctor",
+        "hint=On wire errors set PI_CURSOR_CLIENT_VERSION or re-login; opt out of Keychain/IDE scrape with PI_CURSOR_SYSTEM_CREDENTIALS=0",
       ];
       const text = lines.join("\n");
       if (ctx.hasUI) ctx.ui.notify(`Cursor doctor\n${text}`, "info");

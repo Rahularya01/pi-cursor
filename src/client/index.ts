@@ -16,4 +16,4 @@ export {
   type CursorParameterizedModel,
   type CursorParameterizedVariant,
 } from "./cursor-wire.js";
-export { getCursorAgentUrl } from "../stream/native-core.js";
+export { getCursorAgentUrl, getCursorClientVersion } from "../stream/config.js";

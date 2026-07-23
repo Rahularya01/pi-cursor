@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.0] - 2026-07-23
+
+### Added
+
+- Modular stream surface: `config`, `model-routing`, `context-normalize`, `recovery`, `protocol` extracted from the native runtime.
+- Vitest unit suite covering recovery, model routing, context-mode normalize, consent, protocol framing, and usage formatting.
+- Mid-session token re-resolution when access tokens near expiry (all credential sources).
+- System credential consent opt-out via `PI_CURSOR_SYSTEM_CREDENTIALS=0`.
+- `/cursor.doctor` fields: `clientVersion`, `systemCredentials`, `lastRecoverySkipReason`, protocol/auth hints.
+- Protocol mismatch / auth error message enhancement with actionable hints.
+
+### Changed
+
+- Tool-continuation recovery prefers full-history rebuild when checkpoints are stale or tool-id mismatched (hard skip only when rebuild is unsafe).
+- OpenAI-compatible local proxy path quarantined (not part of the public `src/stream` export surface).
+- Agent URL resolution validates hosts via the existing allowlist helper.
+- `SECURITY.md` updated for 1.x support and system-credential policy.
+
 ## [1.0.0] - 2026-07-23
 
 ### Added

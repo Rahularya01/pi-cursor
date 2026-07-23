@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the latest published `0.1.x` release. Please upgrade to the latest version before reporting an issue.
+Security fixes are applied to the latest published `1.x` release. Please upgrade to the latest version before reporting an issue.
 
 ## Reporting a vulnerability
 
@@ -24,3 +24,17 @@ This repository contains a Pi extension that handles OAuth credentials and sends
 ## Access tokens & secrets
 
 Treat access and refresh tokens in `~/.pi/agent/auth.json`, Keychain, or `state.vscdb` as sensitive. Do not share or commit session tokens.
+
+### System credential reuse
+
+By default, `pi-cursor` may read Cursor CLI Keychain items and Cursor IDE `state.vscdb` to reuse an existing login. Disable that behavior with:
+
+```bash
+export PI_CURSOR_SYSTEM_CREDENTIALS=0
+```
+
+When disabled, authenticate only via `/login cursor` or `CURSOR_ACCESS_TOKEN`.
+
+### Agent URL allowlist
+
+Custom agent URLs (`PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL`) must use an allowed Cursor host (`*.cursor.sh` / `*.cursor.com` or localhost). This reduces token exfiltration risk from a poisoned base URL.

@@ -57,6 +57,12 @@ If you are logged into the Cursor desktop app or Cursor CLI (`cursor` / `agent`)
 
 On **WSL (Windows Subsystem for Linux)**, `pi-cursor` automatically scans Windows host user profiles (`/mnt/c/Users/*/AppData/...`) to detect and reuse your Windows Cursor app login.
 
+To **opt out** of Keychain / IDE / WSL credential reuse (OAuth or `CURSOR_ACCESS_TOKEN` only):
+
+```bash
+export PI_CURSOR_SYSTEM_CREDENTIALS=0
+```
+
 ### Deep-link PKCE browser login
 
 When no local credentials exist, running `/login cursor` initiates browser sign-in:
@@ -139,17 +145,35 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 | `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | Override agent base URL (default: `https://agentn.us.api5.cursor.sh`).   |
 | `CURSOR_ACCESS_TOKEN`                      | Static access token override.                                            |
 | `PI_CURSOR_CLIENT_VERSION`                 | Pin `x-cursor-client-version` header sent by the HTTP/2 bridge.          |
+| `PI_CURSOR_SYSTEM_CREDENTIALS`             | `0`/`false` to disable Keychain/IDE credential reuse (default: allow).   |
 | `PI_CURSOR_RAW_MODELS`                     | Disable effort-suffix model collapse.                                    |
 | `PI_CURSOR_PROVIDER_DEBUG`                 | Enable JSONL debug logging (`/tmp/pi-cursor-debug.jsonl`).               |
 | `CURSOR_USAGE_SESSION_TOKEN`               | Optional `WorkosCursorSessionToken` fallback cookie for `/cursor.usage`. |
 | `PI_OFFLINE`                               | Skip live model discovery on startup.                                    |
 
+## Architecture notes
+
+Stream modules are split under `src/stream/`:
+
+| Module                 | Responsibility                                      |
+| ---------------------- | --------------------------------------------------- |
+| `config.ts`            | Agent URL + client version resolution               |
+| `model-routing.ts`     | Effort suffix / requested model resolution          |
+| `context-normalize.ts` | Context-mode side-channel folding                   |
+| `recovery.ts`          | Tool-continuation recovery planner                  |
+| `protocol.ts`          | Auth/protocol error enhancement                     |
+| `native-core.ts`       | Native streamSimple runtime + (internal) proxy path |
+
+The OpenAI-compatible local proxy remains **internal/quarantined** (not exported from `src/stream/index.ts`). Day-to-day chat uses native `streamSimple` only.
+
+`src/proto/agent_pb.ts` is a large generated Connect/protobuf surface used by the wire layer. Prefer regenerating it from upstream protos when Cursor changes the agent schema rather than hand-editing.
+
 ## Troubleshooting
 
-- **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`.
-- **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`.
-- **Tool continuation lost:** Retry the turn or start a new chat (the live upstream HTTP/2 stream was interrupted mid-tool).
-- **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL.
+- **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry.
+- **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
+- **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
+- **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
 
 ## Development
 

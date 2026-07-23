@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { systemCredentialsAllowed } from "./consent.js";
 import { getCursorAccessTokenFromEnv, getTokenExpiry, refreshCursorToken } from "./oauth.js";
 
 export type CredentialSource =
@@ -151,18 +152,42 @@ export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefin
 /**
  * Full credential resolution cascade:
  * 1. CURSOR_ACCESS_TOKEN env var
- * 2. macOS Keychain (Cursor CLI)
- * 3. Cursor IDE state.vscdb
+ * 2. macOS Keychain (Cursor CLI) — gated by system-credential consent
+ * 3. Cursor IDE state.vscdb — gated by system-credential consent
+ *
+ * Opt out of Keychain/vscdb scraping with PI_CURSOR_SYSTEM_CREDENTIALS=0.
  */
-export async function resolveSystemCursorAccessToken(): Promise<CursorTokenResult | undefined> {
+export async function resolveSystemCursorAccessToken(options?: {
+  forceRefresh?: boolean;
+}): Promise<CursorTokenResult | undefined> {
   const envToken = getCursorAccessTokenFromEnv();
-  if (envToken) return { accessToken: envToken, source: "env" };
+  if (envToken) {
+    // Env tokens cannot be refreshed here; still prefer them when present.
+    if (!options?.forceRefresh || Date.now() < getTokenExpiry(envToken)) {
+      return { accessToken: envToken, source: "env" };
+    }
+  }
 
+  if (!systemCredentialsAllowed()) {
+    return undefined;
+  }
+
+  // forceRefresh: skip unexpired access-token short-circuit by re-reading sources
+  // (keychain/vscdb helpers already refresh when access is expired).
   const keychainToken = await getCursorKeychainToken();
-  if (keychainToken) return keychainToken;
+  if (keychainToken) {
+    if (!options?.forceRefresh || keychainToken.source.endsWith("_refresh")) {
+      return keychainToken;
+    }
+    // Access still valid but forceRefresh requested — try refresh path via re-read.
+    // Keychain helper returns unexpired access first; force path falls through to vscdb/oauth.
+  }
 
   const vscdbToken = await getCursorVscdbToken();
   if (vscdbToken) return vscdbToken;
+
+  // If forceRefresh and we only had unexpired keychain access, return it as last resort.
+  if (keychainToken) return keychainToken;
 
   return undefined;
 }

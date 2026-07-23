@@ -10,6 +10,10 @@ export type DiagnosticsSnapshot = {
   availableModels?: string;
   matchedModelDebug?: string;
   lastRpc?: string;
+  tokenSource?: string;
+  clientVersion?: string;
+  lastRecoverySkipReason?: string;
+  systemCredentials?: string;
 };
 
 const storage = new AsyncLocalStorage<DiagnosticsSnapshot>();
@@ -55,6 +59,19 @@ export function setLastRpc(rpc: string | undefined): void {
 export function setLastMatchedModelDebug(debug: string | undefined): void {
   currentBag().matchedModelDebug =
     debug === undefined ? undefined : redactSecrets(debug).slice(0, 1200);
+}
+export function setLastTokenSource(source: string | undefined): void {
+  currentBag().tokenSource = source;
+}
+export function setLastClientVersion(version: string | undefined): void {
+  currentBag().clientVersion = version;
+}
+export function setLastRecoverySkipReason(reason: string | undefined): void {
+  currentBag().lastRecoverySkipReason =
+    reason === undefined ? undefined : redactSecrets(reason).slice(0, 200);
+}
+export function setSystemCredentialsPolicy(policy: string | undefined): void {
+  currentBag().systemCredentials = policy;
 }
 
 export function resetDiagnosticsForTests(): void {
