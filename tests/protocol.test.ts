@@ -16,6 +16,7 @@ describe("protocol helpers", () => {
   it("enhances auth/protocol errors with hints", () => {
     const auth = enhanceCursorStreamError("unauthenticated");
     expect(auth).toMatch(/auth-hint/);
+    expect(auth).toMatch(/force-refresh|\/login cursor/);
     const proto = enhanceCursorStreamError("Failed to parse Connect end stream");
     expect(proto).toMatch(/protocol-hint/);
     expect(proto).toMatch(/PI_CURSOR_CLIENT_VERSION/);

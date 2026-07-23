@@ -162,7 +162,11 @@ import {
   type ToolResultInfo as ExtractedToolResultInfo,
 } from "./recovery.js";
 import { enhanceCursorStreamError, isAuthErrorMessage } from "./protocol.js";
-import { setLastRecoverySkipReason } from "../diagnostics/diagnostics.js";
+import {
+  setLastIdleTimeout,
+  setLastRecoverySkipReason,
+  setLastStreamEvent,
+} from "../diagnostics/diagnostics.js";
 
 // Cursor CLI's local-image path scales/compresses images to <= 5 MiB
 // and accepts only jpeg/png/gif/webp by magic bytes.
@@ -199,6 +203,8 @@ interface OpenAIMessage {
   content: string | null | ContentPart[];
   tool_call_id?: string;
   tool_calls?: OpenAIToolCall[];
+  /** Propagated from Pi toolResult.isError into Cursor MCP results. */
+  is_error?: boolean;
 }
 
 interface OpenAIToolDef {
@@ -287,11 +293,20 @@ interface StreamState {
   totalTokens: number;
 }
 
+interface IdleRestartContext {
+  /** True when text/thinking was already pushed to the Pi writer. */
+  emittedUserVisibleContent: boolean;
+  latestCheckpoint: Uint8Array | null;
+  blobStore: Map<string, Uint8Array>;
+  completedTurns: ParsedTurn[];
+  currentTurn: ParsedTurn;
+}
+
 interface StreamIdleRetryController {
   currentAttempt: number;
   maxRetries: number;
   recoverBeforeRetry?: boolean;
-  restart(nextAttempt: number): boolean;
+  restart(nextAttempt: number, context: IdleRestartContext): boolean;
 }
 
 interface NativeStreamAttemptInput {
@@ -310,12 +325,16 @@ interface NativeStreamAttemptInput {
   requestId?: string;
   maxIdleRetries?: number;
   streamIdleTimeoutMs?: number;
+  getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
+  /** When true, idle timeout tries recovery/rebuild before a blind restart. */
+  recoverBeforeRetry?: boolean;
 }
 
 interface ToolResultInfo {
   toolCallId: string;
   content: string;
   images?: ParsedImageContent[];
+  isError?: boolean;
 }
 
 export interface ParsedToolResult {
@@ -366,10 +385,17 @@ const conversationStates = new Map<string, StoredConversation>();
 const sessionLocks = new Map<string, Promise<void>>();
 const CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_ACTIVE_BRIDGE_TTL_MS = 60 * 60 * 1000;
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
-const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 4 * 60 * 1000;
-const DEFAULT_STREAM_IDLE_MAX_RETRIES = 3;
+// Idle watchdogs and silent retries are off by default so long agent turns can
+// run as long as Cursor keeps the stream open. Set the env vars below to re-enable.
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 0;
+const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 0;
+const DEFAULT_STREAM_IDLE_MAX_RETRIES = 0;
 const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
+/** Soft cap on retained blob bytes per conversation (images + turn blobs). */
+const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
+const DEFAULT_H2_CONNECT_TIMEOUT_MS = 30_000;
+/** 0 = no activity kill (parent heartbeats + Cursor keep the stream alive). */
+const DEFAULT_H2_IDLE_TIMEOUT_MS = 0;
 
 export function resolveActiveBridgeTtlMs(envValue?: string): number {
   if (envValue === undefined || envValue === "") return DEFAULT_ACTIVE_BRIDGE_TTL_MS;
@@ -378,7 +404,7 @@ export function resolveActiveBridgeTtlMs(envValue?: string): number {
   return Math.max(1_000, parsed);
 }
 
-function resolveStreamIdleTimeoutMs(envValue?: string): number {
+export function resolveStreamIdleTimeoutMs(envValue?: string): number {
   const normalized = envValue?.trim();
   if (normalized === undefined || normalized === "") return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   const parsed = Number(normalized);
@@ -387,7 +413,7 @@ function resolveStreamIdleTimeoutMs(envValue?: string): number {
   return Math.max(1_000, Math.floor(parsed));
 }
 
-function resolveStreamIdleMaxRetries(envValue?: string): number {
+export function resolveStreamIdleMaxRetries(envValue?: string): number {
   const normalized = envValue?.trim();
   if (normalized === undefined || normalized === "") return DEFAULT_STREAM_IDLE_MAX_RETRIES;
   const parsed = Number(normalized);
@@ -396,13 +422,51 @@ function resolveStreamIdleMaxRetries(envValue?: string): number {
   return Math.min(10, Math.max(1, Math.floor(parsed)));
 }
 
-function resolveResumeIdleTimeoutMs(envValue?: string): number {
+export function resolveResumeIdleTimeoutMs(envValue?: string): number {
   const normalized = envValue?.trim();
   if (normalized === undefined || normalized === "") return DEFAULT_RESUME_IDLE_TIMEOUT_MS;
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_RESUME_IDLE_TIMEOUT_MS;
   if (parsed === 0) return 0;
   return Math.max(1_000, Math.floor(parsed));
+}
+
+export function resolveH2ConnectTimeoutMs(envValue?: string): number {
+  const normalized = envValue?.trim();
+  if (normalized === undefined || normalized === "") return DEFAULT_H2_CONNECT_TIMEOUT_MS;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_H2_CONNECT_TIMEOUT_MS;
+  if (parsed === 0) return 0;
+  return Math.max(1_000, Math.floor(parsed));
+}
+
+export function resolveH2IdleTimeoutMs(envValue?: string): number {
+  const normalized = envValue?.trim();
+  if (normalized === undefined || normalized === "") return DEFAULT_H2_IDLE_TIMEOUT_MS;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_H2_IDLE_TIMEOUT_MS;
+  if (parsed === 0) return 0;
+  return Math.max(5_000, Math.floor(parsed));
+}
+
+/**
+ * Whether an interaction-update case should reset the stream idle watchdog.
+ * tokenDelta is treated as upstream liveness (long reasoning turns emit it
+ * without text for minutes at a time).
+ */
+export function interactionUpdateCountsAsProgress(
+  updateCase: string | undefined,
+  hasNonEmptyText = false,
+): boolean {
+  if (updateCase === "textDelta" || updateCase === "thinkingDelta") return hasNonEmptyText;
+  if (updateCase === "tokenDelta") return true;
+  if (updateCase === "toolCallCompleted") return true;
+  return false;
+}
+
+/** Whether a blind full-request restart is safe given already-streamed content. */
+export function canBlindIdleRestart(emittedUserVisibleContent: boolean): boolean {
+  return !emittedUserVisibleContent;
 }
 
 function resolveMidPauseRebuildMaxAgeMs(envValue?: string): number {
@@ -652,18 +716,24 @@ export const __testInternals = {
   activeBridges,
   conversationStates,
   createStreamIdleWatchdog,
+  canBlindIdleRestart,
   clearStoredMidPauseMetadata,
   collectToolResultImages,
   debugBase64ImageSummary,
   decodeRequestForTests,
   discardStaleCheckpointIfNeeded,
   fingerprintCompletedTurns,
+  interactionUpdateCountsAsProgress,
   redactForDebug,
+  resolveH2ConnectTimeoutMs,
+  resolveH2IdleTimeoutMs,
   resolveMidPauseRebuildMaxAgeMs,
   resolveNativeReasoningEffort,
   resolveResumeIdleTimeoutMs,
   resolveStreamIdleMaxRetries,
   resolveStreamIdleTimeoutMs,
+  persistAbortedConversationState,
+  trimBlobStore,
   setMetricEmitterForTests(factory?: MetricEmitter) {
     metricEmitter = factory ?? defaultMetricEmitter;
   },
@@ -1340,6 +1410,7 @@ function contextToCursorChatCompletionRequest(
         role: "tool",
         tool_call_id: message.toolCallId,
         content: piContentToOpenAIContent(message.content),
+        is_error: Boolean((message as { isError?: boolean }).isError),
       });
     }
   }
@@ -1502,6 +1573,7 @@ export function createCursorNativeStream(
           options as CursorNativeStreamOptions | undefined,
           writer,
           nextDebugRequestId(),
+          config.getAccessToken,
         );
       });
     })().catch((error) => {
@@ -1519,6 +1591,7 @@ async function handleCursorNativeRequest(
   options: CursorNativeStreamOptions | undefined,
   writer: NativeStreamWriter,
   requestId: string,
+  getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>,
 ): Promise<void> {
   let parsedMessages: ParsedMessages;
   try {
@@ -1599,6 +1672,7 @@ async function handleCursorNativeRequest(
             completedTurns: turns,
             maxMode,
             cursorModelParameters: body.cursor_model_parameters ?? [],
+            getAccessToken,
           },
           writer,
           options,
@@ -1620,6 +1694,7 @@ async function handleCursorNativeRequest(
       convKey,
     });
     if (decision.kind === "recover") {
+      setLastStreamEvent("recovered_via_checkpoint");
       debugLog("bridge.recovered_via_checkpoint", {
         requestId,
         bridgeKey,
@@ -1661,10 +1736,12 @@ async function handleCursorNativeRequest(
         options,
         requestId,
         streamIdleTimeoutMs: resumeIdleTimeoutMs,
+        getAccessToken,
       });
       return;
     }
     if (decision.kind === "rebuild_full_history") {
+      setLastStreamEvent("rebuild_full_history");
       logFullHistoryRebuild("native.rebuild_full_history", {
         requestId,
         bridgeKey,
@@ -1710,10 +1787,12 @@ async function handleCursorNativeRequest(
         options,
         requestId,
         streamIdleTimeoutMs: resumeIdleTimeoutMs,
+        getAccessToken,
       });
       return;
     }
     setLastRecoverySkipReason(decision.reason);
+    setLastStreamEvent(`recovery_skipped:${decision.reason}`);
     debugLog("bridge.recovery_skipped", {
       requestId,
       bridgeKey,
@@ -1810,6 +1889,7 @@ async function handleCursorNativeRequest(
     writer,
     options,
     requestId,
+    getAccessToken,
   });
 }
 
@@ -1849,6 +1929,7 @@ function writeNativeStream(
   let cancelled = false;
   let streamError: Error | null = null;
   let latestCheckpoint: Uint8Array | null = null;
+  let emittedUserVisibleContent = false;
   const idleWatchdog = createStreamIdleWatchdog({
     timeoutMs: streamIdleTimeoutMs,
     onTimeout: () => {
@@ -1857,6 +1938,13 @@ function writeNativeStream(
       idleWatchdog.clear();
       const attempt = idleRetry?.currentAttempt ?? 1;
       const maxRetries = idleRetry?.maxRetries ?? 0;
+      const restartContext: IdleRestartContext = {
+        emittedUserVisibleContent,
+        latestCheckpoint,
+        blobStore,
+        completedTurns,
+        currentTurn,
+      };
       debugLog("native.stream.idle_timeout", {
         requestId,
         bridgeKey,
@@ -1865,11 +1953,31 @@ function writeNativeStream(
         timeoutMs: streamIdleTimeoutMs,
         attempt,
         maxRetries,
+        emittedUserVisibleContent,
+        hasCheckpoint: !!latestCheckpoint,
       });
+      setLastIdleTimeout({
+        timeoutMs: streamIdleTimeoutMs,
+        attempt,
+        event: "idle_timeout",
+      });
+      persistAbortedConversationState(
+        convKey,
+        latestCheckpoint,
+        blobStore,
+        completedTurns,
+        currentTurn,
+      );
       cleanupBridge(bridge, heartbeatTimer, bridgeKey);
       options?.signal?.removeEventListener("abort", abort);
+
+      // Never blind-restart onto a writer that already has text/thinking — that
+      // duplicates partial output and looks like "lost context".
+      const allowBlindRestart = canBlindIdleRestart(emittedUserVisibleContent);
+
       // Recovery is not a retry, so it can run even when maxRetries is zero.
-      if (idleRetry?.recoverBeforeRetry) {
+      // Still blocked when user-visible content is already on the writer.
+      if (idleRetry?.recoverBeforeRetry && allowBlindRestart) {
         debugLog("native.stream.idle_recovery_before_retry", {
           requestId,
           bridgeKey,
@@ -1879,8 +1987,9 @@ function writeNativeStream(
           attempt,
           maxRetries,
         });
+        setLastStreamEvent("idle_recovery_before_retry");
         try {
-          if (idleRetry.restart(attempt)) return;
+          if (idleRetry.restart(attempt, restartContext)) return;
         } catch (error) {
           // Recovery errors fall through into the normal retry-budget path below.
           debugLog("native.stream.idle_recovery_before_retry_error", {
@@ -1894,7 +2003,7 @@ function writeNativeStream(
         }
       }
       let finalAttempt = attempt;
-      if (idleRetry && attempt <= maxRetries) {
+      if (idleRetry && attempt <= maxRetries && allowBlindRestart) {
         const nextAttempt = attempt + 1;
         finalAttempt = nextAttempt;
         debugLog("native.stream.idle_retry", {
@@ -1906,8 +2015,9 @@ function writeNativeStream(
           nextAttempt,
           maxRetries,
         });
+        setLastStreamEvent("idle_retry");
         try {
-          if (idleRetry.restart(nextAttempt)) return;
+          if (idleRetry.restart(nextAttempt, restartContext)) return;
         } catch (error) {
           debugLog("native.stream.idle_retry_error", {
             requestId,
@@ -1919,7 +2029,12 @@ function writeNativeStream(
         }
       }
       writer.error(
-        formatStreamIdleTimeoutMessage(streamIdleTimeoutMs, finalAttempt, maxRetries),
+        formatStreamIdleTimeoutMessage(
+          streamIdleTimeoutMs,
+          finalAttempt,
+          maxRetries,
+          emittedUserVisibleContent,
+        ),
         "error",
         state,
       );
@@ -1929,7 +2044,19 @@ function writeNativeStream(
   const abort = () => {
     if (cancelled || writer.closed) return;
     cancelled = true;
-    debugLog("native.stream.abort", { requestId, bridgeKey, convKey });
+    persistAbortedConversationState(
+      convKey,
+      latestCheckpoint,
+      blobStore,
+      completedTurns,
+      currentTurn,
+    );
+    debugLog("native.stream.abort", {
+      requestId,
+      bridgeKey,
+      convKey,
+      hasCheckpoint: !!latestCheckpoint,
+    });
     idleWatchdog.clear();
     cleanupBridge(bridge, heartbeatTimer, bridgeKey);
     writer.error("Aborted", "aborted", state);
@@ -1940,12 +2067,17 @@ function writeNativeStream(
   const emitText = (text: string, isThinking?: boolean) => {
     if (writer.closed) return;
     if (isThinking) {
+      emittedUserVisibleContent = true;
       writer.thinking(text);
       return;
     }
     const { content, reasoning } = tagFilter.process(text);
-    if (reasoning) writer.thinking(reasoning);
+    if (reasoning) {
+      emittedUserVisibleContent = true;
+      writer.thinking(reasoning);
+    }
     if (content) {
+      emittedUserVisibleContent = true;
       appendAssistantTextToTurn(currentTurn, content);
       writer.text(content);
     }
@@ -1953,8 +2085,12 @@ function writeNativeStream(
 
   const emitFlushed = () => {
     const flushed = tagFilter.flush();
-    if (flushed.reasoning) writer.thinking(flushed.reasoning);
+    if (flushed.reasoning) {
+      emittedUserVisibleContent = true;
+      writer.thinking(flushed.reasoning);
+    }
     if (flushed.content) {
+      emittedUserVisibleContent = true;
       appendAssistantTextToTurn(currentTurn, flushed.content);
       writer.text(flushed.content);
     }
@@ -2180,6 +2316,7 @@ interface ResumeContext {
   completedTurns: ParsedTurn[];
   maxMode: boolean;
   cursorModelParameters: CursorModelParameter[];
+  getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
 }
 
 function handleNativeToolResultResume(
@@ -2201,6 +2338,7 @@ function handleNativeToolResultResume(
     completedTurns,
     maxMode,
     cursorModelParameters,
+    getAccessToken,
   } = ctx;
   const { bridge, heartbeatTimer, blobStore, mcpTools, pendingExecs, currentTurn } = active;
   const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
@@ -2221,7 +2359,11 @@ function handleNativeToolResultResume(
         step.kind === "toolCall" && step.toolCallId === result.toolCallId,
     );
     if (turnToolStep) {
-      turnToolStep.result = { content: result.content, images: result.images, isError: false };
+      turnToolStep.result = {
+        content: result.content,
+        images: result.images,
+        isError: result.isError === true,
+      };
     }
   }
 
@@ -2255,7 +2397,7 @@ function handleNativeToolResultResume(
         case: "success",
         value: create(McpSuccessSchema, {
           content: buildMcpSuccessContent(result),
-          isError: false,
+          isError: result.isError === true,
         }),
       },
     });
@@ -2277,7 +2419,7 @@ function handleNativeToolResultResume(
     maxRetries: resolveStreamIdleMaxRetries(process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES),
     // Phase 0 found mcpArgs-before-checkpoint across composer/gemini/gpt-5.4, so this stays model-agnostic.
     recoverBeforeRetry: true,
-    restart(nextAttempt: number) {
+    restart(nextAttempt: number, _context: IdleRestartContext) {
       idleRetry.currentAttempt = nextAttempt;
       const stored = conversationStates.get(convKey);
       const decision = planRecovery({
@@ -2291,6 +2433,7 @@ function handleNativeToolResultResume(
         convKey,
       });
       if (decision.kind === "rebuild_full_history") {
+        setLastStreamEvent("rebuild_full_history");
         logFullHistoryRebuild("native.rebuild_full_history", {
           requestId,
           bridgeKey,
@@ -2336,6 +2479,7 @@ function handleNativeToolResultResume(
           requestId,
           maxIdleRetries: idleRetry.maxRetries,
           streamIdleTimeoutMs: resumeIdleTimeoutMs,
+          getAccessToken,
         });
         return true;
       }
@@ -2403,6 +2547,7 @@ function handleNativeToolResultResume(
         requestId,
         maxIdleRetries: idleRetry.maxRetries,
         streamIdleTimeoutMs: resumeIdleTimeoutMs,
+        getAccessToken,
       });
       return true;
     },
@@ -2522,8 +2667,37 @@ function discardStaleCheckpointIfNeeded(
   clearStoredCheckpoint(stored, true);
 }
 
+function trimBlobStore(
+  store: Map<string, Uint8Array>,
+  maxBytes = MAX_CONVERSATION_BLOB_BYTES,
+): { removed: number; totalBytes: number } {
+  let totalBytes = 0;
+  for (const value of store.values()) totalBytes += value.byteLength;
+  if (totalBytes <= maxBytes) return { removed: 0, totalBytes };
+
+  let removed = 0;
+  // Map iteration order is insertion order — drop oldest blobs first.
+  for (const key of store.keys()) {
+    if (totalBytes <= maxBytes) break;
+    const value = store.get(key);
+    if (!value) continue;
+    totalBytes -= value.byteLength;
+    store.delete(key);
+    removed += 1;
+  }
+  return { removed, totalBytes };
+}
+
 function mergeBlobStore(stored: StoredConversation, blobStore: Map<string, Uint8Array>): void {
   for (const [k, v] of blobStore) stored.blobStore.set(k, v);
+  const trimmed = trimBlobStore(stored.blobStore);
+  if (trimmed.removed > 0) {
+    debugLog("conversation.blob_store_trimmed", {
+      removed: trimmed.removed,
+      totalBytes: trimmed.totalBytes,
+      maxBytes: MAX_CONVERSATION_BLOB_BYTES,
+    });
+  }
   stored.lastAccessMs = Date.now();
 }
 
@@ -2541,6 +2715,35 @@ function commitStoredCheckpoint(
   stored.checkpointTurnCount = completedHistory.length;
   stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedHistory);
   clearStoredMidPauseMetadata(stored);
+}
+
+function persistAbortedConversationState(
+  convKey: string,
+  latestCheckpoint: Uint8Array | null,
+  blobStore: Map<string, Uint8Array>,
+  completedTurns: ParsedTurn[],
+  currentTurn: ParsedTurn,
+): void {
+  const stored = conversationStates.get(convKey);
+  if (!stored) return;
+
+  // Pi records the partial assistant response on an aborted stream. Keep Cursor's
+  // matching checkpoint as well, so the next turn can continue the same native
+  // conversation instead of rebuilding from a potentially truncated transcript.
+  if (latestCheckpoint) {
+    commitStoredCheckpoint(stored, latestCheckpoint, blobStore, completedTurns, currentTurn);
+  } else {
+    // Blob ids referenced by the retained Pi history must outlive the cancelled
+    // bridge even when Cursor has not emitted a checkpoint yet.
+    mergeBlobStore(stored, blobStore);
+  }
+
+  debugLog("native.stream.abort_state_saved", {
+    convKey,
+    hasCheckpoint: !!latestCheckpoint,
+    completedTurnCount: completedTurns.length,
+    currentTurn,
+  });
 }
 
 export function commitStoredCheckpointMidPause(
@@ -2853,6 +3056,7 @@ async function handleChatCompletion(
       convKey,
     });
     if (decision.kind === "recover") {
+      setLastStreamEvent("recovered_via_checkpoint");
       debugLog("bridge.recovered_via_checkpoint", {
         requestId,
         bridgeKey,
@@ -2967,6 +3171,7 @@ async function handleChatCompletion(
       return;
     }
     setLastRecoverySkipReason(decision.reason);
+    setLastStreamEvent(`recovery_skipped:${decision.reason}`);
     debugLog("bridge.recovery_skipped", {
       requestId,
       bridgeKey,
@@ -3488,16 +3693,17 @@ export function parseMessages(
       const inlineImages = imageContent(msg.content, { enforceCursorCliLimits: true });
       const images = mergeImages(inlineImages, toolResultImagesById.get(toolCallId));
       const content = normalizeToolResultText(textContent(msg.content), images);
+      const isError = msg.is_error === true;
       const existing = toolCallId ? currentTurn.toolCallById.get(toolCallId) : undefined;
       if (existing) {
-        existing.result = { content, images, isError: false };
+        existing.result = { content, images, isError };
       } else {
         const step: ParsedToolCallStep = {
           kind: "toolCall",
           toolCallId,
           toolName: "",
           arguments: {},
-          result: { content, images, isError: false },
+          result: { content, images, isError },
         };
         currentTurn.steps.push(step);
         if (toolCallId) currentTurn.toolCallById.set(toolCallId, step);
@@ -3526,6 +3732,7 @@ export function parseMessages(
           toolCallId: step.toolCallId,
           content: step.result.content,
           ...(step.result.images?.length ? { images: step.result.images } : {}),
+          ...(step.result.isError ? { isError: true } : {}),
         }));
       }
     } else {
@@ -3945,19 +4152,18 @@ function buildCursorRequestFromParts(
 // ── Server message processing ──
 
 /**
- * Returns true when this message produced an observable side effect that represents
- * forward progress on the stream:
- *   - `onText` was called for non-empty `textDelta`/`thinkingDelta`,
- *   - `onMcpExec` was called for an `execServerMessage` mcpArgs branch,
- *   - `onCheckpoint` was called for a `conversationCheckpointUpdate`,
- *   - `handleKvMessage` took its `getBlobArgs`/`setBlobArgs` branch.
+ * Returns true when this message represents forward progress / upstream liveness
+ * for the stream idle watchdog:
+ *   - non-empty `textDelta` / `thinkingDelta`
+ *   - `tokenDelta` (long reasoning often emits only these for minutes)
+ *   - `toolCallCompleted`
+ *   - any handled `execServerMessage` (MCP exec **or** native-tool reject reply)
+ *   - `conversationCheckpointUpdate` with an `onCheckpoint` sink
+ *   - handled KV get/set blob round-trips
+ *   - handled interaction queries (e.g. WebFetch approval)
  *
- * Returns false for `tokenDelta`-only updates, empty text deltas, unhandled KV
- * sub-cases, exec sub-cases that send a response but do not produce an MCP exec,
- * and any other noise. Callers wire this return value into the stream idle watchdog
- * so that periodic non-progress frames (notably `tokenDelta`) cannot keep the
- * watchdog reset indefinitely. See the `bridge-recovery.test.ts` repro
- * "tokenDelta-only updates after tool-result resume do not prevent idle timeout".
+ * Returns false only for empty text deltas, unhandled KV/exec/interaction cases,
+ * and other noise. A true hang is silence — not token accounting or reject loops.
  */
 function processServerMessage(
   msg: AgentServerMessage,
@@ -3979,17 +4185,23 @@ function processServerMessage(
       const delta = update.message.value.text || "";
       if (delta) {
         onText(delta, false);
-        return true;
+        return interactionUpdateCountsAsProgress(updateCase, true);
       }
-    } else if (updateCase === "thinkingDelta") {
+      return false;
+    }
+    if (updateCase === "thinkingDelta") {
       const delta = update.message.value.text || "";
       if (delta) {
         onText(delta, true);
-        return true;
+        return interactionUpdateCountsAsProgress(updateCase, true);
       }
-    } else if (updateCase === "tokenDelta") {
+      return false;
+    }
+    if (updateCase === "tokenDelta") {
       state.outputTokens += update.message.value.tokens ?? 0;
-    } else if (updateCase === "toolCallCompleted") {
+      return interactionUpdateCountsAsProgress(updateCase);
+    }
+    if (updateCase === "toolCallCompleted") {
       const completed = update.message.value as any;
       const mcpToolCall =
         completed.toolCall?.tool?.case === "mcpToolCall"
@@ -4010,6 +4222,7 @@ function processServerMessage(
           errorUnknown: value?.$unknown,
         });
       }
+      return interactionUpdateCountsAsProgress(updateCase);
     }
     return false;
   }
@@ -4034,6 +4247,7 @@ function processServerMessage(
         hint: "Unhandled Cursor InteractionQuery — wire may have new fields; check clientVersion via /cursor.doctor",
         clientVersion: process.env.PI_CURSOR_CLIENT_VERSION || "default",
       });
+      setLastStreamEvent("interaction_query_unhandled");
     }
     return handled;
   }
@@ -4151,10 +4365,10 @@ function handleKvMessage(
 }
 
 /**
- * Returns true only when this `execServerMessage` actually fired `onMcpExec`
- * (the `mcpArgs` branch). Other branches send rejection responses but do not
- * advance the conversation, so they are not counted as forward progress for
- * the stream idle watchdog.
+ * Returns true when this `execServerMessage` was handled (MCP exec **or** a
+ * native-tool reject/response). Handled round-trips count as idle-watchdog
+ * progress so Cursor-native tool reject loops cannot stall for minutes and
+ * then trip the idle timer.
  */
 function handleExecMessage(
   execMsg: ExecServerMessage,
@@ -4162,12 +4376,7 @@ function handleExecMessage(
   sendFrame: (data: Uint8Array) => void,
   onMcpExec: (exec: PendingExec) => void,
 ): boolean {
-  let mcpExecFired = false;
-  handleExecMessageInner(execMsg, mcpTools, sendFrame, (exec) => {
-    mcpExecFired = true;
-    onMcpExec(exec);
-  });
-  return mcpExecFired;
+  return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec);
 }
 
 function handleExecMessageInner(
@@ -4175,7 +4384,7 @@ function handleExecMessageInner(
   mcpTools: McpToolDefinition[],
   sendFrame: (data: Uint8Array) => void,
   onMcpExec: (exec: PendingExec) => void,
-): void {
+): boolean {
   const execCase = (execMsg as any).message.case;
   const REJECT_REASON =
     "Tool not available in this environment. Use the MCP tools provided instead.";
@@ -4195,7 +4404,7 @@ function handleExecMessageInner(
       result: { case: "success", value: create(RequestContextSuccessSchema, { requestContext }) },
     });
     sendExecResult(execMsg, "requestContextResult", result, sendFrame);
-    return;
+    return true;
   }
 
   if (execCase === "mcpArgs") {
@@ -4208,7 +4417,7 @@ function handleExecMessageInner(
       toolName: mcpArgs.toolName || mcpArgs.name,
       decodedArgs: JSON.stringify(decoded),
     });
-    return;
+    return true;
   }
 
   // Reject native Cursor tools so model falls back to MCP tools
@@ -4225,7 +4434,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "lsArgs") {
     const args = (execMsg as any).message.value;
@@ -4240,7 +4449,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "grepArgs") {
     sendExecResult(
@@ -4251,7 +4460,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "writeArgs") {
     const args = (execMsg as any).message.value;
@@ -4266,7 +4475,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "deleteArgs") {
     const args = (execMsg as any).message.value;
@@ -4281,7 +4490,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "shellArgs") {
     const args = (execMsg as any).message.value;
@@ -4301,7 +4510,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "shellStreamArgs") {
     const args = (execMsg as any).message.value;
@@ -4321,7 +4530,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "backgroundShellSpawnArgs") {
     const args = (execMsg as any).message.value;
@@ -4341,7 +4550,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "writeShellStdinArgs") {
     sendExecResult(
@@ -4355,7 +4564,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "fetchArgs") {
     const args = (execMsg as any).message.value;
@@ -4370,11 +4579,11 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "diagnosticsArgs") {
     sendExecResult(execMsg, "diagnosticsResult", create(DiagnosticsResultSchema, {}), sendFrame);
-    return;
+    return true;
   }
 
   if (execCase === "listMcpResourcesExecArgs") {
@@ -4389,7 +4598,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "readMcpResourceExecArgs") {
     const args = (execMsg as any).message.value;
@@ -4407,7 +4616,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "recordScreenArgs") {
     sendExecResult(
@@ -4421,7 +4630,7 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
   if (execCase === "computerUseArgs") {
     const args = (execMsg as any).message.value;
@@ -4440,16 +4649,19 @@ function handleExecMessageInner(
       }),
       sendFrame,
     );
-    return;
+    return true;
   }
 
   // Catch-all: log and attempt a generic rejection so the bridge doesn't hang
   console.error(`[cursor-provider] UNHANDLED exec case: "${execCase}". Bridge may stall.`);
+  setLastStreamEvent(`unhandled_exec:${String(execCase ?? "unknown")}`);
   // Try to derive the result case name from the args case name
   const guessedResult = (execCase as string)?.replace(/Args$/, "Result");
   if (guessedResult && guessedResult !== execCase) {
     sendExecResult(execMsg, guessedResult, create(McpResultSchema, {}), sendFrame);
+    return true;
   }
+  return false;
 }
 
 function sendExecResult(
@@ -4677,10 +4889,14 @@ function startBridge(accessToken: string, requestBytes: Uint8Array) {
     accessToken,
     rpcPath: "/agent.v1.AgentService/Run",
     url: getCursorAgentUrl(),
+    connectTimeoutMs: resolveH2ConnectTimeoutMs(process.env.PI_CURSOR_H2_CONNECT_TIMEOUT_MS),
+    idleTimeoutMs: resolveH2IdleTimeoutMs(process.env.PI_CURSOR_H2_IDLE_TIMEOUT_MS),
   });
   debugLog("bridge.start_run", { requestBytes });
   bridge.write(frameConnectMessage(requestBytes));
   const heartbeatTimer = setInterval(() => bridge.write(makeHeartbeatBytes()), 5_000);
+  // Avoid pinning the event loop solely on heartbeats during long tool pauses.
+  (heartbeatTimer as { unref?: () => void }).unref?.();
   return { bridge, heartbeatTimer };
 }
 
@@ -4688,23 +4904,31 @@ function formatStreamIdleTimeoutMessage(
   timeoutMs: number,
   attempt: number,
   maxRetries: number,
+  emittedUserVisibleContent = false,
 ): string {
-  const base = `Cursor stream idle timeout after ${timeoutMs}ms without upstream data`;
+  const base = `Cursor stream idle timeout after ${timeoutMs}ms without upstream progress`;
   const attemptLabel = attempt === 1 ? "attempt" : "attempts";
   const retryLabel = maxRetries === 1 ? "retry" : "retries";
-  return maxRetries > 0
-    ? `${base} over ${attempt} ${attemptLabel} (${maxRetries} ${retryLabel})`
-    : base;
+  const retryPart =
+    maxRetries > 0 ? ` over ${attempt} ${attemptLabel} (${maxRetries} ${retryLabel})` : "";
+  const partialPart = emittedUserVisibleContent
+    ? " Partial assistant output was already streamed, so an automatic retry was skipped to avoid duplicated text."
+    : "";
+  const tunePart =
+    " Tune PI_CURSOR_STREAM_IDLE_TIMEOUT_MS / PI_CURSOR_RESUME_IDLE_TIMEOUT_MS if long reasoning turns are expected.";
+  return `${base}${retryPart}.${partialPart}${tunePart}`;
 }
 
 function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void {
   // Recovered/rebuilt streams enter this helper with ordinary retry semantics to avoid recursive recovery loops.
+  let latestAccessToken = input.accessToken;
   const controller: StreamIdleRetryController = {
     currentAttempt: 1,
     maxRetries:
       input.maxIdleRetries ??
       resolveStreamIdleMaxRetries(process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES),
-    restart(nextAttempt: number) {
+    recoverBeforeRetry: input.recoverBeforeRetry,
+    restart(nextAttempt: number, _context: IdleRestartContext) {
       controller.currentAttempt = nextAttempt;
       debugLog(
         nextAttempt === 1 ? "native.stream.attempt_start" : "native.stream.idle_retry_start",
@@ -4717,28 +4941,61 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           maxRetries: controller.maxRetries,
         },
       );
-      const { bridge, heartbeatTimer } = startBridge(input.accessToken, input.requestBytes);
-      writeNativeStream(
-        bridge,
-        heartbeatTimer,
-        input.blobStore,
-        input.mcpTools,
-        input.model,
-        input.modelId,
-        input.bridgeKey,
-        input.convKey,
-        input.completedTurns,
-        input.currentTurn,
-        input.writer,
-        input.options,
-        input.requestId,
-        controller,
-        input.streamIdleTimeoutMs,
-      );
+
+      const launch = (accessToken: string) => {
+        latestAccessToken = accessToken;
+        const { bridge, heartbeatTimer } = startBridge(accessToken, input.requestBytes);
+        writeNativeStream(
+          bridge,
+          heartbeatTimer,
+          input.blobStore,
+          input.mcpTools,
+          input.model,
+          input.modelId,
+          input.bridgeKey,
+          input.convKey,
+          input.completedTurns,
+          input.currentTurn,
+          input.writer,
+          input.options,
+          input.requestId,
+          controller,
+          input.streamIdleTimeoutMs,
+        );
+      };
+
+      // First attempt is synchronous. Later attempts force-refresh credentials when possible.
+      if (nextAttempt === 1 || !input.getAccessToken) {
+        launch(latestAccessToken);
+        return true;
+      }
+
+      void input
+        .getAccessToken({ forceRefresh: true })
+        .then((token) => {
+          if (input.writer.closed) return;
+          setLastStreamEvent("idle_retry_token_refreshed");
+          launch(token);
+        })
+        .catch((error) => {
+          debugLog("native.stream.idle_retry_token_refresh_failed", {
+            requestId: input.requestId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          if (input.writer.closed) return;
+          // Fall back to the previous token rather than hard-failing immediately.
+          launch(latestAccessToken);
+        });
       return true;
     },
   };
-  controller.restart(1);
+  controller.restart(1, {
+    emittedUserVisibleContent: false,
+    latestCheckpoint: null,
+    blobStore: input.blobStore,
+    completedTurns: input.completedTurns,
+    currentTurn: input.currentTurn,
+  });
 }
 
 function handleStreamingResponse(
@@ -5163,7 +5420,11 @@ function handleToolResultResume(
         step.kind === "toolCall" && step.toolCallId === result.toolCallId,
     );
     if (turnToolStep) {
-      turnToolStep.result = { content: result.content, images: result.images, isError: false };
+      turnToolStep.result = {
+        content: result.content,
+        images: result.images,
+        isError: result.isError === true,
+      };
     }
   }
 
@@ -5191,7 +5452,7 @@ function handleToolResultResume(
         case: "success",
         value: create(McpSuccessSchema, {
           content: buildMcpSuccessContent(result),
-          isError: false,
+          isError: result.isError === true,
         }),
       },
     });

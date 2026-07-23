@@ -60,6 +60,18 @@ Because Node.js HTTP/2 client sessions require persistent stream handling, `pi-c
 - **Request:** Serialized `AgentClientMessage` binary frame.
 - **Headers:** `x-cursor-client-version` (default: `cli-2026.05.01-eea359f`), `authorization: Bearer <token>`, `connect-protocol-version: 1`.
 - **Response:** Streaming binary Connect frames parsed via `@bufbuild/protobuf` `fromBinary()`.
+- **Idle safety net:** Connect timeout defaults to 30s (handshake only). **Activity idle is disabled by default** so long agent turns are not killed. Parent heartbeats every 5s reset the activity timer when it is enabled via `PI_CURSOR_H2_IDLE_TIMEOUT_MS`.
+
+## Stream idle watchdog
+
+`writeNativeStream` can arm an idle watchdog via `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`. **Default is `0` (disabled)** so Cursor can think/tool for as long as the upstream stream stays open. When enabled, the watchdog resets on:
+
+- non-empty text/thinking deltas
+- **tokenDelta** (long pure-reasoning turns)
+- handled exec round-trips (MCP tools **and** native-tool rejects)
+- checkpoints, KV blob get/set, handled interaction queries
+
+Silent retries (`PI_CURSOR_STREAM_IDLE_MAX_RETRIES`) are also **off by default**. If you re-enable them, partial text/thinking already streamed blocks blind retries to avoid duplicated output.
 
 ## Attributions
 

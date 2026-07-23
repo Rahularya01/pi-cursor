@@ -140,16 +140,23 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 
 ## Configuration
 
-| Variable                                   | Purpose                                                                  |
-| ------------------------------------------ | ------------------------------------------------------------------------ |
-| `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | Override agent base URL (default: `https://agentn.us.api5.cursor.sh`).   |
-| `CURSOR_ACCESS_TOKEN`                      | Static access token override.                                            |
-| `PI_CURSOR_CLIENT_VERSION`                 | Pin `x-cursor-client-version` header sent by the HTTP/2 bridge.          |
-| `PI_CURSOR_SYSTEM_CREDENTIALS`             | `0`/`false` to disable Keychain/IDE credential reuse (default: allow).   |
-| `PI_CURSOR_RAW_MODELS`                     | Disable effort-suffix model collapse.                                    |
-| `PI_CURSOR_PROVIDER_DEBUG`                 | Enable JSONL debug logging (`/tmp/pi-cursor-debug.jsonl`).               |
-| `CURSOR_USAGE_SESSION_TOKEN`               | Optional `WorkosCursorSessionToken` fallback cookie for `/cursor.usage`. |
-| `PI_OFFLINE`                               | Skip live model discovery on startup.                                    |
+| Variable                                   | Purpose                                                                                                      |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | Override agent base URL (default: `https://agentn.us.api5.cursor.sh`).                                       |
+| `CURSOR_ACCESS_TOKEN`                      | Static access token override.                                                                                |
+| `PI_CURSOR_CLIENT_VERSION`                 | Pin `x-cursor-client-version` header sent by the HTTP/2 bridge.                                              |
+| `PI_CURSOR_SYSTEM_CREDENTIALS`             | `0`/`false` to disable Keychain/IDE credential reuse (default: allow).                                       |
+| `PI_CURSOR_RAW_MODELS`                     | Disable effort-suffix model collapse.                                                                        |
+| `PI_CURSOR_PROVIDER_DEBUG`                 | Enable JSONL debug logging (`/tmp/pi-cursor-debug.jsonl`).                                                   |
+| `CURSOR_USAGE_SESSION_TOKEN`               | Optional `WorkosCursorSessionToken` fallback cookie for `/cursor.usage`.                                     |
+| `PI_OFFLINE`                               | Skip live model discovery on startup.                                                                        |
+| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream idle watchdog. **Default `0` (disabled)** so turns can run unbounded. Set e.g. `600000` to re-enable. |
+| `PI_CURSOR_RESUME_IDLE_TIMEOUT_MS`         | Idle timeout after tool-result resume. **Default `0` (disabled)**.                                           |
+| `PI_CURSOR_STREAM_IDLE_MAX_RETRIES`        | Silent full-request retries after idle. **Default `0` (disabled)**.                                          |
+| `PI_CURSOR_ACTIVE_BRIDGE_TTL_MS`           | How long a mid-tool bridge stays parked waiting for tool results (default: 1 hour).                          |
+| `PI_CURSOR_H2_CONNECT_TIMEOUT_MS`          | h2-bridge initial connect kill (default: `30000`; `0` disables).                                             |
+| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | h2-bridge activity idle kill. **Default `0` (disabled)**. Parent heartbeats reset it when enabled.           |
+| `PI_CURSOR_MIDPAUSE_REBUILD_MAX_AGE_MS`    | Max age of mid-pause metadata used for full-history rebuild (default: 15 min).                               |
 
 ## Architecture notes
 
@@ -170,8 +177,9 @@ The OpenAI-compatible local proxy remains **internal/quarantined** (not exported
 
 ## Troubleshooting
 
-- **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry.
+- **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
+- **Stuck / dies after a few minutes of work:** Idle watchdogs are **off by default**. If you re-enabled them via env, set `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS=0` and `PI_CURSOR_H2_IDLE_TIMEOUT_MS=0`. Check `/cursor.doctor` for `lastIdleTimeoutAt` / `lastStreamEvent`. Enable `PI_CURSOR_PROVIDER_DEBUG=1` and inspect `/tmp/pi-cursor-debug.jsonl`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
 - **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
 

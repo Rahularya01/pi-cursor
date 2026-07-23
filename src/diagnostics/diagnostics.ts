@@ -14,6 +14,14 @@ export type DiagnosticsSnapshot = {
   clientVersion?: string;
   lastRecoverySkipReason?: string;
   systemCredentials?: string;
+  /** ISO timestamp of the most recent stream idle timeout. */
+  lastIdleTimeoutAt?: string;
+  /** Configured idle timeout (ms) that fired. */
+  lastIdleTimeoutMs?: number;
+  /** Attempt number when the idle timeout fired. */
+  lastIdleAttempt?: number;
+  /** Short event name for the latest stream lifecycle signal. */
+  lastStreamEvent?: string;
 };
 
 const storage = new AsyncLocalStorage<DiagnosticsSnapshot>();
@@ -72,6 +80,23 @@ export function setLastRecoverySkipReason(reason: string | undefined): void {
 }
 export function setSystemCredentialsPolicy(policy: string | undefined): void {
   currentBag().systemCredentials = policy;
+}
+export function setLastStreamEvent(event: string | undefined): void {
+  currentBag().lastStreamEvent =
+    event === undefined ? undefined : redactSecrets(event).slice(0, 200);
+}
+export function setLastIdleTimeout(info: {
+  timeoutMs: number;
+  attempt: number;
+  event?: string;
+}): void {
+  const bag = currentBag();
+  bag.lastIdleTimeoutAt = new Date().toISOString();
+  bag.lastIdleTimeoutMs = info.timeoutMs;
+  bag.lastIdleAttempt = info.attempt;
+  if (info.event) {
+    bag.lastStreamEvent = redactSecrets(info.event).slice(0, 200);
+  }
 }
 
 export function resetDiagnosticsForTests(): void {

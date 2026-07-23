@@ -43,6 +43,7 @@ export interface ToolResultInfo {
   toolCallId: string;
   content: string;
   images?: ParsedImageContent[];
+  isError?: boolean;
 }
 
 export interface StoredConversation {

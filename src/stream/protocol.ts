@@ -30,8 +30,8 @@ export function enhanceCursorStreamError(message: string): string {
   if (isAuthErrorMessage(message)) {
     return (
       `${message} ` +
-      `[auth-hint: token may be expired. Provider will re-resolve credentials on retry; ` +
-      `or run /login cursor / check /cursor.doctor tokenSource.]`
+      `[auth-hint: token may be expired. Idle stream retries force-refresh credentials; ` +
+      `if this persists run /login cursor or check /cursor.doctor tokenSource.]`
     );
   }
   if (isProtocolMismatchMessage(message)) {

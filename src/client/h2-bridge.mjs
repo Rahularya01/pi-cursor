@@ -95,28 +95,66 @@ async function readMessage() {
 const configBuf = await readMessage();
 if (!configBuf) process.exit(1);
 
-const config = JSON.parse(configBuf.toString("utf8"));
+let config;
+try {
+  config = JSON.parse(configBuf.toString("utf8"));
+} catch {
+  process.stderr.write("[h2-bridge] invalid config JSON\n");
+  process.exit(1);
+}
+if (!config || typeof config !== "object") {
+  process.stderr.write("[h2-bridge] config must be a JSON object\n");
+  process.exit(1);
+}
 const { accessToken, url, path: rpcPath, unary } = config;
+// Connect timeout still protects against a hung first handshake (default 30s).
+// Activity idle is off by default (0) so long agent turns are not killed;
+// set idleTimeoutMs / PI_CURSOR_H2_IDLE_TIMEOUT_MS to re-enable a safety net.
+// Parent heartbeats every 5s also reset the timer when it is enabled.
+const connectTimeoutMs = optionalMs(config.connectTimeoutMs, 30_000);
+const idleTimeoutMs = optionalMs(config.idleTimeoutMs, 0);
+
+/** Parse ms; 0 means disabled. Invalid/missing uses fallback. */
+function optionalMs(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  if (n === 0) return 0;
+  return Math.floor(n);
+}
 
 const client = http2.connect(url || "https://api2.cursor.sh");
 
-// Guard against initial connection failure. Reset on any h2 activity
-// so long-running agent conversations (with tool call round-trips) survive.
-let timeout = setTimeout(killBridge, 30_000);
+// Optional watchdog: connect timeout until first activity, then activity idle.
+let timeout = undefined;
+
+function clearBridgeTimeout() {
+  if (timeout) clearTimeout(timeout);
+  timeout = undefined;
+}
+
+function armBridgeTimeout(ms) {
+  clearBridgeTimeout();
+  if (!ms || ms <= 0) return;
+  timeout = setTimeout(killBridge, ms);
+}
 
 function resetTimeout() {
-  clearTimeout(timeout);
-  timeout = setTimeout(killBridge, 120_000);
+  // After first I/O, only the activity idle (if enabled) applies.
+  armBridgeTimeout(idleTimeoutMs);
 }
 
 function killBridge() {
-  clearTimeout(timeout);
+  clearBridgeTimeout();
   client.destroy();
   process.exit(1);
 }
 
+// Initial connect guard only (skipped when connectTimeoutMs is 0).
+armBridgeTimeout(connectTimeoutMs);
+
 client.on("error", () => {
-  clearTimeout(timeout);
+  clearBridgeTimeout();
   process.exit(1);
 });
 
@@ -156,7 +194,7 @@ h2Stream.on("data", (chunk) => {
 });
 
 h2Stream.on("end", () => {
-  clearTimeout(timeout);
+  clearBridgeTimeout();
   client.close();
   if (isErrorStatus()) {
     const body = Buffer.concat(errorChunks).toString("utf8").trim();
@@ -172,7 +210,7 @@ h2Stream.on("end", () => {
 });
 
 h2Stream.on("error", () => {
-  clearTimeout(timeout);
+  clearBridgeTimeout();
   client.close();
   process.exit(1);
 });

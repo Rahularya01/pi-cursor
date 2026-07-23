@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.1] - 2026-07-23
+
+### Fixed
+
+- Stream idle watchdog no longer treats long pure-reasoning turns as dead: `tokenDelta`, handled native-tool reject round-trips, and `toolCallCompleted` now count as progress.
+- **Idle timeouts and silent retries are disabled by default** (`PI_CURSOR_STREAM_IDLE_TIMEOUT_MS=0`, `PI_CURSOR_RESUME_IDLE_TIMEOUT_MS=0`, `PI_CURSOR_STREAM_IDLE_MAX_RETRIES=0`, `PI_CURSOR_H2_IDLE_TIMEOUT_MS=0`) so agent turns can run as long as Cursor keeps the stream open. Re-enable via env if you want a safety net.
+- h2-bridge activity kill is off by default and configurable (`PI_CURSOR_H2_*_TIMEOUT_MS`); parent heartbeats still reset it when enabled.
+- Blind idle retries (when re-enabled) are skipped if partial text/thinking was already streamed (avoids duplicated/jumbled answers).
+- Idle retries force-refresh access tokens when a token provider is available.
+- Conversation blob stores are soft-capped (~128 MiB) to limit long-session memory growth.
+- Tool result `isError` is propagated into Cursor MCP results.
+- Context-mode side-channel detection covers additional compaction / `[context]` injections.
+
+### Added
+
+- `/cursor.doctor` surfaces `lastStreamEvent`, last idle timeout metadata, and configured idle timeouts.
+- Documented stream/bridge idle env vars in README.
+- Unit coverage for idle progress classification, blind-restart gating, blob trimming, and timeout resolvers.
+
 ## [1.2.0] - 2026-07-23
 
 ### Changed

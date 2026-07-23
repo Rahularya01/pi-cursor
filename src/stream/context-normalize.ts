@@ -50,9 +50,12 @@ export function isContextModeSideChannelText(text: string): boolean {
   if (!t) return false;
   return (
     /^context-mode active\b/i.test(t) ||
+    /^\[context\]/i.test(t) ||
     t.includes("<session_state") ||
     t.includes("<session_resume") ||
     t.includes("<active_memory>") ||
+    t.includes("<compaction") ||
+    t.includes("context_mode") ||
     t.includes("Hierarchy: ctx_batch_execute") ||
     /<\/?session_mode\b/i.test(t)
   );

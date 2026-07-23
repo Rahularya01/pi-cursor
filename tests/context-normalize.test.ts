@@ -16,6 +16,8 @@ const injection = [
 describe("context-mode normalization", () => {
   it("detects side-channel text", () => {
     expect(isContextModeSideChannelText(injection)).toBe(true);
+    expect(isContextModeSideChannelText("[context] session resume block")).toBe(true);
+    expect(isContextModeSideChannelText("<compaction summary>prior work</compaction>")).toBe(true);
     expect(isContextModeSideChannelText("please implement dual auth")).toBe(false);
   });
 

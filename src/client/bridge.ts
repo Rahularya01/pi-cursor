@@ -11,6 +11,10 @@ export interface SpawnBridgeOptions {
   rpcPath: string;
   url?: string;
   unary?: boolean;
+  /** Initial connect idle kill (ms). Default 30s. */
+  connectTimeoutMs?: number;
+  /** Activity idle kill after first I/O (ms). Default 15m. */
+  idleTimeoutMs?: number;
 }
 
 export interface BridgeHandle {
@@ -121,6 +125,8 @@ function createBridgeHandleForChild(
     url: options.url ?? CURSOR_API_URL,
     path: options.rpcPath,
     unary: options.unary ?? false,
+    connectTimeoutMs: options.connectTimeoutMs,
+    idleTimeoutMs: options.idleTimeoutMs,
   });
   safeWrite(new TextEncoder().encode(config));
 
