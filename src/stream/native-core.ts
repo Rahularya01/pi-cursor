@@ -4539,6 +4539,9 @@ export function deterministicConversationId(convKey: string): string {
 
 const THINKING_TAG_NAMES = ["think", "thinking", "reasoning", "thought", "think_intent"];
 const MAX_THINKING_TAG_LEN = 16;
+// Hoisted to module scope so it is compiled once rather than rebuilt on every
+// streamed chunk. `lastIndex` is reset at the start of each process() call.
+const THINKING_TAG_RE = new RegExp(`<(/?)(?:${THINKING_TAG_NAMES.join("|")})\\s*>`, "gi");
 
 function createThinkingTagFilter() {
   let buffer = "";
@@ -4550,7 +4553,8 @@ function createThinkingTagFilter() {
       let content = "";
       let reasoning = "";
       let lastIdx = 0;
-      const re = new RegExp(`<(/?)(?:${THINKING_TAG_NAMES.join("|")})\\s*>`, "gi");
+      const re = THINKING_TAG_RE;
+      re.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = re.exec(input)) !== null) {
         const before = input.slice(lastIdx, match.index);

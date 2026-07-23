@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.0] - 2026-07-23
+
+### Changed
+
+- Package now ships a bundled, minified `dist/` build (via `tsup`) instead of raw TypeScript source. Unpacked package size dropped ~818 KB → ~222 KB (packed ~154 KB → ~69 KB) by tree-shaking the generated protobuf module (~1000 exports, ~70 used). `main` and `pi.extensions` now point at `./dist/index.js`.
+- `prepare` script builds `dist/` on install, so `git:`-based installs work without a committed build.
+
+### Fixed
+
+- Streaming hot path: the thinking-tag filter regex is compiled once at module load instead of being rebuilt on every streamed chunk.
+
 ## [1.1.0] - 2026-07-23
 
 ### Added
