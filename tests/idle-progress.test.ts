@@ -37,10 +37,16 @@ describe("idle progress classification", () => {
 });
 
 describe("idle timeout resolvers", () => {
-  it("defaults stream/resume idle and retries to disabled (0)", () => {
-    expect(resolveStreamIdleTimeoutMs(undefined)).toBe(0);
-    expect(resolveResumeIdleTimeoutMs(undefined)).toBe(0);
-    expect(resolveStreamIdleMaxRetries(undefined)).toBe(0);
+  it("defaults stream/resume idle to a silence safety net; retries bounded", () => {
+    expect(resolveStreamIdleTimeoutMs(undefined)).toBe(120_000);
+    expect(resolveResumeIdleTimeoutMs(undefined)).toBe(120_000);
+    expect(resolveStreamIdleMaxRetries(undefined)).toBe(2);
+  });
+
+  it("still allows disabling the idle watchdog explicitly with 0", () => {
+    expect(resolveStreamIdleTimeoutMs("0")).toBe(0);
+    expect(resolveResumeIdleTimeoutMs("0")).toBe(0);
+    expect(resolveStreamIdleMaxRetries("0")).toBe(0);
   });
 
   it("defaults h2 activity idle to disabled; connect timeout stays 30s", () => {
@@ -49,9 +55,9 @@ describe("idle timeout resolvers", () => {
   });
 
   it("parses env overrides and rejects invalid values", () => {
-    expect(resolveStreamIdleTimeoutMs("120000")).toBe(120_000);
+    expect(resolveStreamIdleTimeoutMs("90000")).toBe(90_000);
     expect(resolveStreamIdleTimeoutMs("0")).toBe(0);
-    expect(resolveStreamIdleTimeoutMs("nope")).toBe(0);
+    expect(resolveStreamIdleTimeoutMs("nope")).toBe(120_000);
     expect(resolveStreamIdleMaxRetries("0")).toBe(0);
     expect(resolveStreamIdleMaxRetries("99")).toBe(10);
     expect(resolveH2IdleTimeoutMs("60000")).toBe(60_000);

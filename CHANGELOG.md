@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.3] - 2026-07-24
+
+### Fixed
+
+- **Permanent hang guard.** A stream that receives no upstream progress of any kind now recovers/retries or ends the turn with a clear error instead of parking forever. Since 1.2.1 disabled the idle watchdog by default, any un-answered exec or silent/dropped upstream left the run "stuck on working" indefinitely (observed: a turn parked ~26 min until manually aborted). The watchdog is re-enabled by default as a **silence** guard: `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS` / `PI_CURSOR_RESUME_IDLE_TIMEOUT_MS` default to `120000` (2 min) and `PI_CURSOR_STREAM_IDLE_MAX_RETRIES` to `2`. Every server signal (text/thinking/token deltas, tool-call events, thinkingCompleted, heartbeat, summary, answered interaction/exec) counts as progress and resets it, and it is paused during tool execution — so long reasoning turns and slow tools are unaffected; it only fires on a genuine park. Set the env vars to `0` to restore the previous unbounded behavior.
+
+### Added
+
+- `execServerMessage` handling is now recorded in the lifecycle log (`exec_server {execCase, handled}` for non-tool execs) and an unanswered exec sets `lastStreamEvent=exec_unanswered:<case>`. Previously exec messages were invisible in the lifecycle log — the blind spot behind unexplained mid-run stalls.
+
 ## [1.2.2] - 2026-07-23
 
 ### Fixed

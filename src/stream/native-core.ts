@@ -386,11 +386,17 @@ const conversationStates = new Map<string, StoredConversation>();
 const sessionLocks = new Map<string, Promise<void>>();
 const CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_ACTIVE_BRIDGE_TTL_MS = 60 * 60 * 1000;
-// Idle watchdogs and silent retries are off by default so long agent turns can
-// run as long as Cursor keeps the stream open. Set the env vars below to re-enable.
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 0;
-const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 0;
-const DEFAULT_STREAM_IDLE_MAX_RETRIES = 0;
+// Safety net against permanent hangs: if the upstream stream produces NO progress
+// of any kind for this long, the watchdog recovers/retries or ends the turn with a
+// clear error instead of parking forever. This is silence-based — every server
+// signal (textDelta, thinkingDelta, tokenDelta, tool-call events, thinkingCompleted,
+// heartbeat, summary, answered interaction/exec) counts as progress and resets it
+// (see interactionUpdateCountsAsProgress), and it is paused during tool execution —
+// so long reasoning turns and slow tools are unaffected. It only fires on a genuine
+// park (unanswered exec, dropped/silent upstream). Set the env vars to 0 to disable.
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
+const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 120_000;
+const DEFAULT_STREAM_IDLE_MAX_RETRIES = 2;
 const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
 /** Soft cap on retained blob bytes per conversation (images + turn blobs). */
 const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
@@ -4281,12 +4287,19 @@ function processServerMessage(
     return handleKvMessage(msg.message.value as KvServerMessage, blobStore, sendFrame);
   }
   if (msgCase === "execServerMessage") {
-    return handleExecMessage(
-      msg.message.value as ExecServerMessage,
-      mcpTools,
-      sendFrame,
-      onMcpExec,
-    );
+    const execMsg = msg.message.value as ExecServerMessage;
+    const execCase = (execMsg as { message?: { case?: string } }).message?.case;
+    const handled = handleExecMessage(execMsg, mcpTools, sendFrame, onMcpExec);
+    // execServerMessage was previously invisible in the lifecycle log — the exact
+    // blind spot behind unexplained mid-run stalls. Record the exec case and whether
+    // we answered it, so a parked stream can be diagnosed from the sanitized log
+    // alone. mcpArgs is the normal tool-call path; anything unhandled here means the
+    // upstream run may park waiting for a result we never sent.
+    if (execCase !== "mcpArgs") {
+      lifecycleLog("exec_server", { execCase: execCase ?? "unknown", handled });
+    }
+    if (!handled) setLastStreamEvent(`exec_unanswered:${String(execCase ?? "unknown")}`);
+    return handled;
   }
   if (msgCase === "interactionQuery") {
     const query = msg.message.value as InteractionQuery;
