@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.1] - 2026-07-25
+
+### Fixed
+
+- **Tool continuation was unrecoverable after the first tool round.** Losing the upstream bridge mid-tool failed with `Cursor tool continuation was lost … skipReason=pending_tool_call_mismatch` on every round after the first. The mid-pause snapshot records only the round that was parked, but the client re-sends every tool result in the in-flight user turn, and recovery demanded the two sets be equal. The parked set must instead be _covered by_ what arrived; the in-flight turn is still matched exactly, which is what pins the replayed transcript to the client's view.
+- **Parallel tool calls beyond the first never reached the client.** Cursor can frame several execs in one chunk, but the response was closed on the first, so the rest were silently dropped and only re-offered if the bridge happened to survive. The pause is now deferred to the end of the chunk. Only execs the client was actually told about are recorded as pending, since recovery can only expect back what the client saw.
+- **Checkpoints delivered during a tool pause were discarded.** The latest checkpoint was held in per-round state while the bridge outlived the round, so anything arriving mid-pause was stranded in the previous round's closure — a recurring cause of `hadStoredCheckpoint=false` diagnostics. It now lives on the bridge.
+- **An oversized or unsupported image broke every later turn.** The whole history is re-parsed on each request and an image failing Cursor's 5 MiB / format check threw, so one bad screenshot — typically from a tool result — permanently failed the conversation. Images already in the transcript are now decoded leniently; the message being sent still errors, since that one the caller can fix.
+- **An undecodable checkpoint was never discarded**, failing every subsequent turn in the conversation. It is now decoded once during staleness validation and dropped on failure, degrading to a rebuild.
+- **The most load-bearing blob was first to be evicted.** `trimBlobStore` drops oldest-first, but merging used `Map.set`, which leaves an existing key at its original position — so the system-prompt blob, written first on every build and referenced by every checkpoint, was permanently the oldest entry. Merging now re-inserts, making eviction genuinely least-recently-referenced.
+- **Tool-result images were dropped on checkpoint recovery**, though the full-history rebuild path preserved them.
+- Tool results with no `tool_call_id` are excluded from recovery's set matching instead of reading as duplicates and failing an otherwise sound recovery.
+- A live bridge is no longer resumed when the request's history does not match the one it was parked on. Without a Pi session id the bridge key is only a hash of the opening user message, so two conversations that start alike shared a key.
+
 ## [1.3.0] - 2026-07-24
 
 ### Added

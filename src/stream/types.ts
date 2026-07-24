@@ -146,6 +146,17 @@ export interface PendingExec {
   decodedArgs: string;
 }
 
+/**
+ * Latest upstream checkpoint for a bridge, held by reference so it survives a tool pause.
+ *
+ * Each resume re-enters the stream writer with fresh locals, but the bridge — and the frames
+ * still arriving on it — outlive that boundary. A checkpoint delivered during a pause would be
+ * stranded in the previous round's closure without a shared cell.
+ */
+export interface CheckpointRef {
+  current: Uint8Array | null;
+}
+
 export interface ActiveBridge {
   bridge: BridgeHandle;
   heartbeatTimer: ReturnType<typeof setInterval>;
@@ -154,6 +165,10 @@ export interface ActiveBridge {
   mcpTools: McpToolDefinition[];
   pendingExecs: PendingExec[];
   currentTurn: ParsedTurn;
+  checkpointRef: CheckpointRef;
+  state: StreamState;
+  /** Fingerprint of the completed turns this bridge was parked on; guards against key collisions. */
+  historyFingerprint: string;
 }
 
 export interface StoredConversation {

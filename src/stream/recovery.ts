@@ -245,6 +245,15 @@ export function stripInFlightResults(turn: ParsedTurn): ParsedTurn {
   };
 }
 
+/**
+ * A tool message with no `tool_call_id` parses to an empty id. Several of those in one turn look
+ * like duplicates to the set validators and would fail an otherwise sound recovery, so they are
+ * excluded from matching — they can never correspond to an exec either way.
+ */
+function identifiableToolCallId(toolCallId: string): boolean {
+  return toolCallId !== "";
+}
+
 function setsEqual(a: Set<string>, b: Set<string>): boolean {
   return a.size === b.size && [...a].every((id) => b.has(id));
 }
@@ -273,6 +282,30 @@ export function validateExactToolResultMatch(
   const hasDuplicates =
     expectedSet.size !== expected.length || receivedSet.size !== received.length;
   if (hasDuplicates || !setsEqual(expectedSet, receivedSet)) {
+    return { ok: false, expected, received };
+  }
+  return { ok: true };
+}
+
+/**
+ * Mid-pause snapshots record only the execs of the round that was parked, because each resume
+ * re-enters the stream writer with fresh state. The client, by contrast, re-sends every tool
+ * result in the in-flight user turn — round 1's results as well as the parked round's. So the
+ * pending set must be *covered by* what arrived, not equal to it; demanding equality made every
+ * bridge loss after the second tool round unrecoverable.
+ *
+ * Exact-match validation still guards the in-flight turn (./validateExactToolResultMatch), which is
+ * what pins the replayed transcript to the client's view.
+ */
+export function validatePendingCoveredByReceived(
+  expected: string[],
+  received: string[],
+): { ok: true } | { ok: false; expected: string[]; received: string[] } {
+  const expectedSet = new Set(expected);
+  const receivedSet = new Set(received);
+  const hasDuplicates =
+    expectedSet.size !== expected.length || receivedSet.size !== received.length;
+  if (hasDuplicates || [...expectedSet].some((id) => !receivedSet.has(id))) {
     return { ok: false, expected, received };
   }
   return { ok: true };
@@ -320,14 +353,15 @@ export function planFullHistoryRebuild(
   const inFlightToolCallIds =
     strippedInFlightTurn?.steps
       .filter((step): step is ParsedToolCallStep => step.kind === "toolCall")
-      .map((step) => step.toolCallId) ?? [];
+      .map((step) => step.toolCallId)
+      .filter(identifiableToolCallId) ?? [];
   if (!strippedInFlightTurn || inFlightToolCallIds.length === 0 || input.toolResults.length === 0) {
     return skipRecovery("no_inflight_tool_continuation", hadStoredCheckpoint);
   }
 
-  const pendingIds = pendingToolCalls.map((c) => c.toolCallId);
-  const receivedIds = input.toolResults.map((r) => r.toolCallId);
-  const pendingVsReceived = validateExactToolResultMatch(pendingIds, receivedIds);
+  const pendingIds = pendingToolCalls.map((c) => c.toolCallId).filter(identifiableToolCallId);
+  const receivedIds = input.toolResults.map((r) => r.toolCallId).filter(identifiableToolCallId);
+  const pendingVsReceived = validatePendingCoveredByReceived(pendingIds, receivedIds);
   const inFlightVsReceived = validateExactToolResultMatch(inFlightToolCallIds, receivedIds);
   if (!pendingVsReceived.ok) {
     return skipRecovery(
@@ -398,9 +432,11 @@ export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
     return skipRecovery("stale_checkpoint", hadStoredCheckpointPreDiscard);
   }
 
-  const expected = (input.stored.midPausePendingToolCalls ?? []).map((c) => c.toolCallId);
-  const received = input.toolResults.map((r) => r.toolCallId);
-  const match = validateExactToolResultMatch(expected, received);
+  const expected = (input.stored.midPausePendingToolCalls ?? [])
+    .map((c) => c.toolCallId)
+    .filter(identifiableToolCallId);
+  const received = input.toolResults.map((r) => r.toolCallId).filter(identifiableToolCallId);
+  const match = validatePendingCoveredByReceived(expected, received);
   if (!match.ok) {
     const rebuilt = tryRebuild("checkpoint_tool_mismatch");
     if (rebuilt.kind !== "skip") return rebuilt;
