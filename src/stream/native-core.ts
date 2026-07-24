@@ -182,6 +182,7 @@ export { getCursorAgentUrl } from "./config.js";
 import type {
   ActiveBridge,
   ChatCompletionRequest,
+  CheckpointRef,
   CursorNativeStreamConfig,
   CursorNativeStreamOptions,
   IdleRestartContext,
@@ -589,7 +590,29 @@ async function handleCursorNativeRequest(
     );
     if (activeBridge) {
       removeActiveBridge(bridgeKey);
-      if (activeBridge.bridge.alive) {
+      // Without a Pi session id the bridge key is only a hash of the opening user message, so two
+      // conversations that start alike land on the same key. Resuming the wrong bridge would splice
+      // one conversation's tool results into another; the history fingerprint is what tells them
+      // apart. Recovery already fingerprints — this closes the same hole on the live path.
+      //
+      // Scoped to sessionless keys on purpose. A session-derived key cannot collide, so there the
+      // check could only ever produce false negatives — tearing down a healthy bridge if the client
+      // reshapes its history mid-turn — with no collision to protect against.
+      const currentHistoryFingerprint = fingerprintCompletedTurns(turns);
+      const historyMatches =
+        !!sessionId || activeBridge.historyFingerprint === currentHistoryFingerprint;
+      if (!historyMatches) {
+        debugLog("bridge.active_history_mismatch", {
+          requestId,
+          bridgeKey,
+          bridgeKeyPrefix: bridgeKeyPrefix(bridgeKey),
+          convKey,
+          storedFingerprint: activeBridge.historyFingerprint,
+          currentFingerprint: currentHistoryFingerprint,
+        });
+        setLastStreamEvent("active_bridge_history_mismatch");
+      }
+      if (activeBridge.bridge.alive && historyMatches) {
         handleNativeToolResultResume(
           activeBridge,
           toolResults,
@@ -636,14 +659,19 @@ async function handleCursorNativeRequest(
         pendingToolCallIds: toolResults.map((r) => r.toolCallId),
       });
       const mcpTools = buildMcpToolDefinitions(toolResolution.tools);
+      // Images ride the recovered user turn on this path too — dropping them here silently lost
+      // screenshots that the rebuild path preserves.
+      const recoveredUserImages = collectToolResultImages(toolResults);
       const recoveredCurrentTurn: ParsedTurn = {
         userText: decision.wrappedText,
         steps: [],
+        ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
         userText: decision.wrappedText,
+        userImages: recoveredUserImages,
         turns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
@@ -841,6 +869,7 @@ function writeNativeStream(
   requestId?: string,
   idleRetry?: StreamIdleRetryController,
   streamIdleTimeoutMs = resolveStreamIdleTimeoutMs(process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS),
+  checkpointRef: CheckpointRef = { current: null },
 ): void {
   debugLog("native.stream.start", {
     requestId,
@@ -867,8 +896,17 @@ function writeNativeStream(
   let mcpExecReceived = false;
   let cancelled = false;
   let streamError: Error | null = null;
-  let latestCheckpoint: Uint8Array | null = null;
   let emittedUserVisibleContent = false;
+  // Only execs the client was actually told about may be recorded as pending: recovery matches the
+  // snapshot against the tool results the client sends back, and it can only send back what it saw.
+  const emittedExecs: PendingExec[] = [];
+  // Cursor can emit several execs in one chunk. Closing the writer on the first would hide the
+  // rest, so the pause is deferred until the whole chunk has been parsed.
+  let pauseRequested = false;
+  let cachedHistoryFingerprint: string | undefined;
+  // Completed turns are fixed for the life of a stream, so this is hashed at most once.
+  const historyFingerprint = () =>
+    (cachedHistoryFingerprint ??= fingerprintCompletedTurns(completedTurns));
   const idleWatchdog = createStreamIdleWatchdog({
     timeoutMs: streamIdleTimeoutMs,
     onTimeout: () => {
@@ -879,7 +917,7 @@ function writeNativeStream(
       const maxRetries = idleRetry?.maxRetries ?? 0;
       const restartContext: IdleRestartContext = {
         emittedUserVisibleContent,
-        latestCheckpoint,
+        latestCheckpoint: checkpointRef.current,
         blobStore,
         completedTurns,
         currentTurn,
@@ -893,7 +931,7 @@ function writeNativeStream(
         attempt,
         maxRetries,
         emittedUserVisibleContent,
-        hasCheckpoint: !!latestCheckpoint,
+        hasCheckpoint: !!checkpointRef.current,
       });
       setLastIdleTimeout({
         timeoutMs: streamIdleTimeoutMs,
@@ -902,7 +940,7 @@ function writeNativeStream(
       });
       persistAbortedConversationState(
         convKey,
-        latestCheckpoint,
+        checkpointRef.current,
         blobStore,
         completedTurns,
         currentTurn,
@@ -985,7 +1023,7 @@ function writeNativeStream(
     cancelled = true;
     persistAbortedConversationState(
       convKey,
-      latestCheckpoint,
+      checkpointRef.current,
       blobStore,
       completedTurns,
       currentTurn,
@@ -994,7 +1032,7 @@ function writeNativeStream(
       requestId,
       bridgeKey,
       convKey,
-      hasCheckpoint: !!latestCheckpoint,
+      hasCheckpoint: !!checkpointRef.current,
     });
     idleWatchdog.clear();
     cleanupBridge(bridge, heartbeatTimer, bridgeKey);
@@ -1005,6 +1043,11 @@ function writeNativeStream(
 
   const emitText = (text: string, isThinking?: boolean) => {
     if (writer.closed) return;
+    // A staged pause means the tool-call block is already on the response and `toolUse` is about to
+    // close it. Text emitted now would land *after* that block, which breaks the invariant that a
+    // tool-use turn ends on its tool call. Before the pause was deferred the closed writer dropped
+    // this text anyway, so nothing regresses by dropping it explicitly.
+    if (pauseRequested) return;
     if (isThinking) {
       emittedUserVisibleContent = true;
       writer.thinking(text);
@@ -1023,6 +1066,10 @@ function writeNativeStream(
   };
 
   const emitFlushed = () => {
+    // Same ordering rule as emitText: once a tool-call block is on the response, nothing may be
+    // appended after it. The first exec of a chunk flushes before staging its pause, so pending
+    // text still reaches the client ahead of the tool call.
+    if (pauseRequested) return;
     const flushed = tagFilter.flush();
     if (flushed.reasoning) {
       emittedUserVisibleContent = true;
@@ -1057,25 +1104,36 @@ function writeNativeStream(
               toolName: exec.toolName,
               arguments: parseToolCallArguments(exec.decodedArgs),
             });
+
+            // Emit before snapshotting: an exec the writer refuses is one the client will never
+            // answer, so it must not be recorded as pending.
+            if (!writer.closed) {
+              writer.toolCall(exec);
+              emittedExecs.push(exec);
+              pauseRequested = true;
+            }
+
             const stored = conversationStates.get(convKey);
-            if (stored) {
+            // Nothing reached the client, so there is no continuation to snapshot — and writing an
+            // empty one here would clear a checkpoint this stream may still need.
+            if (stored && emittedExecs.length > 0) {
               commitStoredCheckpointMidPause(
                 stored,
-                latestCheckpoint,
+                checkpointRef.current,
                 blobStore,
                 completedTurns,
-                state.pendingExecs,
+                emittedExecs,
               );
               debugLog(
-                latestCheckpoint
+                checkpointRef.current
                   ? "native.stream.tool_call_checkpoint_saved"
                   : "native.stream.tool_call_snapshot_saved",
                 {
                   requestId,
                   bridgeKey,
                   convKey,
-                  checkpointSource: latestCheckpoint ? "upstream" : "absent",
-                  pendingToolCallIds: state.pendingExecs.map((e) => e.toolCallId),
+                  checkpointSource: checkpointRef.current ? "upstream" : "absent",
+                  pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
                 },
               );
             }
@@ -1087,22 +1145,21 @@ function writeNativeStream(
               mcpTools,
               pendingExecs: state.pendingExecs,
               currentTurn,
+              checkpointRef,
+              state,
+              historyFingerprint: historyFingerprint(),
             });
             debugLog("native.stream.tool_call_pause", {
               requestId,
               bridgeKey,
               exec,
               pendingExecs: state.pendingExecs,
+              emittedToolCallIds: emittedExecs.map((e) => e.toolCallId),
               currentTurn,
             });
-
-            if (!writer.closed) {
-              writer.toolCall(exec);
-              writer.done("toolUse", state);
-            }
           },
           (checkpointBytes) => {
-            latestCheckpoint = checkpointBytes;
+            checkpointRef.current = checkpointBytes;
             debugLog("native.stream.checkpoint_buffered", { requestId, convKey, checkpointBytes });
           },
         );
@@ -1126,8 +1183,12 @@ function writeNativeStream(
           message: endError.message,
           enhanced,
           isAuthError: isAuthErrorMessage(endError.message),
+          deferredToToolPause: pauseRequested,
         });
-        writer.error(enhanced, "error", state);
+        // A tool pause staged earlier in this same chunk wins: the client needs the tool call to
+        // continue, and `streamError` still routes the close through mid-pause snapshotting so the
+        // returning results land in recovery rather than on a bridge nobody is holding.
+        if (!pauseRequested) writer.error(enhanced, "error", state);
       }
     },
   );
@@ -1137,6 +1198,12 @@ function writeNativeStream(
     // (notably `interactionUpdate{tokenDelta}`-only frames) cannot keep the stream alive
     // forever.
     processChunk(chunk);
+    // Closing the response is deferred to here so that every exec framed in this chunk reaches
+    // the client, not just the first. Parallel tool calls arrive as sibling frames.
+    if (pauseRequested) {
+      pauseRequested = false;
+      if (!writer.closed) writer.done("toolUse", state);
+    }
   });
 
   bridge.onClose((code) => {
@@ -1148,7 +1215,7 @@ function writeNativeStream(
       cancelled,
       mcpExecReceived,
       currentTurn,
-      latestCheckpoint,
+      latestCheckpoint: checkpointRef.current,
     });
     lifecycleLog("bridge_close", {
       requestId,
@@ -1158,7 +1225,7 @@ function writeNativeStream(
       cancelled,
       mcpExecReceived,
       emittedUserVisibleContent,
-      hasCheckpoint: !!latestCheckpoint,
+      hasCheckpoint: !!checkpointRef.current,
     });
     idleWatchdog.clear();
     clearInterval(heartbeatTimer);
@@ -1170,10 +1237,10 @@ function writeNativeStream(
       if (mcpExecReceived) {
         const midPauseResult = handleBridgeCloseMidPause({
           stored,
-          latestCheckpoint,
+          latestCheckpoint: checkpointRef.current,
           blobStore,
           completedTurns,
-          pendingExecs: state.pendingExecs,
+          pendingExecs: emittedExecs,
         });
         debugLog(
           midPauseResult.committed
@@ -1184,7 +1251,7 @@ function writeNativeStream(
             bridgeKey,
             convKey,
             cause: "stream_error",
-            pendingToolCallIds: state.pendingExecs.map((e) => e.toolCallId),
+            pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
           },
         );
       }
@@ -1196,10 +1263,10 @@ function writeNativeStream(
       if (mcpExecReceived) {
         const midPauseResult = handleBridgeCloseMidPause({
           stored,
-          latestCheckpoint,
+          latestCheckpoint: checkpointRef.current,
           blobStore,
           completedTurns,
-          pendingExecs: state.pendingExecs,
+          pendingExecs: emittedExecs,
         });
         debugLog(
           midPauseResult.committed
@@ -1210,7 +1277,7 @@ function writeNativeStream(
             bridgeKey,
             convKey,
             code,
-            pendingToolCallIds: state.pendingExecs.map((e) => e.toolCallId),
+            pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
           },
         );
       }
@@ -1222,8 +1289,14 @@ function writeNativeStream(
     if (!mcpExecReceived) {
       emitFlushed();
       if (stored) {
-        if (latestCheckpoint) {
-          commitStoredCheckpoint(stored, latestCheckpoint, blobStore, completedTurns, currentTurn);
+        if (checkpointRef.current) {
+          commitStoredCheckpoint(
+            stored,
+            checkpointRef.current,
+            blobStore,
+            completedTurns,
+            currentTurn,
+          );
           debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
         } else {
           mergeBlobStore(stored, blobStore);
@@ -1233,10 +1306,10 @@ function writeNativeStream(
     } else {
       const midPauseResult = handleBridgeCloseMidPause({
         stored,
-        latestCheckpoint,
+        latestCheckpoint: checkpointRef.current,
         blobStore,
         completedTurns,
-        pendingExecs: state.pendingExecs,
+        pendingExecs: emittedExecs,
       });
       debugLog(
         midPauseResult.committed
@@ -1246,7 +1319,7 @@ function writeNativeStream(
           requestId,
           bridgeKey,
           convKey,
-          pendingToolCallIds: state.pendingExecs.map((e) => e.toolCallId),
+          pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
         },
       );
       removeActiveBridge(bridgeKey);
@@ -1289,7 +1362,17 @@ function handleNativeToolResultResume(
     cursorModelParameters,
     getAccessToken,
   } = ctx;
-  const { bridge, heartbeatTimer, blobStore, mcpTools, pendingExecs, currentTurn } = active;
+  const {
+    bridge,
+    heartbeatTimer,
+    blobStore,
+    mcpTools,
+    pendingExecs,
+    currentTurn,
+    checkpointRef,
+    state: pausedState,
+    historyFingerprint,
+  } = active;
   const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
     process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
   );
@@ -1326,6 +1409,9 @@ function handleNativeToolResultResume(
       mcpTools,
       pendingExecs,
       currentTurn,
+      checkpointRef,
+      state: pausedState,
+      historyFingerprint,
     });
     debugLog("native.tool_resume.partial_wait", {
       requestId,
@@ -1333,8 +1419,16 @@ function handleNativeToolResultResume(
       unresolvedExecs,
       currentTurn,
     });
+    // Re-emitting here is the only way the client learns about execs that arrived after its
+    // response closed, so the snapshot has to grow with them.
+    const stored = conversationStates.get(convKey);
+    if (stored) {
+      commitStoredCheckpointMidPause(stored, checkpointRef.current, blobStore, completedTurns, [
+        ...pendingExecs,
+      ]);
+    }
     for (const exec of unresolvedExecs) writer.toolCall(exec);
-    writer.done("toolUse");
+    writer.done("toolUse", pausedState);
     return;
   }
 
@@ -1463,22 +1557,25 @@ function handleNativeToolResultResume(
         attempt: nextAttempt,
         pendingToolCallIds: toolResults.map((r) => r.toolCallId),
       });
+      const recoveredUserImages = collectToolResultImages(toolResults);
       const recoveredCurrentTurn: ParsedTurn = {
         userText: decision.wrappedText,
         steps: [],
+        ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
-      const payload = buildCursorRequest(
+      const payload = buildCursorRequest({
         modelId,
         systemPrompt,
-        decision.wrappedText,
-        completedTurns,
-        decision.conversationId,
-        decision.checkpoint,
-        decision.blobStore,
+        userText: decision.wrappedText,
+        userImages: recoveredUserImages,
+        turns: completedTurns,
+        conversationId: decision.conversationId,
+        checkpoint: decision.checkpoint,
+        existingBlobStore: decision.blobStore,
         maxMode,
         cursorModelParameters,
         mcpTools,
-      );
+      });
       payload.mcpTools = mcpTools;
       startNativeStreamWithIdleRetries({
         accessToken,
@@ -1518,6 +1615,8 @@ function handleNativeToolResultResume(
     requestId,
     idleRetry,
     resumeIdleTimeoutMs,
+    // Same bridge, so the same checkpoint cell: frames that landed during the pause stay visible.
+    checkpointRef,
   );
 }
 

@@ -13,6 +13,9 @@
  */
 import { createHash } from "node:crypto";
 
+import { fromBinary } from "@bufbuild/protobuf";
+
+import { ConversationStateStructureSchema } from "../proto/agent_pb.js";
 import { activeBridges, cleanupBridge } from "./bridge-session.js";
 import { debugLog } from "./debug-log.js";
 import { textContent } from "./message-parsing.js";
@@ -69,6 +72,21 @@ export function clearStoredCheckpoint(stored: StoredConversation, clearBlobStore
   if (clearBlobStore) stored.blobStore.clear();
 }
 
+/**
+ * Checkpoint bytes are replayed straight into `fromBinary` when a request is built. A truncated or
+ * otherwise undecodable checkpoint would throw there and fail the turn — and, because nothing
+ * clears it, every later turn in the conversation too. Decoding once here turns that permanent
+ * break into a one-time discard and a rebuild.
+ */
+function checkpointDecodes(checkpoint: Uint8Array): boolean {
+  try {
+    fromBinary(ConversationStateStructureSchema, checkpoint);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function discardStaleCheckpointIfNeeded(
   stored: StoredConversation,
   turns: ParsedTurn[],
@@ -82,8 +100,9 @@ export function discardStaleCheckpointIfNeeded(
   const currentHistoryFingerprint = fingerprintCompletedTurns(turns);
   const storedCheckpointTurnCount = stored.checkpointTurnCount;
   const storedCheckpointHistoryFingerprint = stored.checkpointHistoryFingerprint;
-  const reason =
-    storedCheckpointTurnCount === undefined || !storedCheckpointHistoryFingerprint
+  const reason = !checkpointDecodes(stored.checkpoint)
+    ? "checkpoint_undecodable"
+    : storedCheckpointTurnCount === undefined || !storedCheckpointHistoryFingerprint
       ? "missing_checkpoint_metadata"
       : storedCheckpointTurnCount !== currentTurnCount
         ? "completed_turn_count_mismatch"
@@ -130,7 +149,14 @@ export function mergeBlobStore(
   stored: StoredConversation,
   blobStore: Map<string, Uint8Array>,
 ): void {
-  for (const [k, v] of blobStore) stored.blobStore.set(k, v);
+  // Delete-then-set moves each still-referenced blob to the end of the insertion order, which is
+  // what `trimBlobStore` treats as newest. Plain `set` leaves an existing key in place, so the
+  // system-prompt blob — written first on every build, and pointed at by `rootPromptMessagesJson`
+  // in every checkpoint — stayed permanently oldest and would be the first thing evicted.
+  for (const [k, v] of blobStore) {
+    stored.blobStore.delete(k);
+    stored.blobStore.set(k, v);
+  }
   const trimmed = trimBlobStore(stored.blobStore);
   if (trimmed.removed > 0) {
     debugLog("conversation.blob_store_trimmed", {

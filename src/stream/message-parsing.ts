@@ -78,7 +78,10 @@ export function parseToolResultImagePayloads(
     if (!payload?.toolCallId || !Array.isArray(payload.images)) continue;
     const images = payload.images
       .map((image) =>
-        decodeBase64Image(image.data, image.mimeType, { enforceCursorCliLimits: true }),
+        decodeBase64Image(image.data, image.mimeType, {
+          enforceCursorCliLimits: true,
+          dropInvalid: true,
+        }),
       )
       .filter((image): image is ParsedImageContent => !!image);
     if (images.length === 0) continue;
@@ -246,6 +249,17 @@ export function parseMessages(
   if (systemParts.length > 0) systemPrompt = systemParts.join("\n");
 
   const nonSystem = messages.filter((m) => m.role !== "system");
+  // Only the newest user message is one the caller can still fix, so it is the only place an
+  // unusable image is worth failing the request over. Everything older is decoded leniently — see
+  // ImageDecodeOptions.dropInvalid.
+  const liveUserIndex = nonSystem.reduce(
+    (last, msg, index) => (msg.role === "user" ? index : last),
+    -1,
+  );
+  const decodeOptions = (index: number): ImageDecodeOptions => ({
+    enforceCursorCliLimits: true,
+    dropInvalid: index !== liveUserIndex,
+  });
   let currentTurn:
     | (ParsedTurn & {
         toolCallById: Map<string, ParsedToolCallStep>;
@@ -260,15 +274,17 @@ export function parseMessages(
     currentTurn = null;
   };
 
-  for (const msg of nonSystem) {
+  for (const [index, msg] of nonSystem.entries()) {
     if (currentTurn && isSyntheticToolResultImageMessage(msg)) {
       const hasMetadataImages = currentTurn.steps.some(
         (step) => step.kind === "toolCall" && step.result?.images?.length,
       );
       if (!hasMetadataImages) {
+        // Tool output, not something the caller attached — always lenient, even when this
+        // synthetic message happens to be the last user-role entry.
         attachSyntheticToolResultImages(
           currentTurn,
-          imageContent(msg.content, { enforceCursorCliLimits: true }),
+          imageContent(msg.content, { enforceCursorCliLimits: true, dropInvalid: true }),
         );
       }
       continue;
@@ -276,7 +292,7 @@ export function parseMessages(
 
     if (msg.role === "user") {
       finalizeCurrentTurn();
-      const userImages = imageContent(msg.content, { enforceCursorCliLimits: true });
+      const userImages = imageContent(msg.content, decodeOptions(index));
       currentTurn = {
         userText: textContent(msg.content),
         steps: [],
@@ -312,7 +328,7 @@ export function parseMessages(
 
     if (msg.role === "tool") {
       const toolCallId = msg.tool_call_id ?? "";
-      const inlineImages = imageContent(msg.content, { enforceCursorCliLimits: true });
+      const inlineImages = imageContent(msg.content, decodeOptions(index));
       const images = mergeImages(inlineImages, toolResultImagesById.get(toolCallId));
       const content = normalizeToolResultText(textContent(msg.content), images);
       const isError = msg.is_error === true;

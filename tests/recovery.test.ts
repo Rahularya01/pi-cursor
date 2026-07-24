@@ -75,6 +75,82 @@ describe("planRecovery", () => {
     }
   });
 
+  it("rebuilds when the bridge dies on a later tool round of the same user turn", () => {
+    // Round 2 parked only t2, but the client re-sends every result in the turn (t1 and t2).
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [{ toolCallId: "t2", toolName: "read" }],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const toolResults: ToolResultInfo[] = [
+      { toolCallId: "t1", content: "round one" },
+      { toolCallId: "t2", content: "round two" },
+    ];
+    const decision = planRecovery({
+      stored,
+      toolResults,
+      completedTurns,
+      inFlightTurn: toolTurn(["t1", "t2"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+  });
+
+  it("still skips when a parked tool call has no result in the request", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [
+        { toolCallId: "t1", toolName: "read" },
+        { toolCallId: "t2", toolName: "read" },
+      ],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "only one" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    }
+  });
+
+  it("ignores unidentifiable tool results instead of reading them as duplicates", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const inFlightTurn = toolTurn(["t1"]);
+    inFlightTurn.steps.push(
+      { kind: "toolCall", toolCallId: "", toolName: "", arguments: {} },
+      { kind: "toolCall", toolCallId: "", toolName: "", arguments: {} },
+    );
+    const decision = planRecovery({
+      stored,
+      toolResults: [
+        { toolCallId: "t1", content: "ok" },
+        { toolCallId: "", content: "orphan a" },
+        { toolCallId: "", content: "orphan b" },
+      ],
+      completedTurns,
+      inFlightTurn,
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+  });
+
   it("recovers via checkpoint when pending tool ids match", () => {
     const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
     const checkpoint = new Uint8Array([1, 2, 3]);

@@ -22,6 +22,15 @@ export const CURSOR_SUPPORTED_IMAGE_MIME_TYPES = new Set([
 
 export interface ImageDecodeOptions {
   enforceCursorCliLimits?: boolean;
+  /**
+   * Return `undefined` instead of throwing when an image fails Cursor's limits.
+   *
+   * Rejecting loudly is right for the image a caller is attaching right now — they can resize it.
+   * It is wrong for images already sitting in the transcript: those are unfixable, and since the
+   * whole history is re-parsed on every request, one bad image would otherwise fail not just its
+   * own turn but every turn after it, permanently.
+   */
+  dropInvalid?: boolean;
 }
 
 export function normalizeImageMimeType(mimeType: string): string {
@@ -81,15 +90,35 @@ export function decodeBase64Image(
   if (!base64) return undefined;
   const bytes = new Uint8Array(Buffer.from(base64, "base64"));
   if (bytes.length === 0) return undefined;
-  const finalMimeType = options.enforceCursorCliLimits
-    ? validateCursorCliImageLimits(bytes)
-    : normalizedMimeType;
+  let finalMimeType = normalizedMimeType;
+  if (options.enforceCursorCliLimits) {
+    try {
+      finalMimeType = validateCursorCliImageLimits(bytes);
+    } catch (error) {
+      if (!options.dropInvalid) throw error;
+      return undefined;
+    }
+  }
   return { data: bytes, mimeType: finalMimeType };
 }
 
 export function parseImageDataUrl(
   url: string,
   options: ImageDecodeOptions = {},
+): ParsedImageContent | undefined {
+  if (options.dropInvalid) {
+    try {
+      return parseImageDataUrlStrict(url, options);
+    } catch {
+      return undefined;
+    }
+  }
+  return parseImageDataUrlStrict(url, options);
+}
+
+function parseImageDataUrlStrict(
+  url: string,
+  options: ImageDecodeOptions,
 ): ParsedImageContent | undefined {
   const trimmed = url.trim();
   if (/^https?:\/\//i.test(trimmed)) {
