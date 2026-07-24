@@ -22,6 +22,8 @@ export type DiagnosticsSnapshot = {
   lastIdleAttempt?: number;
   /** Short event name for the latest stream lifecycle signal. */
   lastStreamEvent?: string;
+  /** Most recent wire-protocol drift observation (`kind:detail`). */
+  lastDriftSignal?: string;
 };
 
 const storage = new AsyncLocalStorage<DiagnosticsSnapshot>();
@@ -84,6 +86,10 @@ export function setSystemCredentialsPolicy(policy: string | undefined): void {
 export function setLastStreamEvent(event: string | undefined): void {
   currentBag().lastStreamEvent =
     event === undefined ? undefined : redactSecrets(event).slice(0, 200);
+}
+export function setLastDriftSignal(signal: string | undefined): void {
+  currentBag().lastDriftSignal =
+    signal === undefined ? undefined : redactSecrets(signal).slice(0, 200);
 }
 export function setLastIdleTimeout(info: {
   timeoutMs: number;

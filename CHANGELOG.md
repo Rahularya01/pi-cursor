@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Wire-drift detection.** Unrecognized `agent.v1` server messages and unknown protobuf fields are no longer skipped silently. They are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` (`lastDriftSignal`, `wireDrift`, `wireDriftStranding` plus a detail block). `wireDriftStranding=yes` distinguishes an unanswered message that could have parked the turn from a merely out-of-date schema — previously both surfaced as a bare idle timeout.
+- **Reproducible protobuf codegen.** `proto/agent.proto` is now vendored as the source of truth for `src/proto/agent_pb.ts`, with `npm run proto:gen` (regenerate), `npm run proto:sync` (recover the `.proto` from an updated generated file — protoc-gen-es embeds the full descriptor), and `npm run proto:check` (fails the build when the two drift apart, and is part of `npm run check`). Uses `buf` + `protoc-gen-es` from devDependencies, so no system `protoc` is required. See [`proto/README.md`](proto/README.md).
+- `npm run smoke:wire` performs the real Connect/HTTP2 handshake against the configured endpoint and reports schema drift without starting a chat turn.
+
+### Changed
+
+- **`src/stream/native-core.ts` split into focused modules** (5,696 → ~1,650 lines): `types`, `tuning`, `debug-log`, `images`, `model-discovery`, `message-parsing`, `pi-adapter`, `request-build`, `bridge-session`, `session-state`, `server-messages`, `thinking-filter`, and `drift`. The public surface of `src/stream/index.ts` is unchanged.
+- `native-core.ts` is now covered by ESLint and Prettier (it was previously exempted for being too large), which removed a large amount of dead code and unused imports.
+- Shared structural types are declared once in `src/stream/types.ts`; `recovery.ts` and `native-core.ts` previously carried duplicate copies of `ParsedTurn`, `StoredConversation`, and friends.
+
+### Removed
+
+- **The quarantined OpenAI-compatible local proxy.** `startProxy`/`stopProxy` and the entire parallel request path (`handleChatCompletion`, `writeSSEStream`, `handleToolResultResume`, `handleNonStreamingResponse`, and helpers) are gone — roughly 1,250 lines that were unreachable from the provider. Native `streamSimple` was already the only chat path; `/cursor.doctor` now reports `proxyPath=removed`.
+
 ## [1.2.3] - 2026-07-24
 
 ### Fixed

@@ -42,6 +42,7 @@ import {
 import { redactSecrets } from "./utils/security.js";
 import { formatCursorUsage, getCursorUsageSummary } from "./usage.js";
 import { getCursorClientVersion } from "./stream/config.js";
+import { formatDriftSummary, getDriftSignals, hasStrandingDrift } from "./stream/drift.js";
 import {
   cleanupSessionState,
   createCursorNativeStream,
@@ -1280,6 +1281,7 @@ export default async function (pi: ExtensionAPI) {
     description: "Show sanitized Cursor provider diagnostics",
     handler: async (_args, ctx: ExtensionCommandContext) => {
       const d = getLastDiagnostics();
+      const driftSignals = getDriftSignals();
       const lines = [
         `provider=${CURSOR_PROVIDER_ID}`,
         `agentUrl=${getCursorAgentUrl()}`,
@@ -1294,6 +1296,9 @@ export default async function (pi: ExtensionAPI) {
         `lastRpc=${d.lastRpc || "none"}`,
         `lastRecoverySkipReason=${d.lastRecoverySkipReason || "none"}`,
         `lastStreamEvent=${d.lastStreamEvent || "none"}`,
+        `lastDriftSignal=${d.lastDriftSignal || "none"}`,
+        `wireDrift=${formatDriftSummary() || "none"}`,
+        `wireDriftStranding=${hasStrandingDrift() ? "yes" : "no"}`,
         `lastIdleTimeoutAt=${d.lastIdleTimeoutAt || "none"}`,
         `lastIdleTimeoutMs=${d.lastIdleTimeoutMs ?? "none"}`,
         `lastIdleAttempt=${d.lastIdleAttempt ?? "none"}`,
@@ -1305,10 +1310,18 @@ export default async function (pi: ExtensionAPI) {
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
         "runtimeCli=not-used",
-        "proxyPath=quarantined-internal",
+        "proxyPath=removed",
         "commands=/cursor.models /cursor.usage /cursor.doctor",
         "hint=On stalls check lifecycle log + lastStreamEvent; InteractionQuery hangs fixed in 1.2.2; re-login or PI_CURSOR_CLIENT_VERSION on wire errors",
       ];
+      if (driftSignals.length > 0) {
+        lines.push("--- wire drift detail ---");
+        for (const s of driftSignals) {
+          lines.push(`  ${s.kind}: ${s.detail} (x${s.count}, first ${s.firstSeenIso})`);
+        }
+        lines.push("  Cursor's agent schema may have moved. See proto/README.md to regenerate,");
+        lines.push("  or pin PI_CURSOR_CLIENT_VERSION to a build that matches.");
+      }
       const text = lines.join("\n");
       if (ctx.hasUI) ctx.ui.notify(`Cursor doctor\n${text}`, "info");
       console.log(text);

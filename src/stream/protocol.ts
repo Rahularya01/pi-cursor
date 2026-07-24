@@ -2,6 +2,7 @@
  * Protocol-drift helpers: auth error detection, decode error framing, client version.
  */
 import { getCursorClientVersion } from "./config.js";
+import { formatDriftSummary, hasStrandingDrift } from "./drift.js";
 
 const AUTH_ERROR_RE =
   /\b(unauthenticated|unauthorized|permission[_ ]?denied|auth(?:entication)?[_ ]?failed|invalid[_ ]?token|expired[_ ]?token|401)\b/i;
@@ -26,6 +27,27 @@ export function formatProtocolMismatchHint(message: string): string {
   );
 }
 
+/**
+ * Appends what actually drifted, when anything did.
+ *
+ * A turn that fails after we skipped an unrecognized server message would
+ * otherwise surface as a bare timeout. Naming the unhandled case turns "it hung"
+ * into a reproducible bug report.
+ */
+export function appendDriftDiagnostic(message: string): string {
+  const summary = formatDriftSummary();
+  if (!summary) return message;
+  const severity = hasStrandingDrift()
+    ? "unhandled wire messages — the turn may have been left waiting on one"
+    : "unknown wire fields — schema is likely behind Cursor";
+  return (
+    `${message} ` +
+    `[wire-drift: ${severity}. Observed: ${summary}. ` +
+    `Regenerate the schema (see proto/README.md) or bump PI_CURSOR_CLIENT_VERSION; ` +
+    `/cursor.doctor shows the full list.]`
+  );
+}
+
 export function enhanceCursorStreamError(message: string): string {
   if (isAuthErrorMessage(message)) {
     return (
@@ -35,7 +57,7 @@ export function enhanceCursorStreamError(message: string): string {
     );
   }
   if (isProtocolMismatchMessage(message)) {
-    return formatProtocolMismatchHint(message);
+    return appendDriftDiagnostic(formatProtocolMismatchHint(message));
   }
-  return message;
+  return appendDriftDiagnostic(message);
 }

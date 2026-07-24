@@ -10,9 +10,8 @@ export default tseslint.config(
       "scripts/**",
       "dist/**",
       "eslint.config.js",
-      // Generated / large protocol ports (MIT lineage). Keep typecheck strict instead.
+      // Generated protocol surface (see npm run proto:gen). Keep typecheck strict instead.
       "src/proto/**",
-      "src/stream/native-core.ts",
       "src/client/h2-bridge.mjs",
     ],
   },

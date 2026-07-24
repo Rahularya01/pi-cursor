@@ -37,13 +37,17 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "security-check": "tsx scripts/security-check.ts",
+    "proto:gen": "buf generate",
+    "proto:sync": "tsx scripts/proto-sync.ts",
+    "proto:check": "tsx scripts/proto-check.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:legacy": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
     "smoke:auth": "node --import tsx scripts/smoke-auth.mjs",
     "smoke:models": "node --import tsx scripts/smoke-models.mjs",
     "smoke:stream": "node --import tsx scripts/smoke-stream.mjs",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run security-check && npm test"
+    "smoke:wire": "node --import tsx scripts/smoke-wire.mjs",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run security-check && npm run proto:check && npm test"
   },
   "pi": {
     "extensions": [
@@ -58,6 +62,8 @@
     "@earendil-works/pi-coding-agent": ">=0.80.0"
   },
   "devDependencies": {
+    "@bufbuild/buf": "^1.72.0",
+    "@bufbuild/protoc-gen-es": "^2.13.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",

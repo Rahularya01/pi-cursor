@@ -1,6 +1,7 @@
 node_modules
+dist
+.claude
 package-lock.json
 scripts/**
 src/proto/**
-src/stream/native-core.ts
 src/client/h2-bridge.mjs

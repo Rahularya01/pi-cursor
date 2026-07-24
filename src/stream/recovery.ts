@@ -4,63 +4,26 @@
  * Prefer checkpoint resume → full-history rebuild → hard skip (lost continuation).
  */
 import { createHash } from "node:crypto";
+import type {
+  ParsedImageContent,
+  ParsedTurn,
+  ParsedToolCallStep,
+  StoredConversation,
+  ToolResultInfo,
+} from "./types.js";
 
 export const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
 
-export interface ParsedImageContent {
-  data: Uint8Array;
-  mimeType: string;
-}
-
-export interface ParsedToolResult {
-  content: string;
-  isError: boolean;
-  images?: ParsedImageContent[];
-}
-
-export interface ParsedAssistantTextStep {
-  kind: "assistantText";
-  text: string;
-}
-
-export interface ParsedToolCallStep {
-  kind: "toolCall";
-  toolCallId: string;
-  toolName: string;
-  arguments: Record<string, unknown>;
-  result?: ParsedToolResult;
-}
-
-export type ParsedTurnStep = ParsedAssistantTextStep | ParsedToolCallStep;
-
-export interface ParsedTurn {
-  userText: string;
-  steps: ParsedTurnStep[];
-  userImages?: ParsedImageContent[];
-}
-
-export interface ToolResultInfo {
-  toolCallId: string;
-  content: string;
-  images?: ParsedImageContent[];
-  isError?: boolean;
-}
-
-export interface StoredConversation {
-  conversationId: string;
-  checkpoint: Uint8Array | null;
-  checkpointSource?: "upstream" | "absent";
-  checkpointTurnCount?: number;
-  checkpointHistoryFingerprint?: string;
-  midPausePendingToolCalls?: Array<{ toolCallId: string; toolName: string }>;
-  midPauseTurnCount?: number;
-  midPauseHistoryFingerprint?: string;
-  midPauseRecordedAtMs?: number;
-  sessionScoped: boolean;
-  sessionId?: string;
-  blobStore: Map<string, Uint8Array>;
-  lastAccessMs: number;
-}
+export type {
+  ParsedImageContent,
+  ParsedToolResult,
+  ParsedAssistantTextStep,
+  ParsedToolCallStep,
+  ParsedTurnStep,
+  ParsedTurn,
+  ToolResultInfo,
+  StoredConversation,
+} from "./types.js";
 
 export type FullHistoryRebuildReason =
   "no_checkpoint" | "synthesized_after_idle" | "stale_checkpoint" | "checkpoint_tool_mismatch";

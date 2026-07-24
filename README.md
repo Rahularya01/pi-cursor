@@ -163,23 +163,40 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 
 Stream modules are split under `src/stream/`:
 
-| Module                 | Responsibility                                      |
-| ---------------------- | --------------------------------------------------- |
-| `config.ts`            | Agent URL + client version resolution               |
-| `model-routing.ts`     | Effort suffix / requested model resolution          |
-| `context-normalize.ts` | Context-mode side-channel folding                   |
-| `recovery.ts`          | Tool-continuation recovery planner                  |
-| `protocol.ts`          | Auth/protocol error enhancement                     |
-| `native-core.ts`       | Native streamSimple runtime + (internal) proxy path |
+| Module                 | Responsibility                                                        |
+| ---------------------- | --------------------------------------------------------------------- |
+| `types.ts`             | Shared structural types (no runtime code — safe for anyone to import) |
+| `config.ts`            | Agent URL + client version resolution                                 |
+| `tuning.ts`            | Timeouts, retry budgets, and the stream idle watchdog                 |
+| `debug-log.ts`         | Debug / lifecycle / metric sinks with secret redaction                |
+| `images.ts`            | Image decode + Cursor CLI format and size validation                  |
+| `model-routing.ts`     | Effort suffix / requested model resolution                            |
+| `model-discovery.ts`   | `GetUsableModels` unary RPCs + per-token model cache                  |
+| `context-normalize.ts` | Context-mode side-channel folding                                     |
+| `message-parsing.ts`   | Pi/OpenAI message list → Cursor turn structures                       |
+| `pi-adapter.ts`        | Pi context/model types ↔ OpenAI-shaped request, usage accounting      |
+| `request-build.ts`     | `AgentRunRequest` protobuf construction + blob store                  |
+| `bridge-session.ts`    | Active-bridge registry + h2-bridge lifecycle                          |
+| `session-state.ts`     | Conversation store, checkpoints, key derivation, session locks        |
+| `server-messages.ts`   | Inbound KV / exec / interaction dispatch                              |
+| `thinking-filter.ts`   | Strips inline `<think>`-style tags from the text channel              |
+| `recovery.ts`          | Tool-continuation recovery planner                                    |
+| `protocol.ts`          | Auth/protocol error enhancement                                       |
+| `drift.ts`             | Wire-drift detection (unknown message cases and protobuf fields)      |
+| `native-core.ts`       | Native streamSimple runtime that drives all of the above              |
 
-The OpenAI-compatible local proxy remains **internal/quarantined** (not exported from `src/stream/index.ts`). Day-to-day chat uses native `streamSimple` only.
+Native `streamSimple` is the only chat path. The OpenAI-compatible local proxy that
+used to sit alongside it was removed in favour of a single code path.
 
-`src/proto/agent_pb.ts` is a large generated Connect/protobuf surface used by the wire layer. Prefer regenerating it from upstream protos when Cursor changes the agent schema rather than hand-editing.
+`src/proto/agent_pb.ts` is a large generated Connect/protobuf surface used by the wire
+layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
+[`proto/README.md`](proto/README.md)) when Cursor changes the agent schema.
 
 ## Troubleshooting
 
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
+- **Wire-protocol drift:** Cursor can change `agent.v1` at any time. Unrecognized server messages and unknown protobuf fields are no longer skipped silently — they are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` under `wireDrift`. `wireDriftStranding=yes` means an unanswered message could have parked the turn, which is the difference between "our schema is a bit behind" and "this is why it hung". Run `CURSOR_ACCESS_TOKEN=... npm run smoke:wire` to check the handshake and schema against the live endpoint without starting a chat turn, then see [`proto/README.md`](proto/README.md) to resync the schema.
 - **Stuck / dies after a few minutes of work:** v1.2.2 answers all Cursor `InteractionQuery` permission prompts (web search / ask-question / etc.) that previously parked the stream. Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
 - **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
@@ -191,7 +208,13 @@ npm install
 npm run check
 ```
 
-`npm run check` runs TypeScript typechecking, ESLint, Prettier format verification, security checks, and unit tests.
+`npm run check` runs TypeScript typechecking, ESLint, Prettier format verification, security checks, the protobuf staleness check, and unit tests.
+
+| Script                | Purpose                                                                           |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `npm run proto:gen`   | Regenerate `src/proto/agent_pb.ts` from `proto/agent.proto`.                      |
+| `npm run proto:sync`  | Rebuild `proto/agent.proto` from an updated generated file obtained upstream.     |
+| `npm run proto:check` | Fail if the generated protobuf is stale or hand-edited (part of `npm run check`). |
 
 ## Attributions
 

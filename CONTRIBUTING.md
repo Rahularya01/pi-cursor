@@ -15,7 +15,15 @@ npm install
 npm run check
 ```
 
-`npm run check` runs TypeScript, ESLint, Prettier, and the repository security checks. Run it before opening a pull request.
+`npm run check` runs TypeScript, ESLint, Prettier, the repository security checks, the
+protobuf staleness check, and the unit tests. Run it before opening a pull request.
+
+## Generated code
+
+`src/proto/agent_pb.ts` is generated from `proto/agent.proto` — never edit it by hand.
+Change the `.proto` and run `npm run proto:gen`; `npm run proto:check` fails the build if
+the two drift apart. See [`proto/README.md`](proto/README.md), which also covers how to
+recover the `.proto` when you only have an updated generated file from upstream.
 
 ## Pull requests
 
