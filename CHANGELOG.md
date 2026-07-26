@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2] - 2026-07-26
+
+### Fixed
+
+- **`No API provider registered for api: cursor-native`.** The native transport was only attached via `pi.registerProvider({ streamSimple })`. Pi's Agent still dispatches through the global compat `streamSimple` registry on some hosts/entry paths, and ModelRuntime falls back to that same registry for custom `model.api` values. The extension now also calls `registerApiProvider({ api: "cursor-native", ... })` and stamps `api: "cursor-native"` on every model config so the dispatcher can find the stream implementation.
+
 ## [1.3.1] - 2026-07-25
 
 ### Fixed

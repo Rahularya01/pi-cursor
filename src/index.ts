@@ -20,6 +20,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import { appendFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -632,11 +633,20 @@ export function processModels(raw: CursorModel[]): ProcessedModel[] {
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/** API id used by Cursor models and the native streamSimple implementation. */
+export const CURSOR_NATIVE_API = "cursor-native" as const;
+
+/** Source id so /reload can replace our global API registration cleanly. */
+const CURSOR_API_PROVIDER_SOURCE = "@rahularya01/pi-cursor";
+
 export function modelConfig(m: ProcessedModel) {
   const input = (m.supportsImages === false ? ["text"] : ["text", "image"]) as ("text" | "image")[];
   return {
     id: m.id,
     name: m.name,
+    // Keep api explicit on every model so session restore / models.json merges
+    // cannot strand rows on a different transport id.
+    api: CURSOR_NATIVE_API,
     // Pi's thinking control must only appear when Cursor exposed selectable
     // effort variants. A model name alone is not evidence of a controllable level.
     reasoning: m.supportsEffort,
@@ -1395,14 +1405,30 @@ export default async function (pi: ExtensionAPI) {
     noReasoningEffortByModelId = buildNoReasoningEffortLookup(processed);
     rawModelByEffortByModelId = buildRawModelLookup(processed);
 
+    const streamSimple = createCursorNativeStream({
+      getAccessToken,
+      getNoReasoningEffortByModelId: () => noReasoningEffortByModelId,
+      getRawModelRoutingByModelId: () => rawModelByEffortByModelId,
+    });
+
+    // Pi's Agent default streamFn is still the global compat streamSimple dispatcher
+    // on some entry paths / older hosts. ModelRuntime also falls back to the same
+    // registry when model.api is custom. Register the transport there in addition
+    // to pi.registerProvider(... streamSimple), or callers hit:
+    //   No API provider registered for api: cursor-native
+    registerApiProvider(
+      {
+        api: CURSOR_NATIVE_API,
+        stream: streamSimple,
+        streamSimple,
+      },
+      CURSOR_API_PROVIDER_SOURCE,
+    );
+
     pi.registerProvider("cursor", {
       baseUrl: getCursorAgentUrl(),
-      api: "cursor-native",
-      streamSimple: createCursorNativeStream({
-        getAccessToken,
-        getNoReasoningEffortByModelId: () => noReasoningEffortByModelId,
-        getRawModelRoutingByModelId: () => rawModelByEffortByModelId,
-      }),
+      api: CURSOR_NATIVE_API,
+      streamSimple,
       models: processed.map(modelConfig),
       oauth: {
         name: "Cursor",
@@ -1450,7 +1476,9 @@ export default async function (pi: ExtensionAPI) {
         getApiKey(credentials: OAuthCredentials): string {
           currentToken = credentials.access;
           currentTokenSource = "pi_oauth";
-          return "cursor-native";
+          // Dummy key: real auth is resolved inside the native stream via getAccessToken.
+          // Must be non-empty so Pi treats the provider as configured.
+          return CURSOR_NATIVE_API;
         },
       },
     });
