@@ -1261,23 +1261,8 @@ export default async function (pi: ExtensionAPI) {
     debugLogFile: isExtensionDebugEnabled() ? getExtensionDebugLogFilePath() : undefined,
   });
 
-  // Register immediately with fallback models so the extension is ready without
-  // waiting for the network. Model discovery runs in the background and re-registers
-  // once real models arrive, transparent to the user.
-  register(pi, FALLBACK_MODELS, []);
-
-  // Background discovery: resolve credentials + fetch live models, then re-register.
-  void discoverStartupModels()
-    .then((startupModels) => {
-      if (startupModels.rawModels.length > 0 || startupModels.parameterizedModels.length > 0) {
-        register(pi, startupModels.rawModels, startupModels.parameterizedModels);
-      }
-    })
-    .catch((err) => {
-      debugExtensionLog("model_discovery.startup.background_failed", {
-        message: err instanceof Error ? err.message : String(err),
-      });
-    });
+  const startupModels = await discoverStartupModels();
+  register(pi, startupModels.rawModels, startupModels.parameterizedModels);
 
   pi.registerCommand("cursor.models", {
     description: "List Cursor runtime models registered by this provider",
