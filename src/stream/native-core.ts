@@ -1260,6 +1260,48 @@ function writeNativeStream(
     }
 
     if (code !== 0) {
+      // Exit code 2 = retriable transport loss (GOAWAY from server).
+      // Attempt an idle-retry cycle if budget allows and no content was already
+      // streamed to the user (same guard as the idle watchdog path).
+      const isRetriableTransport = code === 2;
+      if (isRetriableTransport && idleRetry && !emittedUserVisibleContent) {
+        const attempt = idleRetry.currentAttempt;
+        const maxRetries = idleRetry.maxRetries;
+        if (attempt <= maxRetries) {
+          debugLog("native.stream.goaway_retry", {
+            requestId,
+            bridgeKey,
+            convKey,
+            modelId,
+            attempt,
+            maxRetries,
+          });
+          setLastStreamEvent("goaway_retry");
+          persistAbortedConversationState(
+            convKey,
+            checkpointRef.current,
+            blobStore,
+            completedTurns,
+            currentTurn,
+          );
+          cleanupBridge(bridge, heartbeatTimer, bridgeKey);
+          options?.signal?.removeEventListener("abort", abort);
+          try {
+            if (
+              idleRetry.restart(attempt + 1, {
+                emittedUserVisibleContent,
+                latestCheckpoint: checkpointRef.current,
+                blobStore,
+                completedTurns,
+                currentTurn,
+              })
+            )
+              return;
+          } catch {
+            // Fall through to error
+          }
+        }
+      }
       if (mcpExecReceived) {
         const midPauseResult = handleBridgeCloseMidPause({
           stored,
@@ -1281,7 +1323,13 @@ function writeNativeStream(
           },
         );
       }
-      writer.error("Bridge connection lost", "error", state);
+      writer.error(
+        isRetriableTransport
+          ? "Cursor upstream closed the connection (GOAWAY). The stream was not retried because content was already streaming or the retry budget was exhausted. Please retry."
+          : "Bridge connection lost",
+        "error",
+        state,
+      );
       removeActiveBridge(bridgeKey);
       return;
     }

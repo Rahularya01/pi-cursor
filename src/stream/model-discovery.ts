@@ -77,10 +77,16 @@ export interface CursorModel {
   supportsImages?: boolean;
 }
 
-let cachedModels: { tokenHash: string; models: CursorModel[] } | null = null;
+let cachedModels: { tokenHash: string; models: CursorModel[]; expiresAt: number } | null = null;
 
-let cachedParameterizedModels: { tokenHash: string; models: CursorParameterizedModel[] } | null =
-  null;
+let cachedParameterizedModels: {
+  tokenHash: string;
+  models: CursorParameterizedModel[];
+  expiresAt: number;
+} | null = null;
+
+/** Model list cache TTL: 5 minutes. Re-fetches on token change or TTL expiry. */
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function tokenCacheHash(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
@@ -88,7 +94,8 @@ function tokenCacheHash(apiKey: string): string {
 
 export async function getCursorModels(apiKey: string): Promise<CursorModel[]> {
   const tokenHash = tokenCacheHash(apiKey);
-  if (cachedModels?.tokenHash === tokenHash) return cachedModels.models;
+  if (cachedModels?.tokenHash === tokenHash && Date.now() < cachedModels.expiresAt)
+    return cachedModels.models;
   try {
     const requestPayload = create(GetUsableModelsRequestSchema, {});
     const requestBody = toBinary(GetUsableModelsRequestSchema, requestPayload);
@@ -116,7 +123,7 @@ export async function getCursorModels(apiKey: string): Promise<CursorModel[]> {
       if (decoded?.models?.length) {
         const models = normalizeCursorModels(decoded.models);
         if (models.length > 0) {
-          cachedModels = { tokenHash, models };
+          cachedModels = { tokenHash, models, expiresAt: Date.now() + MODEL_CACHE_TTL_MS };
           return models;
         }
       }
@@ -155,7 +162,11 @@ export async function getCursorParameterizedModels(
   apiKey: string,
 ): Promise<CursorParameterizedModel[]> {
   const tokenHash = tokenCacheHash(apiKey);
-  if (cachedParameterizedModels?.tokenHash === tokenHash) return cachedParameterizedModels.models;
+  if (
+    cachedParameterizedModels?.tokenHash === tokenHash &&
+    Date.now() < cachedParameterizedModels.expiresAt
+  )
+    return cachedParameterizedModels.models;
   try {
     const response = await callCursorUnaryRpc({
       accessToken: apiKey,
@@ -165,7 +176,7 @@ export async function getCursorParameterizedModels(
     if (response.timedOut || response.exitCode !== 0 || response.body.length === 0) return [];
     const body = decodeConnectUnaryBody(response.body) ?? response.body;
     const models = decodeAvailableModelsResponse(body);
-    cachedParameterizedModels = { tokenHash, models };
+    cachedParameterizedModels = { tokenHash, models, expiresAt: Date.now() + MODEL_CACHE_TTL_MS };
     return models;
   } catch (err) {
     console.error(

@@ -32,8 +32,8 @@ export const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
 
 export const DEFAULT_H2_CONNECT_TIMEOUT_MS = 30_000;
 
-/** 0 = no activity kill (parent heartbeats + Cursor keep the stream alive). */
-export const DEFAULT_H2_IDLE_TIMEOUT_MS = 0;
+/** 15 minutes: kill dead H2 sessions that receive no activity. 0 = disabled. */
+export const DEFAULT_H2_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 export function resolveActiveBridgeTtlMs(envValue?: string): number {
   if (envValue === undefined || envValue === "") return DEFAULT_ACTIVE_BRIDGE_TTL_MS;

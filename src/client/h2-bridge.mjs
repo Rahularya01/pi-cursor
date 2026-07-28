@@ -186,9 +186,20 @@ client.on("error", (err) => {
 });
 
 client.on("goaway", (errorCode, _lastStreamId, opaqueData) => {
-  process.stderr.write(
-    `[h2-bridge] GOAWAY errorCode=${errorCode} opaque=${opaqueData ? opaqueData.toString("utf8").slice(0, 200) : ""}\n`,
+  const opaque = opaqueData ? opaqueData.toString("utf8").slice(0, 200) : "";
+  process.stderr.write(`[h2-bridge] GOAWAY errorCode=${errorCode} opaque=${opaque}\n`);
+  // GOAWAY means the server closed the HTTP/2 connection gracefully.
+  // Signal the parent with a retriable error frame so it can reconnect,
+  // then exit with code 2 (reserved for retriable transport loss).
+  clearBridgeTimeout();
+  if (pingTimer) clearInterval(pingTimer);
+  writeMessage(
+    connectEndStreamError(
+      "unavailable",
+      `Cursor GOAWAY (errorCode=${errorCode}): upstream connection closed, retriable`,
+    ),
   );
+  setTimeout(() => process.exit(2), 100);
 });
 
 const headers = {

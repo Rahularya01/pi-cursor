@@ -1189,7 +1189,38 @@ export default async function (pi: ExtensionAPI) {
   setSystemCredentialsPolicy(resolveSystemCredentialPolicy());
   setLastClientVersion(getCursorClientVersion());
 
+  // Proactive token pre-refresh: background-refresh when the token is within 5 minutes
+  // of expiry so a fresh token is ready before the stream starts (not mid-retry).
+  const TOKEN_PREREFRESH_SKEW_MS = 5 * 60 * 1000;
+  let _preRefreshInFlight = false;
+
+  const scheduleProactiveTokenRefresh = () => {
+    if (_preRefreshInFlight || !currentToken || currentTokenSource === "env") return;
+    if (!isTokenNearExpiry(currentToken, TOKEN_PREREFRESH_SKEW_MS)) return;
+    _preRefreshInFlight = true;
+    void getStartupCursorAccessToken({ forceRefresh: true })
+      .then((resolved) => {
+        if (resolved) {
+          currentToken = resolved.accessToken;
+          currentTokenSource = resolved.source;
+          setLastTokenSource(resolved.source);
+          debugExtensionLog("token.proactive_refresh", { source: resolved.source });
+        }
+      })
+      .catch((err) => {
+        debugExtensionLog("token.proactive_refresh_failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        _preRefreshInFlight = false;
+      });
+  };
+
   const getAccessToken = async (options?: { forceRefresh?: boolean }) => {
+    // Kick off a non-blocking pre-refresh if we're close to expiry but not yet expired.
+    scheduleProactiveTokenRefresh();
+
     const needsRefresh =
       options?.forceRefresh ||
       !currentToken ||
@@ -1230,8 +1261,23 @@ export default async function (pi: ExtensionAPI) {
     debugLogFile: isExtensionDebugEnabled() ? getExtensionDebugLogFilePath() : undefined,
   });
 
-  const startupModels = await discoverStartupModels();
-  register(pi, startupModels.rawModels, startupModels.parameterizedModels);
+  // Register immediately with fallback models so the extension is ready without
+  // waiting for the network. Model discovery runs in the background and re-registers
+  // once real models arrive, transparent to the user.
+  register(pi, FALLBACK_MODELS, []);
+
+  // Background discovery: resolve credentials + fetch live models, then re-register.
+  void discoverStartupModels()
+    .then((startupModels) => {
+      if (startupModels.rawModels.length > 0 || startupModels.parameterizedModels.length > 0) {
+        register(pi, startupModels.rawModels, startupModels.parameterizedModels);
+      }
+    })
+    .catch((err) => {
+      debugExtensionLog("model_discovery.startup.background_failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
 
   pi.registerCommand("cursor.models", {
     description: "List Cursor runtime models registered by this provider",

@@ -49,9 +49,10 @@ describe("idle timeout resolvers", () => {
     expect(resolveStreamIdleMaxRetries("0")).toBe(0);
   });
 
-  it("defaults h2 activity idle to disabled; connect timeout stays 30s", () => {
+  it("defaults h2 activity idle to 15 minutes; connect timeout stays 30s", () => {
     expect(resolveH2ConnectTimeoutMs(undefined)).toBe(30_000);
-    expect(resolveH2IdleTimeoutMs(undefined)).toBe(0);
+    // 15-minute default kills dead H2 sessions; set PI_CURSOR_H2_IDLE_TIMEOUT_MS=0 to disable.
+    expect(resolveH2IdleTimeoutMs(undefined)).toBe(15 * 60 * 1000);
   });
 
   it("parses env overrides and rejects invalid values", () => {

@@ -86,7 +86,9 @@ export function startBridge(accessToken: string, requestBytes: Uint8Array) {
   debugLog("bridge.start_run", { requestBytes });
   bridge.write(frameConnectMessage(requestBytes));
   // Keep heartbeats referenced so long tool pauses do not look idle to the process.
-  const heartbeatTimer = setInterval(() => bridge.write(makeHeartbeatBytes()), 5_000);
+  // 15s interval: frequent enough to prevent mid-pause idle kills, low enough to
+  // avoid flooding a quiet stream with IPC chatter.
+  const heartbeatTimer = setInterval(() => bridge.write(makeHeartbeatBytes()), 15_000);
   return { bridge, heartbeatTimer };
 }
 

@@ -1,7 +1,10 @@
 import { existsSync, readdirSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+
+const execFileAsync = promisify(execFile);
 import { systemCredentialsAllowed } from "./consent.js";
 import { getCursorAccessTokenFromEnv, getTokenExpiry, refreshCursorToken } from "./oauth.js";
 
@@ -21,6 +24,7 @@ export interface CursorTokenResult {
 
 /**
  * Reads token from macOS Keychain (security CLI).
+ * Uses async execFile so Keychain reads don't block the event loop.
  */
 export async function getCursorKeychainToken(): Promise<CursorTokenResult | undefined> {
   if (platform() !== "darwin") return undefined;
@@ -28,26 +32,27 @@ export async function getCursorKeychainToken(): Promise<CursorTokenResult | unde
   let accessToken: string | undefined;
   let refreshToken: string | undefined;
 
-  try {
-    const rawAccess = execFileSync(
+  // Run both Keychain lookups concurrently — they are independent reads.
+  const [accessResult, refreshResult] = await Promise.allSettled([
+    execFileAsync(
       "security",
       ["find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 },
-    ).trim();
-    if (rawAccess) accessToken = rawAccess;
-  } catch {
-    // Keychain item not found or error
-  }
-
-  try {
-    const rawRefresh = execFileSync(
+      { encoding: "utf8", timeout: 2000 },
+    ),
+    execFileAsync(
       "security",
       ["find-generic-password", "-s", "cursor-refresh-token", "-a", "cursor-user", "-w"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 },
-    ).trim();
-    if (rawRefresh) refreshToken = rawRefresh;
-  } catch {
-    // Keychain item not found or error
+      { encoding: "utf8", timeout: 2000 },
+    ),
+  ]);
+
+  if (accessResult.status === "fulfilled") {
+    const raw = accessResult.value.stdout.trim();
+    if (raw) accessToken = raw;
+  }
+  if (refreshResult.status === "fulfilled") {
+    const raw = refreshResult.value.stdout.trim();
+    if (raw) refreshToken = raw;
   }
 
   if (accessToken && Date.now() < getTokenExpiry(accessToken)) {
@@ -66,11 +71,24 @@ export async function getCursorKeychainToken(): Promise<CursorTokenResult | unde
   return undefined;
 }
 
+// Cache the DatabaseSync constructor at module level so repeated vscdb lookups
+// don't pay the dynamic-import cost each time.
+let _databaseSyncCache:
+  | (new (
+      path: string,
+      options?: { readOnly?: boolean },
+    ) => { prepare(sql: string): { get(): unknown }; close(): void })
+  | null
+  | undefined = undefined;
+
 async function getDatabaseSync() {
+  if (_databaseSyncCache !== undefined) return _databaseSyncCache ?? undefined;
   try {
     const mod = await import("node:sqlite");
-    return mod.DatabaseSync;
+    _databaseSyncCache = mod.DatabaseSync as unknown as typeof _databaseSyncCache;
+    return _databaseSyncCache ?? undefined;
   } catch {
+    _databaseSyncCache = null;
     return undefined;
   }
 }
