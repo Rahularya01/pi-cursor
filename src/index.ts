@@ -41,15 +41,18 @@ import {
   setSystemCredentialsPolicy,
 } from "./diagnostics/index.js";
 import { redactSecrets } from "./utils/security.js";
+import { getCacheDir } from "./utils/cache-dir.js";
+import { supportsInProcessH2 } from "./client/h2-unary.js";
 import { formatCursorUsage, getCursorUsageSummary } from "./usage.js";
 import { getCursorClientVersion } from "./stream/config.js";
 import { formatDriftSummary, getDriftSignals, hasStrandingDrift } from "./stream/drift.js";
 import {
   cleanupSessionState,
   createCursorNativeStream,
+  discoverCursorCatalog,
   getCursorAgentUrl,
-  getCursorModels,
-  getCursorParameterizedModels,
+  readCachedCatalog,
+  type CursorCatalog,
   type CursorModel,
   type CursorModelParameter,
   type CursorParameterizedModel,
@@ -1261,8 +1264,11 @@ export default async function (pi: ExtensionAPI) {
     debugLogFile: isExtensionDebugEnabled() ? getExtensionDebugLogFilePath() : undefined,
   });
 
-  const startupModels = await discoverStartupModels();
-  register(pi, startupModels.rawModels, startupModels.parameterizedModels);
+  // Activation must not block on the network. Register the last-known-good
+  // catalog (or the bundled fallback) synchronously; pi calls refreshModels in
+  // the background and updates an open /model selector with the live list.
+  const startupCatalog = loadStartupCatalog();
+  register(pi, startupCatalog.rawModels, startupCatalog.parameterizedModels);
 
   pi.registerCommand("cursor.models", {
     description: "List Cursor runtime models registered by this provider",
@@ -1323,6 +1329,7 @@ export default async function (pi: ExtensionAPI) {
     handler: async (_args, ctx: ExtensionCommandContext) => {
       const d = getLastDiagnostics();
       const driftSignals = getDriftSignals();
+      const cachedCatalog = readCachedCatalog();
       const lines = [
         `provider=${CURSOR_PROVIDER_ID}`,
         `agentUrl=${getCursorAgentUrl()}`,
@@ -1331,6 +1338,14 @@ export default async function (pi: ExtensionAPI) {
         `systemCredentials=${d.systemCredentials || resolveSystemCredentialPolicy()}`,
         `lastResolvedRuntimeModel=${d.resolvedRuntimeModel || "none"}`,
         `availableModels=${d.availableModels || lastRegisteredModels.length || "none"}`,
+        `catalogCache=${
+          cachedCatalog
+            ? `${cachedCatalog.rawModels.length}+${cachedCatalog.parameterizedModels.length} models, age ${Math.round(
+                (Date.now() - cachedCatalog.savedAt) / 1000,
+              )}s`
+            : "none(using bundled fallback)"
+        }`,
+        `catalogCacheDir=${getCacheDir() || "unavailable"}`,
         `matchedModel=${d.matchedModelDebug || "none"}`,
         `lastEndpoint=${d.endpoint || "none"}`,
         `lastStatus=${d.status ?? "none"}`,
@@ -1350,6 +1365,7 @@ export default async function (pi: ExtensionAPI) {
         `lifecycleLog=${process.env.PI_CURSOR_LIFECYCLE_LOG || "$TMPDIR/pi-cursor-lifecycle.jsonl"}`,
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
+        `unaryTransport=${supportsInProcessH2() ? "in-process-h2" : "bridge-subprocess"}`,
         "runtimeCli=not-used",
         "proxyPath=removed",
         "commands=/cursor.models /cursor.usage /cursor.doctor",
@@ -1369,59 +1385,89 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  async function discoverStartupModels(): Promise<{
-    rawModels: CursorModel[];
-    parameterizedModels: CursorParameterizedModel[];
-  }> {
-    if (process.env.PI_OFFLINE) return { rawModels: FALLBACK_MODELS, parameterizedModels: [] };
-
-    let startupToken: { accessToken: string; source: CredentialSource } | undefined;
-    try {
-      startupToken = await getStartupCursorAccessToken();
-    } catch (err) {
-      debugExtensionLog("model_discovery.startup.token_failed", {
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    if (!startupToken) {
-      debugExtensionLog("model_discovery.startup.skipped", { reason: "no_cursor_oauth_token" });
-      return { rawModels: FALLBACK_MODELS, parameterizedModels: [] };
-    }
-
-    try {
-      currentToken = startupToken.accessToken;
-      currentTokenSource = startupToken.source;
-      const [discovered, parameterized] = await Promise.all([
-        getCursorModels(startupToken.accessToken),
-        getCursorParameterizedModels(startupToken.accessToken),
-      ]);
-      debugExtensionLog("model_discovery.startup", {
-        tokenSource: startupToken.source,
-        discoveredCount: discovered.length,
-        parameterizedCount: parameterized.length,
-      });
-      if (discovered.length > 0 || parameterized.length > 0) {
+  /**
+   * Synchronous startup catalog: the persisted result of the last successful
+   * discovery, falling back to the catalog bundled with the extension. No
+   * credential lookup and no network happens here — both used to sit on pi's
+   * critical path and cost several seconds per launch.
+   */
+  function loadStartupCatalog(): CursorCatalog {
+    if (!process.env.PI_OFFLINE) {
+      const cached = readCachedCatalog();
+      if (cached) {
+        debugExtensionLog("model_discovery.startup.cached", {
+          rawCount: cached.rawModels.length,
+          parameterizedCount: cached.parameterizedModels.length,
+          ageMs: Date.now() - cached.savedAt,
+        });
         return {
-          rawModels: discovered.length > 0 ? discovered : FALLBACK_MODELS,
-          parameterizedModels: parameterized,
+          rawModels: cached.rawModels.length > 0 ? cached.rawModels : FALLBACK_MODELS,
+          parameterizedModels: cached.parameterizedModels,
         };
       }
-    } catch (err) {
-      debugExtensionLog("model_discovery.startup.failed", {
-        tokenSource: startupToken.source,
-        message: err instanceof Error ? err.message : String(err),
-      });
     }
-
     return { rawModels: FALLBACK_MODELS, parameterizedModels: [] };
   }
 
-  function register(
-    pi: ExtensionAPI,
+  /**
+   * Live discovery. Returns undefined when nothing better than the currently
+   * registered catalog could be obtained, so callers keep what they have.
+   */
+  async function refreshCatalogFromNetwork(options?: {
+    signal?: AbortSignal;
+  }): Promise<CursorCatalog | undefined> {
+    if (process.env.PI_OFFLINE) return undefined;
+
+    let token: { accessToken: string; source: CredentialSource } | undefined;
+    try {
+      token = await getStartupCursorAccessToken();
+    } catch (err) {
+      debugExtensionLog("model_discovery.refresh.token_failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (!token) {
+      debugExtensionLog("model_discovery.refresh.skipped", { reason: "no_cursor_oauth_token" });
+      return undefined;
+    }
+
+    currentToken = token.accessToken;
+    currentTokenSource = token.source;
+    setLastTokenSource(token.source);
+
+    try {
+      const catalog = await discoverCursorCatalog(token.accessToken, { signal: options?.signal });
+      debugExtensionLog("model_discovery.refresh", {
+        tokenSource: token.source,
+        discoveredCount: catalog.rawModels.length,
+        parameterizedCount: catalog.parameterizedModels.length,
+      });
+      if (catalog.rawModels.length === 0 && catalog.parameterizedModels.length === 0) {
+        return undefined;
+      }
+      return {
+        rawModels: catalog.rawModels.length > 0 ? catalog.rawModels : FALLBACK_MODELS,
+        parameterizedModels: catalog.parameterizedModels,
+      };
+    } catch (err) {
+      debugExtensionLog("model_discovery.refresh.failed", {
+        tokenSource: token.source,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Process a catalog into pi model rows and refresh the routing lookups that
+   * `streamSimple` reads. Split out of `register` so refreshModels can publish
+   * a new catalog without re-registering the provider.
+   */
+  function applyModels(
     rawModels: CursorModel[],
     parameterizedModels: CursorParameterizedModel[] = [],
-  ) {
+  ): ProcessedModel[] {
     const augmentedModels = augmentCursorModels(rawModels, parameterizedModels);
     const processed = skipDedup
       ? augmentedModels.map((m) => ({ ...m, supportsEffort: false }) as ProcessedModel)
@@ -1435,6 +1481,15 @@ export default async function (pi: ExtensionAPI) {
     );
     noReasoningEffortByModelId = buildNoReasoningEffortLookup(processed);
     rawModelByEffortByModelId = buildRawModelLookup(processed);
+    return processed;
+  }
+
+  function register(
+    pi: ExtensionAPI,
+    rawModels: CursorModel[],
+    parameterizedModels: CursorParameterizedModel[] = [],
+  ) {
+    const processed = applyModels(rawModels, parameterizedModels);
 
     const streamSimple = createCursorNativeStream({
       getAccessToken,
@@ -1461,6 +1516,19 @@ export default async function (pi: ExtensionAPI) {
       api: CURSOR_NATIVE_API,
       streamSimple,
       models: processed.map(modelConfig),
+
+      // Pi calls this off the startup path (background refresh, /model open) and
+      // passes allowNetwork=false during cache-only initialization. Returning the
+      // current rows for those calls keeps activation free of any network work.
+      async refreshModels(context) {
+        if (!context.allowNetwork || context.signal?.aborted) {
+          return lastRegisteredModels.map(modelConfig);
+        }
+        const catalog = await refreshCatalogFromNetwork({ signal: context.signal });
+        if (!catalog) return lastRegisteredModels.map(modelConfig);
+        return applyModels(catalog.rawModels, catalog.parameterizedModels).map(modelConfig);
+      },
+
       oauth: {
         name: "Cursor",
 
@@ -1471,13 +1539,15 @@ export default async function (pi: ExtensionAPI) {
           currentToken = accessToken;
           currentTokenSource = "pi_oauth";
 
-          // Discover real models and re-register
-          const [discovered, parameterized] = await Promise.all([
-            getCursorModels(accessToken),
-            getCursorParameterizedModels(accessToken),
-          ]);
-          if (discovered.length > 0 || parameterized.length > 0) {
-            register(pi, discovered.length > 0 ? discovered : FALLBACK_MODELS, parameterized);
+          // Discover real models and re-register (also persists the catalog so
+          // the next launch starts from this list instead of the fallback).
+          const catalog = await discoverCursorCatalog(accessToken);
+          if (catalog.rawModels.length > 0 || catalog.parameterizedModels.length > 0) {
+            register(
+              pi,
+              catalog.rawModels.length > 0 ? catalog.rawModels : FALLBACK_MODELS,
+              catalog.parameterizedModels,
+            );
           }
 
           return {
@@ -1493,12 +1563,13 @@ export default async function (pi: ExtensionAPI) {
           currentTokenSource = "pi_oauth_refresh";
 
           // Discover real models on refresh too
-          const [discovered, parameterized] = await Promise.all([
-            getCursorModels(refreshed.access),
-            getCursorParameterizedModels(refreshed.access),
-          ]);
-          if (discovered.length > 0 || parameterized.length > 0) {
-            register(pi, discovered.length > 0 ? discovered : FALLBACK_MODELS, parameterized);
+          const catalog = await discoverCursorCatalog(refreshed.access);
+          if (catalog.rawModels.length > 0 || catalog.parameterizedModels.length > 0) {
+            register(
+              pi,
+              catalog.rawModels.length > 0 ? catalog.rawModels : FALLBACK_MODELS,
+              catalog.parameterizedModels,
+            );
           }
 
           return refreshed as OAuthCredentials;

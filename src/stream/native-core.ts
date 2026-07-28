@@ -100,11 +100,14 @@ export {
 } from "./message-parsing.js";
 export {
   callCursorUnaryRpc,
+  discoverCursorCatalog,
   getCursorModels,
   getCursorParameterizedModels,
   inferCursorContextWindow,
+  type CursorCatalog,
   type CursorModel,
 } from "./model-discovery.js";
+export { readCachedCatalog, writeCachedCatalog } from "./model-cache.js";
 import {
   activeBridges,
   cleanupBridge,

@@ -150,7 +150,9 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 | `PI_CURSOR_PROVIDER_DEBUG`                 | Enable verbose JSONL debug logging.                                                                                                                                                                                                                                                                          |
 | `PI_CURSOR_LIFECYCLE_LOG`                  | Always-on compact lifecycle log path (default: `$TMPDIR/pi-cursor-lifecycle.jsonl`).                                                                                                                                                                                                                         |
 | `CURSOR_USAGE_SESSION_TOKEN`               | Optional `WorkosCursorSessionToken` fallback cookie for `/cursor.usage`.                                                                                                                                                                                                                                     |
-| `PI_OFFLINE`                               | Skip live model discovery on startup.                                                                                                                                                                                                                                                                        |
+| `PI_OFFLINE`                               | Skip live model discovery entirely; always use the bundled fallback catalog.                                                                                                                                                                                                                                 |
+| `PI_CURSOR_CACHE_DIR`                      | Where the model catalog and refresh back-off are cached (default: `$XDG_CACHE_HOME/pi-cursor` or `~/.cache/pi-cursor`). Delete it to force a full rediscovery.                                                                                                                                               |
+| `PI_CURSOR_UNARY_BRIDGE`                   | `1` forces unary RPCs (model discovery) through the h2-bridge subprocess instead of the in-process HTTP/2 client. Diagnostic escape hatch.                                                                                                                                                                   |
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Silence safety net: ms with **no upstream progress of any kind** before recover/retry/error. **Default `120000` (2 min)**; `0` disables (turns run unbounded). Any server signal resets it and it is paused during tool execution, so long reasoning/tools are unaffected — it only fires on a genuine park. |
 | `PI_CURSOR_RESUME_IDLE_TIMEOUT_MS`         | Same silence safety net after tool-result resume. **Default `120000` (2 min)**; `0` disables.                                                                                                                                                                                                                |
 | `PI_CURSOR_STREAM_IDLE_MAX_RETRIES`        | Auto-recovery attempts after a silence timeout before erroring (skipped once any text/thinking was streamed, to avoid duplicate output). **Default `2`**; `0` disables.                                                                                                                                      |
@@ -172,6 +174,7 @@ Stream modules are split under `src/stream/`:
 | `images.ts`            | Image decode + Cursor CLI format and size validation                  |
 | `model-routing.ts`     | Effort suffix / requested model resolution                            |
 | `model-discovery.ts`   | `GetUsableModels` unary RPCs + per-token model cache                  |
+| `model-cache.ts`       | Cross-process catalog cache read synchronously at startup             |
 | `context-normalize.ts` | Context-mode side-channel folding                                     |
 | `message-parsing.ts`   | Pi/OpenAI message list → Cursor turn structures                       |
 | `pi-adapter.ts`        | Pi context/model types ↔ OpenAI-shaped request, usage accounting      |
@@ -188,6 +191,18 @@ Stream modules are split under `src/stream/`:
 Native `streamSimple` is the only chat path. The OpenAI-compatible local proxy that
 used to sit alongside it was removed in favour of a single code path.
 
+### Startup
+
+Extension activation does no network and no credential lookup. Models are registered
+synchronously from the persisted catalog (`PI_CURSOR_CACHE_DIR`), falling back to the
+catalog bundled in `src/models/catalog.json` on a first-ever launch. Live discovery runs
+through pi's `refreshModels` hook — off the critical path, in the background, and again
+whenever `/model` is opened — then persists its result for the next launch.
+
+Unary RPCs (both discovery calls) use an in-process `node:http2` client. The h2-bridge
+subprocess is still used for the bidirectional chat stream, where Bun's `node:http2` is
+unusable, and remains the automatic fallback if the in-process client fails.
+
 `src/proto/agent_pb.ts` is a large generated Connect/protobuf surface used by the wire
 layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
 [`proto/README.md`](proto/README.md)) when Cursor changes the agent schema.
@@ -201,6 +216,8 @@ layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
 - **Stuck / dies after a few minutes of work:** v1.2.2 answers all Cursor `InteractionQuery` permission prompts (web search / ask-question / etc.) that previously parked the stream. Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
 - **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
+- **Slow startup:** Activation should be a few milliseconds. `/cursor.doctor` reports `catalogCache` (`none(using bundled fallback)` means every launch is starting cold — check that `catalogCacheDir` is writable) and `unaryTransport`. A stale Cursor CLI keychain entry no longer blocks startup: a refresh token that fails is remembered for 10 minutes so it is not retried on the next launch, and any valid locally stored token is always preferred over a network exchange.
+- **Model list looks stale:** It is the last successfully discovered catalog. Open `/model` to trigger a background refresh, or delete `PI_CURSOR_CACHE_DIR` to force full rediscovery.
 
 ## Development
 

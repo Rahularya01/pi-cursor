@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.4.0] - 2026-07-29
+
+### Fixed
+
+- **Extension initialization took 10–15 seconds.** Activation now completes in **3–12ms** (measured; previously ~6.8s of blocking work before pi could continue). Three independent causes, all on the critical path:
+  - **A doomed token refresh on every launch (~2.6s).** The credential cascade tried the macOS Keychain first and, finding the Cursor CLI's access token expired, POSTed a refresh that could never succeed — the CLI writes the _same expired token_ into `cursor-refresh-token`, so `exchange_user_api_key` answers `Invalid User API Key` — before falling through to the Cursor IDE database, which resolved in 2ms. Both system sources are now read concurrently and every locally stored token is checked before any network exchange, so a valid token is never two milliseconds away behind a failing one. Resolution: **2762ms → 214ms**.
+  - **Blocking model discovery (~4s).** `await discoverStartupModels()` ran two unary RPCs before the provider was registered at all. Discovery moved to pi's `refreshModels(context)` hook, which pi calls in the background and again whenever `/model` is opened; `allowNetwork:false` and aborted signals return the current rows without touching the network.
+  - **Nothing survived the process.** The model cache was in-memory with a 5-minute TTL, so every new pi process re-paid full discovery. The catalog is now persisted to disk and read synchronously at startup.
+- v1.3.4 added the startup `await` specifically so the full live catalog (Grok, Luna, Kimi) was registered upfront. That still holds — the persisted catalog means launches register the real discovered list (147 models here), not the bundled fallback — but it no longer costs a blocking round-trip.
+
+### Added
+
+- **Persistent model catalog cache** (`src/stream/model-cache.ts`) at `$XDG_CACHE_HOME/pi-cursor` (override with `PI_CURSOR_CACHE_DIR`). Stores the raw Cursor model shapes rather than pi `ModelConfig` rows, because the effort/max-mode routing `streamSimple` depends on does not survive that conversion. Version-stamped, 30-day max age, and tolerant of a corrupt or unwritable cache.
+- **Refresh back-off** (`src/auth/refresh-guard.ts`). A refresh token that fails is remembered for 10 minutes and not retried, so a permanently-stale Cursor CLI keychain entry costs nothing on subsequent launches. The back-off is disk-backed and survives restarts; only a SHA-256 prefix is stored, never the token.
+- **In-process HTTP/2 for unary RPCs** (`src/client/h2-unary.ts`). Model discovery no longer spawns a child process per call, saving ~1.5s of local overhead across the two RPCs. The h2-bridge subprocess still carries the bidirectional chat stream, where Bun's `node:http2` is unusable, and remains the automatic fallback if the in-process client fails. Force the old path with `PI_CURSOR_UNARY_BRIDGE=1`.
+- `/cursor.doctor` reports `catalogCache`, `catalogCacheDir`, and `unaryTransport`.
+
+### Changed
+
+- `PI_OFFLINE` now skips live model discovery entirely rather than only skipping it at startup.
+- `tokenSource` starts as `none` and fills in on the first stream or background refresh, since activation no longer resolves a credential. A `/cursor.doctor` run in the first second of a session may show `tokenSource=none`.
+
 ## [1.3.2] - 2026-07-26
 
 ### Fixed

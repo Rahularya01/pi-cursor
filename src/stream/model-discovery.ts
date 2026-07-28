@@ -19,8 +19,10 @@ import {
   type CursorModelParameter,
   type CursorParameterizedModel,
 } from "../client/cursor-wire.js";
+import { callUnaryOverH2, supportsInProcessH2 } from "../client/h2-unary.js";
 import { getBridgeFactory } from "./bridge-session.js";
 import { getCursorAgentUrl } from "./config.js";
+import { writeCachedCatalog } from "./model-cache.js";
 
 export async function callCursorUnaryRpc(options: {
   accessToken: string;
@@ -28,7 +30,29 @@ export async function callCursorUnaryRpc(options: {
   requestBody: Uint8Array;
   url?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<{ body: Uint8Array; exitCode: number; timedOut: boolean }> {
+  // Prefer the in-process HTTP/2 client: it skips a child-process spawn, a
+  // second TLS handshake and the bridge's exit flush. Any transport failure
+  // falls through to the bridge, which remains the only path on Bun.
+  if (supportsInProcessH2()) {
+    try {
+      const result = await callUnaryOverH2({
+        accessToken: options.accessToken,
+        rpcPath: options.rpcPath,
+        requestBody: options.requestBody,
+        url: options.url,
+        timeoutMs: options.timeoutMs,
+        signal: options.signal,
+      });
+      const ok = result.status >= 200 && result.status < 300;
+      return { body: result.body, exitCode: ok ? 0 : 1, timedOut: false };
+    } catch {
+      if (options.signal?.aborted) return { body: new Uint8Array(0), exitCode: 1, timedOut: true };
+      // Fall back to the child-process bridge below.
+    }
+  }
+
   const bridge = getBridgeFactory()({
     accessToken: options.accessToken,
     rpcPath: options.rpcPath,
@@ -92,7 +116,10 @@ function tokenCacheHash(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
 }
 
-export async function getCursorModels(apiKey: string): Promise<CursorModel[]> {
+export async function getCursorModels(
+  apiKey: string,
+  options?: { signal?: AbortSignal },
+): Promise<CursorModel[]> {
   const tokenHash = tokenCacheHash(apiKey);
   if (cachedModels?.tokenHash === tokenHash && Date.now() < cachedModels.expiresAt)
     return cachedModels.models;
@@ -104,6 +131,7 @@ export async function getCursorModels(apiKey: string): Promise<CursorModel[]> {
       rpcPath: "/agent.v1.AgentService/GetUsableModels",
       requestBody,
       url: getCursorAgentUrl(),
+      signal: options?.signal,
     });
     if (!response.timedOut && response.exitCode === 0 && response.body.length > 0) {
       let decoded: any = null;
@@ -160,6 +188,7 @@ function decodeConnectUnaryBody(payload: Uint8Array): Uint8Array | null {
 
 export async function getCursorParameterizedModels(
   apiKey: string,
+  options?: { signal?: AbortSignal },
 ): Promise<CursorParameterizedModel[]> {
   const tokenHash = tokenCacheHash(apiKey);
   if (
@@ -172,6 +201,7 @@ export async function getCursorParameterizedModels(
       accessToken: apiKey,
       rpcPath: "/aiserver.v1.AiService/AvailableModels",
       requestBody: encodeAvailableModelsRequest(),
+      signal: options?.signal,
     });
     if (response.timedOut || response.exitCode !== 0 || response.body.length === 0) return [];
     const body = decodeConnectUnaryBody(response.body) ?? response.body;
@@ -185,6 +215,32 @@ export async function getCursorParameterizedModels(
     );
     return [];
   }
+}
+
+export interface CursorCatalog {
+  rawModels: CursorModel[];
+  parameterizedModels: CursorParameterizedModel[];
+}
+
+/**
+ * Run both discovery RPCs and persist the result for the next process.
+ *
+ * This is the only path that writes the cross-process catalog cache, so a
+ * partial failure (one RPC empty) still records whatever did come back rather
+ * than leaving the next launch on the bundled fallback list.
+ */
+export async function discoverCursorCatalog(
+  apiKey: string,
+  options?: { signal?: AbortSignal },
+): Promise<CursorCatalog> {
+  const [rawModels, parameterizedModels] = await Promise.all([
+    getCursorModels(apiKey, options),
+    getCursorParameterizedModels(apiKey, options),
+  ]);
+  if (rawModels.length > 0 || parameterizedModels.length > 0) {
+    writeCachedCatalog({ tokenHash: tokenCacheHash(apiKey), rawModels, parameterizedModels });
+  }
+  return { rawModels, parameterizedModels };
 }
 
 export function inferCursorContextWindow(id: string, name: string): number {

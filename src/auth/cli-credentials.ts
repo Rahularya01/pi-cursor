@@ -7,6 +7,7 @@ import { join } from "node:path";
 const execFileAsync = promisify(execFile);
 import { systemCredentialsAllowed } from "./consent.js";
 import { getCursorAccessTokenFromEnv, getTokenExpiry, refreshCursorToken } from "./oauth.js";
+import { isRefreshKnownBad, markRefreshFailed, markRefreshSucceeded } from "./refresh-guard.js";
 
 export type CredentialSource =
   | "env"
@@ -22,15 +23,42 @@ export interface CursorTokenResult {
   source: CredentialSource;
 }
 
-/**
- * Reads token from macOS Keychain (security CLI).
- * Uses async execFile so Keychain reads don't block the event loop.
- */
-export async function getCursorKeychainToken(): Promise<CursorTokenResult | undefined> {
-  if (platform() !== "darwin") return undefined;
+/** Raw token pair as stored by the Cursor CLI or IDE, before any validation. */
+interface StoredTokens {
+  accessToken?: string;
+  refreshToken?: string;
+}
 
-  let accessToken: string | undefined;
-  let refreshToken: string | undefined;
+function isUsable(token: string | undefined): token is string {
+  if (!token) return false;
+  try {
+    return Date.now() < getTokenExpiry(token);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Exchange a refresh token, honouring the failure back-off.
+ *
+ * Returns undefined without touching the network when this exact token failed
+ * recently — a stale Cursor CLI entry otherwise costs seconds on every launch.
+ */
+async function tryRefresh(refreshToken: string | undefined): Promise<string | undefined> {
+  if (!refreshToken || isRefreshKnownBad(refreshToken)) return undefined;
+  try {
+    const refreshed = await refreshCursorToken(refreshToken);
+    markRefreshSucceeded(refreshToken);
+    return refreshed.access;
+  } catch {
+    markRefreshFailed(refreshToken);
+    return undefined;
+  }
+}
+
+/** Reads the raw Cursor CLI token pair from the macOS Keychain. */
+async function readKeychainTokens(): Promise<StoredTokens> {
+  if (platform() !== "darwin") return {};
 
   // Run both Keychain lookups concurrently — they are independent reads.
   const [accessResult, refreshResult] = await Promise.allSettled([
@@ -46,29 +74,27 @@ export async function getCursorKeychainToken(): Promise<CursorTokenResult | unde
     ),
   ]);
 
+  const tokens: StoredTokens = {};
   if (accessResult.status === "fulfilled") {
     const raw = accessResult.value.stdout.trim();
-    if (raw) accessToken = raw;
+    if (raw) tokens.accessToken = raw;
   }
   if (refreshResult.status === "fulfilled") {
     const raw = refreshResult.value.stdout.trim();
-    if (raw) refreshToken = raw;
+    if (raw) tokens.refreshToken = raw;
   }
+  return tokens;
+}
 
-  if (accessToken && Date.now() < getTokenExpiry(accessToken)) {
-    return { accessToken, source: "cli_keychain" };
-  }
-
-  if (refreshToken) {
-    try {
-      const refreshed = await refreshCursorToken(refreshToken);
-      return { accessToken: refreshed.access, source: "cli_keychain_refresh" };
-    } catch {
-      // Refresh failed
-    }
-  }
-
-  return undefined;
+/**
+ * Reads token from macOS Keychain (security CLI).
+ * Uses async execFile so Keychain reads don't block the event loop.
+ */
+export async function getCursorKeychainToken(): Promise<CursorTokenResult | undefined> {
+  const { accessToken, refreshToken } = await readKeychainTokens();
+  if (isUsable(accessToken)) return { accessToken, source: "cli_keychain" };
+  const refreshed = await tryRefresh(refreshToken);
+  return refreshed ? { accessToken: refreshed, source: "cli_keychain_refresh" } : undefined;
 }
 
 // Cache the DatabaseSync constructor at module level so repeated vscdb lookups
@@ -93,12 +119,10 @@ async function getDatabaseSync() {
   }
 }
 
-/**
- * Reads token from Cursor IDE state.vscdb.
- */
-export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefined> {
+/** Reads the raw Cursor IDE token pair from state.vscdb. */
+async function readVscdbTokens(): Promise<StoredTokens> {
   const DatabaseSyncClass = await getDatabaseSync();
-  if (!DatabaseSyncClass) return undefined;
+  if (!DatabaseSyncClass) return {};
 
   const dbPaths: string[] = [];
   const home = homedir();
@@ -130,6 +154,10 @@ export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefin
     }
   }
 
+  // Prefer the first profile that yields a usable access token; otherwise keep
+  // the first refresh token seen so a single expired profile still has a path
+  // back to a live session.
+  const fallback: StoredTokens = {};
   for (const dbPath of dbPaths) {
     try {
       const db = new DatabaseSyncClass(dbPath, { readOnly: true });
@@ -147,24 +175,24 @@ export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefin
       const refreshToken =
         typeof refreshRow?.value === "string" ? refreshRow.value.trim() : undefined;
 
-      if (accessToken && Date.now() < getTokenExpiry(accessToken)) {
-        return { accessToken, source: "ide_vscdb" };
-      }
-
-      if (refreshToken) {
-        try {
-          const refreshed = await refreshCursorToken(refreshToken);
-          return { accessToken: refreshed.access, source: "ide_vscdb_refresh" };
-        } catch {
-          // Refresh failed
-        }
-      }
+      if (isUsable(accessToken)) return { accessToken, refreshToken };
+      if (!fallback.refreshToken && refreshToken) fallback.refreshToken = refreshToken;
+      if (!fallback.accessToken && accessToken) fallback.accessToken = accessToken;
     } catch {
       // Database missing or unreadable
     }
   }
+  return fallback;
+}
 
-  return undefined;
+/**
+ * Reads token from Cursor IDE state.vscdb.
+ */
+export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefined> {
+  const { accessToken, refreshToken } = await readVscdbTokens();
+  if (isUsable(accessToken)) return { accessToken, source: "ide_vscdb" };
+  const refreshed = await tryRefresh(refreshToken);
+  return refreshed ? { accessToken: refreshed, source: "ide_vscdb_refresh" } : undefined;
 }
 
 /**
@@ -172,6 +200,11 @@ export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefin
  * 1. CURSOR_ACCESS_TOKEN env var
  * 2. macOS Keychain (Cursor CLI) — gated by system-credential consent
  * 3. Cursor IDE state.vscdb — gated by system-credential consent
+ *
+ * Both system sources are read concurrently and every *local* token is checked
+ * before any network exchange is attempted. That ordering matters: a stale CLI
+ * keychain entry used to trigger a doomed ~2.6s refresh on the startup path
+ * even though the IDE database held a valid token two milliseconds away.
  *
  * Opt out of Keychain/vscdb scraping with PI_CURSOR_SYSTEM_CREDENTIALS=0.
  */
@@ -181,7 +214,7 @@ export async function resolveSystemCursorAccessToken(options?: {
   const envToken = getCursorAccessTokenFromEnv();
   if (envToken) {
     // Env tokens cannot be refreshed here; still prefer them when present.
-    if (!options?.forceRefresh || Date.now() < getTokenExpiry(envToken)) {
+    if (!options?.forceRefresh || isUsable(envToken)) {
       return { accessToken: envToken, source: "env" };
     }
   }
@@ -190,22 +223,29 @@ export async function resolveSystemCursorAccessToken(options?: {
     return undefined;
   }
 
-  // forceRefresh: skip unexpired access-token short-circuit by re-reading sources
-  // (keychain/vscdb helpers already refresh when access is expired).
-  const keychainToken = await getCursorKeychainToken();
-  if (keychainToken) {
-    if (!options?.forceRefresh || keychainToken.source.endsWith("_refresh")) {
-      return keychainToken;
-    }
-    // Access still valid but forceRefresh requested — try refresh path via re-read.
-    // Keychain helper returns unexpired access first; force path falls through to vscdb/oauth.
+  const [keychain, vscdb] = await Promise.all([readKeychainTokens(), readVscdbTokens()]);
+
+  const cached: CursorTokenResult | undefined = isUsable(keychain.accessToken)
+    ? { accessToken: keychain.accessToken, source: "cli_keychain" }
+    : isUsable(vscdb.accessToken)
+      ? { accessToken: vscdb.accessToken, source: "ide_vscdb" }
+      : undefined;
+
+  // Fast path: a locally stored token is still valid, so no network at all.
+  if (cached && !options?.forceRefresh) return cached;
+
+  const keychainRefreshed = await tryRefresh(keychain.refreshToken);
+  if (keychainRefreshed) {
+    return { accessToken: keychainRefreshed, source: "cli_keychain_refresh" };
   }
 
-  const vscdbToken = await getCursorVscdbToken();
-  if (vscdbToken) return vscdbToken;
+  // Skip a second identical exchange when the CLI mirrored its token into the IDE.
+  if (vscdb.refreshToken && vscdb.refreshToken !== keychain.refreshToken) {
+    const vscdbRefreshed = await tryRefresh(vscdb.refreshToken);
+    if (vscdbRefreshed) return { accessToken: vscdbRefreshed, source: "ide_vscdb_refresh" };
+  }
 
-  // If forceRefresh and we only had unexpired keychain access, return it as last resort.
-  if (keychainToken) return keychainToken;
-
-  return undefined;
+  // forceRefresh could not improve on what we already had — keep it rather than
+  // reporting "not logged in" for a token that is still valid.
+  return cached;
 }
