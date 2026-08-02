@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.7] - 2026-08-02
+
+### Fixed
+
+- **Pi Lens automated context displaced the real user prompt.** Messages explicitly labeled `[pi-lens automated context — not a user request]` (and other `[pi-lens automated …]` variants) were not recognized as provider infrastructure. When appended after `hi`, Pi Cursor treated `hi` as history and the Pi Lens file-safety notice as the active task, causing replies such as “I'll re-read tests/request-size.test.ts before editing it.” These notices now move into `<provider_context>` while the actual user text remains the live turn.
+- Handles both separate-message and concatenated forms (`hi\n\n[pi-lens automated …]`) with regression coverage derived from the durable journal payload.
+
 ## [1.4.6] - 2026-08-02
 
 ### Fixed

@@ -8,6 +8,12 @@ import {
 } from "../src/stream/context-normalize.js";
 import { parseMessages } from "../src/stream/message-parsing.js";
 
+const piLensInjection =
+  "[pi-lens automated context — not a user request] pi-lens: 1 file(s) were autofixed " +
+  "by another pi-lens instance (e.g. a subagent's): " +
+  "/Users/rahularya/Projects/tools/pi-cursor/tests/request-size.test.ts — working-tree " +
+  "changes to these are expected; re-read before editing.";
+
 const injection = [
   "context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_execute_file > ctx_search.",
   "Read/edit files → ctx_execute_file. Multi-command research → ctx_batch_execute.",
@@ -23,6 +29,12 @@ describe("context-mode normalization", () => {
     expect(isContextModeSideChannelText(injection)).toBe(true);
     expect(isContextModeSideChannelText("[context] session resume block")).toBe(true);
     expect(isContextModeSideChannelText("<compaction summary>prior work</compaction>")).toBe(true);
+    expect(isContextModeSideChannelText(piLensInjection)).toBe(true);
+    expect(
+      isContextModeSideChannelText(
+        "[pi-lens automated check — not a user request] Address blockers before continuing",
+      ),
+    ).toBe(true);
     expect(isContextModeSideChannelText("please implement dual auth")).toBe(false);
     expect(isPureContextModeSideChannelText(injection)).toBe(true);
     expect(isPureContextModeSideChannelText(`hi\n\n${injection}`)).toBe(false);
@@ -87,6 +99,25 @@ describe("context-mode normalization", () => {
     const users = normalized.filter((m) => m.role === "user");
     expect(users).toHaveLength(1);
     expect(String(users[0]?.content)).toMatch(/please explain/);
+  });
+
+  it("keeps pi-lens automated context out of the active user turn", () => {
+    for (const userMessages of [
+      [
+        { role: "user" as const, content: "hi" },
+        { role: "user" as const, content: piLensInjection },
+      ],
+      [{ role: "user" as const, content: `hi\n\n${piLensInjection}` }],
+    ]) {
+      const parsed = parseMessages([
+        { role: "system", content: "You are Pi." },
+        ...userMessages,
+      ] as any);
+      expect(parsed.userText).toBe("hi");
+      expect(parsed.turns).toHaveLength(0);
+      expect(parsed.systemPrompt).toContain(piLensInjection);
+      expect(parsed.systemPrompt).toMatch(/latest user message is the only task/i);
+    }
   });
 
   it("drops empty hierarchy + mode-only session_state side channels", () => {

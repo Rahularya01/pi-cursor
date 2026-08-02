@@ -33,7 +33,7 @@ const CONTEXT_MODE_SIDE_CHANNEL_PRIORITY =
 
 /** Markers that begin a side-channel block inside an otherwise normal user turn. */
 const SIDE_CHANNEL_BLOCK_START =
-  /(?:^|\n)[ \t]*(?:context-mode active\b|\[context\]|<session_state\b|<session_resume\b|<active_memory\b|<compaction\b|<session_mode\b|Hierarchy:\s*ctx_batch_execute)/i;
+  /(?:^|\n)[ \t]*(?:context-mode active\b|\[context\]|\[pi-lens automated\b|<session_state\b|<session_resume\b|<active_memory\b|<compaction\b|<session_mode\b|Hierarchy:\s*ctx_batch_execute)/i;
 
 export function textContent(content: OpenAIMessage["content"]): string {
   if (content == null) return "";
@@ -60,6 +60,7 @@ export function isContextModeSideChannelText(text: string): boolean {
   return (
     /^context-mode active\b/i.test(t) ||
     /^\[context\]/i.test(t) ||
+    /(?:^|\n)[ \t]*\[pi-lens automated\b/i.test(t) ||
     t.includes("<session_state") ||
     t.includes("<session_resume") ||
     t.includes("<active_memory>") ||
@@ -133,6 +134,7 @@ export function splitUserTextAndSideChannel(text: string): {
   if (
     /^context-mode active\b/i.test(raw.trim()) ||
     /^\[context\]/i.test(raw.trim()) ||
+    /^\[pi-lens automated\b/i.test(raw.trim()) ||
     /^<session_state\b/i.test(raw.trim()) ||
     /^<session_resume\b/i.test(raw.trim()) ||
     /^<active_memory\b/i.test(raw.trim()) ||
