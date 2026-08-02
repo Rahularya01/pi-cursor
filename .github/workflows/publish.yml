@@ -39,12 +39,12 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
 
           if [ "$TAG" != "$VERSION" ]; then
-            echo "::error::Git tag v$TAG does not match package.json version $VERSION"
+            echo "::error::tag v$TAG != package.json $VERSION"
             exit 1
           fi
 
           if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-            echo "Package ${NAME}@${VERSION} is already on npm — skipping publish."
+            echo "${NAME}@${VERSION} already on npm; skip."
             exit 0
           fi
 
