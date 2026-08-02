@@ -1271,6 +1271,24 @@ function writeNativeStream(
 
     if (cancelled) return;
     const stored = conversationStates.get(convKey);
+    const finalizeSuccessfulTurn = () => {
+      emitFlushed();
+      if (stored) {
+        if (checkpointRef.current) {
+          commitStoredCheckpoint(
+            stored,
+            checkpointRef.current,
+            blobStore,
+            completedTurns,
+            currentTurn,
+          );
+          debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
+        } else {
+          mergeBlobStore(stored, blobStore);
+        }
+      }
+      if (!writer.closed) writer.done("stop", state);
+    };
     if (streamError) {
       if (mcpExecReceived) {
         const midPauseResult = handleBridgeCloseMidPause({
@@ -1310,24 +1328,7 @@ function writeNativeStream(
         goawayAfterComplete,
       });
       setLastStreamEvent("goaway_treated_as_complete");
-      if (!mcpExecReceived) {
-        emitFlushed();
-        if (stored) {
-          if (checkpointRef.current) {
-            commitStoredCheckpoint(
-              stored,
-              checkpointRef.current,
-              blobStore,
-              completedTurns,
-              currentTurn,
-            );
-            debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
-          } else {
-            mergeBlobStore(stored, blobStore);
-          }
-        }
-        if (!writer.closed) writer.done("stop", state);
-      }
+      if (!mcpExecReceived) finalizeSuccessfulTurn();
       removeActiveBridge(bridgeKey);
       return;
     }
@@ -1408,22 +1409,7 @@ function writeNativeStream(
     }
 
     if (!mcpExecReceived) {
-      emitFlushed();
-      if (stored) {
-        if (checkpointRef.current) {
-          commitStoredCheckpoint(
-            stored,
-            checkpointRef.current,
-            blobStore,
-            completedTurns,
-            currentTurn,
-          );
-          debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
-        } else {
-          mergeBlobStore(stored, blobStore);
-        }
-      }
-      writer.done("stop", state);
+      finalizeSuccessfulTurn();
     } else {
       const midPauseResult = handleBridgeCloseMidPause({
         stored,

@@ -106,6 +106,7 @@ export function interactionUpdateCountsAsProgress(
   if (updateCase === "heartbeat") return true;
   if (updateCase === "turnEnded") return true;
   if (updateCase === "stepStarted" || updateCase === "stepCompleted") return true;
+  if (updateCase === "shellOutputDelta" || updateCase === "userMessageAppended") return true;
   if (
     updateCase === "summary" ||
     updateCase === "summaryStarted" ||

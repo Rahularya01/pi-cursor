@@ -3,10 +3,12 @@ import { canCompleteAfterGoaway, interactionUpdateCountsAsProgress } from "../sr
 import { isRetriableGoawayMessage } from "../src/stream/protocol.js";
 
 describe("GOAWAY after turnEnded", () => {
-  it("treats turnEnded and stepCompleted as idle-watchdog progress", () => {
+  it("treats turnEnded and related lifecycle updates as idle-watchdog progress", () => {
     expect(interactionUpdateCountsAsProgress("turnEnded")).toBe(true);
     expect(interactionUpdateCountsAsProgress("stepCompleted")).toBe(true);
     expect(interactionUpdateCountsAsProgress("stepStarted")).toBe(true);
+    expect(interactionUpdateCountsAsProgress("shellOutputDelta")).toBe(true);
+    expect(interactionUpdateCountsAsProgress("userMessageAppended")).toBe(true);
   });
 
   it("recognizes Cursor's retriable GOAWAY connect error", () => {

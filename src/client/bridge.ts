@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve as pathResolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getCursorClientVersion } from "../stream/config.js";
 
 const CURSOR_API_URL = "https://api2.cursor.sh";
 const CONNECT_END_STREAM_FLAG = 0b00000010;
@@ -61,7 +62,7 @@ export function spawnBridge(
     rpcPath: options.rpcPath,
     url: options.url ?? CURSOR_API_URL,
     unary: options.unary ?? false,
-    cursorClientVersion: process.env.PI_CURSOR_CLIENT_VERSION || "cli-2026.07.23-e383d2b",
+    cursorClientVersion: getCursorClientVersion(),
   });
   const proc = spawn(process.execPath, [BRIDGE_PATH], {
     // Capture stderr so bridge deaths (HTTP/2 errors, panics) are diagnosable.
