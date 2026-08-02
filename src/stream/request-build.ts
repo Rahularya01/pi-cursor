@@ -66,37 +66,53 @@ export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS):
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
+const SCHEMA_ANNOTATION_KEYS = new Set([
+  "description",
+  "title",
+  "examples",
+  "default",
+  "$comment",
+  "$schema",
+  "$id",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+
+/**
+ * Remove prose-only JSON Schema annotations while preserving the executable
+ * contract: property names, types, required fields, unions, enums and numeric /
+ * string constraints. Parameter descriptions are the dominant MCP token cost;
+ * the function-level description still tells the model when to choose a tool.
+ */
 function slimJsonSchema(value: unknown, depth = 0): unknown {
-  if (value == null || depth > 8) return value;
-  if (Array.isArray(value)) {
-    // Huge enums are pure token burn for the model.
-    if (value.every((item) => typeof item === "string") && value.length > 24) {
-      return value.slice(0, 24);
-    }
-    return value.map((item) => slimJsonSchema(item, depth + 1));
-  }
+  if (value == null || depth > 12) return value;
+  if (Array.isArray(value)) return value.map((item) => slimJsonSchema(item, depth + 1));
   if (typeof value !== "object") return value;
+
   const input = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(input)) {
-    if (key === "description" && typeof child === "string") {
-      out[key] = child.length > 120 ? `${child.slice(0, 117)}...` : child;
-      continue;
-    }
-    if (key === "examples" || key === "default" || key === "$comment") continue;
+    if (SCHEMA_ANNOTATION_KEYS.has(key) || child === undefined) continue;
+    if (key === "additionalProperties" && child === true) continue;
+    if (key === "required" && Array.isArray(child) && child.length === 0) continue;
     out[key] = slimJsonSchema(child, depth + 1);
   }
   return out;
 }
 
-/** Truncate tool prose/schemas for the Cursor MCP tool surface. */
+function conciseToolDescription(description: string): string {
+  const normalized = description.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 120) return normalized;
+  const firstSentence = normalized.match(/^.{24,117}?[.!?](?:\s|$)/)?.[0]?.trim();
+  return firstSentence || `${normalized.slice(0, 117)}...`;
+}
+
+/** Compact tool prose/schemas for the Cursor MCP tool surface. */
 export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[] {
   if (!isSlimToolsEnabled()) return tools;
   return tools.map((tool) => {
     const fn = tool.function;
-    const description = (fn.description || "").trim();
-    const slimDescription =
-      description.length > 160 ? `${description.slice(0, 157)}...` : description;
     const parameters =
       fn.parameters && typeof fn.parameters === "object"
         ? (slimJsonSchema(fn.parameters) as Record<string, unknown>)
@@ -105,7 +121,7 @@ export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[
       ...tool,
       function: {
         ...fn,
-        description: slimDescription,
+        description: conciseToolDescription(fn.description || ""),
         ...(parameters ? { parameters } : {}),
       },
     };
@@ -152,6 +168,7 @@ export function summarizeRequestSize(input: {
   mcpSchemaBytes: number;
   requestBytes: number;
   blobBytes: number;
+  wireBytes: number;
   turnCount: number;
   approxInputTokens: number;
 } {
@@ -162,13 +179,15 @@ export function summarizeRequestSize(input: {
     mcpSchemaBytes += tool.inputSchema?.byteLength ?? 0;
     mcpSchemaBytes += (tool.description?.length ?? 0) + (tool.name?.length ?? 0);
   }
+  // `toolJsonChars` reports the raw Pi surface for comparison only. Do not add
+  // it (or mcpSchemaBytes) to the estimate: the encoded schemas already live in
+  // requestBytes, and the system/conversation content already lives in blobs.
   const toolJsonChars = JSON.stringify(input.tools).length;
   const systemChars = input.systemPrompt.length;
   const userChars = input.userText.length;
+  const wireBytes = input.requestBytes.byteLength + blobBytes;
   // Rough UTF-8/Latin heuristic used only for diagnostics, not billing.
-  const approxInputTokens = Math.round(
-    (systemChars + userChars + toolJsonChars + mcpSchemaBytes + blobBytes) / 4,
-  );
+  const approxInputTokens = Math.round(wireBytes / 4);
   return {
     systemChars,
     userChars,
@@ -177,6 +196,7 @@ export function summarizeRequestSize(input: {
     mcpSchemaBytes,
     requestBytes: input.requestBytes.byteLength,
     blobBytes,
+    wireBytes,
     turnCount: input.turnCount ?? 0,
     approxInputTokens,
   };

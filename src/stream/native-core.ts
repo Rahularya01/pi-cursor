@@ -876,7 +876,7 @@ async function handleCursorNativeRequest(
     `approxTokens=${size.approxInputTokens} systemChars=${size.systemChars} ` +
     `userChars=${size.userChars} tools=${size.toolCount} toolJsonChars=${size.toolJsonChars} ` +
     `mcpSchemaBytes=${size.mcpSchemaBytes} requestBytes=${size.requestBytes} ` +
-    `blobBytes=${size.blobBytes} turns=${size.turnCount}`;
+    `blobBytes=${size.blobBytes} wireBytes=${size.wireBytes} turns=${size.turnCount}`;
   setLastRequestSize(sizeSummary);
   lifecycleLog("request_size", {
     requestId,

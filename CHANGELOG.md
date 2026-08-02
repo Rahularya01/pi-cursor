@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.5] - 2026-08-02
+
+### Fixed
+
+- **Further reduced simple-turn context usage.** Cursor's protobuf `google.protobuf.Value` encoding amplifies verbose JSON Schema annotations. Slim mode now removes parameter-level descriptions and other annotation-only fields while preserving the executable tool contract: property names, types, required fields, unions, enums, and validation constraints. Function descriptions are reduced to one concise sentence. Synthetic verbose-tool payloads shrink by about 83%.
+- Corrected `/cursor.doctor`'s `approxTokens` estimate. It previously double-counted tool schemas and system content already included in request/blob bytes. It now estimates from actual wire bytes only and reports `wireBytes` explicitly.
+
 ## [1.4.4] - 2026-08-02
 
 ### Fixed

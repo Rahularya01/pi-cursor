@@ -35,13 +35,16 @@ describe("slim tools for Cursor", () => {
     expect(isSlimToolsEnabled("false")).toBe(false);
   });
 
-  it("truncates verbose descriptions and huge enums", () => {
+  it("removes schema prose but preserves the executable contract", () => {
     const slim = slimOpenAIToolsForCursor(fatTools(1));
     const fn = slim[0]!.function;
-    expect((fn.description || "").length).toBeLessThanOrEqual(160);
-    const path = (fn.parameters as any).properties.path;
-    expect(String(path.description).length).toBeLessThanOrEqual(120);
-    expect(path.enum.length).toBeLessThanOrEqual(24);
+    expect((fn.description || "").length).toBeLessThanOrEqual(120);
+    const parameters = fn.parameters as any;
+    const path = parameters.properties.path;
+    expect(path.description).toBeUndefined();
+    expect(path.type).toBe("string");
+    expect(path.enum).toHaveLength(80);
+    expect(parameters.required).toEqual(["path"]);
   });
 
   it("materially shrinks MCP schema payload vs raw tools", () => {
@@ -84,6 +87,7 @@ describe("request size summary", () => {
     expect(summary.toolCount).toBe(5);
     expect(summary.requestBytes).toBe(1200);
     expect(summary.blobBytes).toBe(500);
-    expect(summary.approxInputTokens).toBeGreaterThan(1000);
+    expect(summary.wireBytes).toBe(1700);
+    expect(summary.approxInputTokens).toBe(425);
   });
 });
