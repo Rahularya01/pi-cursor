@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { parseMessages } from "../src/stream/message-parsing.js";
 import {
   discardStaleCheckpointIfNeeded,
+  fingerprintCompletedTurns,
   mergeBlobStore,
   trimBlobStore,
 } from "../src/stream/session-state.js";
@@ -79,6 +80,35 @@ describe("checkpoint durability", () => {
     discardStaleCheckpointIfNeeded(stored, [], "r1", "c1");
 
     expect(stored.checkpoint).toBeNull();
+  });
+
+  it("preserves a valid checkpoint when mid-pause metadata covers the tool-continuation off-by-one", () => {
+    // Reproduces the stale_checkpoint error. A turn completes and commitStoredCheckpoint
+    // writes checkpointTurnCount = completedTurns.length + 1 (it includes currentTurn).
+    // On the next tool-result request, turns.length is still the pre-tool count.
+    // The checkpoint should NOT be discarded if midPause metadata matches.
+    const completedTurns = [
+      { userText: "turn 1", steps: [] },
+      { userText: "turn 2", steps: [] },
+    ];
+    const fp = fingerprintCompletedTurns(completedTurns);
+    const validCheckpoint = new Uint8Array([0x0a, 0x00]); // minimal decodable protobuf
+
+    const stored = storedConversation({
+      checkpoint: validCheckpoint,
+      checkpointTurnCount: completedTurns.length + 1, // as written by commitStoredCheckpoint
+      checkpointHistoryFingerprint: "any-fingerprint", // from the complete turn, not current
+      midPausePendingToolCalls: [{ toolCallId: "t1", toolName: "read" }],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fp,
+      midPauseRecordedAtMs: Date.now(),
+    });
+
+    discardStaleCheckpointIfNeeded(stored, completedTurns, "r1", "c1");
+
+    // Checkpoint must survive so planRecovery can use it.
+    expect(stored.checkpoint).not.toBeNull();
+    expect(stored.midPausePendingToolCalls).toBeDefined();
   });
 });
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.8] - 2026-08-02
+
+### Fixed
+
+- **`stale_checkpoint` error after tool calls when the bridge is lost.** Root cause traced via the durable journal: `commitStoredCheckpoint` records `checkpointTurnCount = completedTurns + 1` (it includes the just-finished turn). When a tool-result recovery request arrives, `turns.length` is still the pre-tool count (one less), so `discardStaleCheckpointIfNeeded` treated the valid checkpoint as stale, cleared both the checkpoint and mid-pause metadata, and left `planRecovery` with nothing to work with. The staleness check now allows the off-by-one when `midPause` metadata confirms the request is a tool continuation for that exact turn — the checkpoint is preserved for `planRecovery` to use.
+
 ## [1.4.7] - 2026-08-02
 
 ### Fixed

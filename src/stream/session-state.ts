@@ -125,13 +125,27 @@ export function discardStaleCheckpointIfNeeded(
   const currentHistoryFingerprint = fingerprintCompletedTurns(turns);
   const storedCheckpointTurnCount = stored.checkpointTurnCount;
   const storedCheckpointHistoryFingerprint = stored.checkpointHistoryFingerprint;
+
+  // A checkpoint recorded at the end of a turn stores turnCount = completedTurns.length + 1
+  // (it includes the just-finished turn in its history). When a tool-result recovery request
+  // arrives for that same turn, turns.length is still the pre-tool count. Allow the off-by-one
+  // when mid-pause metadata confirms we are in a tool continuation so the checkpoint survives
+  // long enough for planRecovery to use it.
+  const hasMidPauseForThisTurn =
+    stored.midPauseTurnCount === currentTurnCount &&
+    !!stored.midPausePendingToolCalls?.length &&
+    !!stored.midPauseHistoryFingerprint &&
+    stored.midPauseHistoryFingerprint === currentHistoryFingerprint;
+  const checkpointIsForNextTurnCount = storedCheckpointTurnCount === currentTurnCount + 1;
+  const skipTurnCountCheck = hasMidPauseForThisTurn && checkpointIsForNextTurnCount;
+
   const reason = !checkpointDecodes(stored.checkpoint)
     ? "checkpoint_undecodable"
     : storedCheckpointTurnCount === undefined || !storedCheckpointHistoryFingerprint
       ? "missing_checkpoint_metadata"
-      : storedCheckpointTurnCount !== currentTurnCount
+      : !skipTurnCountCheck && storedCheckpointTurnCount !== currentTurnCount
         ? "completed_turn_count_mismatch"
-        : storedCheckpointHistoryFingerprint !== currentHistoryFingerprint
+        : !skipTurnCountCheck && storedCheckpointHistoryFingerprint !== currentHistoryFingerprint
           ? "completed_history_fingerprint_mismatch"
           : undefined;
 
@@ -143,6 +157,7 @@ export function discardStaleCheckpointIfNeeded(
     reason,
     storedCheckpointTurnCount,
     currentTurnCount,
+    hasMidPauseForThisTurn,
     storedCheckpointHistoryFingerprint,
     currentHistoryFingerprint,
   });
