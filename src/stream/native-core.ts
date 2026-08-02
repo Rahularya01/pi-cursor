@@ -84,8 +84,15 @@ import {
   buildCursorRequest,
   buildMcpSuccessContent,
   buildMcpToolDefinitions,
+  summarizeRequestSize,
 } from "./request-build.js";
-export { buildCursorRequest, type BuildCursorRequestOptions } from "./request-build.js";
+export {
+  buildCursorRequest,
+  isSlimToolsEnabled,
+  slimOpenAIToolsForCursor,
+  summarizeRequestSize,
+  type BuildCursorRequestOptions,
+} from "./request-build.js";
 import {
   appendAssistantTextToTurn,
   getTurnToolCallResults,
@@ -185,6 +192,7 @@ import { enhanceCursorStreamError, isAuthErrorMessage } from "./protocol.js";
 import {
   setLastIdleTimeout,
   setLastRecoverySkipReason,
+  setLastRequestSize,
   setLastStreamEvent,
 } from "../diagnostics/diagnostics.js";
 
@@ -855,12 +863,36 @@ async function handleCursorNativeRequest(
     ...(effectiveUserImages.length > 0 ? { userImages: effectiveUserImages } : {}),
   };
 
+  const size = summarizeRequestSize({
+    systemPrompt,
+    userText: effectiveUserText,
+    tools: toolResolution.tools,
+    mcpTools,
+    requestBytes: payload.requestBytes,
+    blobStore: payload.blobStore,
+    turnCount: turns.length,
+  });
+  const sizeSummary =
+    `approxTokens=${size.approxInputTokens} systemChars=${size.systemChars} ` +
+    `userChars=${size.userChars} tools=${size.toolCount} toolJsonChars=${size.toolJsonChars} ` +
+    `mcpSchemaBytes=${size.mcpSchemaBytes} requestBytes=${size.requestBytes} ` +
+    `blobBytes=${size.blobBytes} turns=${size.turnCount}`;
+  setLastRequestSize(sizeSummary);
+  lifecycleLog("request_size", {
+    requestId,
+    bridgeKey: bridgeKeyPrefix(bridgeKey),
+    convKey,
+    modelId,
+    ...size,
+  });
+
   debugLog("native.dispatch_stream", {
     requestId,
     bridgeKey,
     convKey,
     conversationId: stored.conversationId,
     hasCheckpoint: !!stored.checkpoint,
+    requestSize: size,
     payload,
   });
   startNativeStreamWithIdleRetries({

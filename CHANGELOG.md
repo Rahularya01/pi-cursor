@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.4] - 2026-08-02
+
+### Fixed
+
+- **Simple turns looked like they "used 20% context".** The visible context-mode hierarchy blurb is tiny; the real cost is Pi's system prompt + full tool/MCP JSON schemas (often tens of thousands of tokens) re-sent every turn. pi-cursor now:
+  - drops no-op context-mode injections (hierarchy boilerplate + empty/mode-only `<session_state>`)
+  - slims tool descriptions/parameter docs/enums before building Cursor MCP tool defs (**default on**; `PI_CURSOR_SLIM_TOOLS=0` to disable)
+  - records a request-size breakdown on every stream (`lifecycle` `request_size` + `/cursor.doctor` `lastRequestSize`)
+
 ## [1.4.3] - 2026-08-02
 
 ### Fixed

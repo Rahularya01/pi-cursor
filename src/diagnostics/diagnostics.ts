@@ -24,6 +24,8 @@ export type DiagnosticsSnapshot = {
   lastStreamEvent?: string;
   /** Most recent wire-protocol drift observation (`kind:detail`). */
   lastDriftSignal?: string;
+  /** Compact request-size breakdown from the latest stream start. */
+  lastRequestSize?: string;
 };
 
 const storage = new AsyncLocalStorage<DiagnosticsSnapshot>();
@@ -90,6 +92,10 @@ export function setLastStreamEvent(event: string | undefined): void {
 export function setLastDriftSignal(signal: string | undefined): void {
   currentBag().lastDriftSignal =
     signal === undefined ? undefined : redactSecrets(signal).slice(0, 200);
+}
+export function setLastRequestSize(summary: string | undefined): void {
+  currentBag().lastRequestSize =
+    summary === undefined ? undefined : redactSecrets(summary).slice(0, 400);
 }
 export function setLastIdleTimeout(info: {
   timeoutMs: number;

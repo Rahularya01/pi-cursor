@@ -1352,6 +1352,7 @@ export default async function (pi: ExtensionAPI) {
         `lastRpc=${d.lastRpc || "none"}`,
         `lastRecoverySkipReason=${d.lastRecoverySkipReason || "none"}`,
         `lastStreamEvent=${d.lastStreamEvent || "none"}`,
+        `lastRequestSize=${d.lastRequestSize || "none"}`,
         `lastDriftSignal=${d.lastDriftSignal || "none"}`,
         `wireDrift=${formatDriftSummary() || "none"}`,
         `wireDriftStranding=${hasStrandingDrift() ? "yes" : "no"}`,

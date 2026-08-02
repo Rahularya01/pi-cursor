@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isContextModeSideChannelText,
+  isNoOpSideChannelText,
   isPureContextModeSideChannelText,
   normalizeMessagesForCursor,
   splitUserTextAndSideChannel,
@@ -86,5 +87,26 @@ describe("context-mode normalization", () => {
     const users = normalized.filter((m) => m.role === "user");
     expect(users).toHaveLength(1);
     expect(String(users[0]?.content)).toMatch(/please explain/);
+  });
+
+  it("drops empty hierarchy + mode-only session_state side channels", () => {
+    const emptyInjection = [
+      "context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_execute_file > ctx_search.",
+      "Read/edit files → ctx_execute_file. Multi-command research → ctx_batch_execute.",
+      "",
+      '<session_state source="compaction">',
+      "<session_mode>investigate</session_mode>",
+      "</session_state>",
+    ].join("\n");
+    expect(isNoOpSideChannelText(emptyInjection)).toBe(true);
+
+    const normalized = normalizeMessagesForCursor([
+      { role: "system", content: "You are Pi." },
+      { role: "user", content: `hi\n\n${emptyInjection}` },
+    ]);
+    const system = String(normalized.find((m) => m.role === "system")?.content ?? "");
+    expect(system).not.toMatch(/provider_context/);
+    expect(normalized.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(normalized.find((m) => m.role === "user")?.content).toBe("hi");
   });
 });

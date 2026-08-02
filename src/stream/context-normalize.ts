@@ -82,6 +82,43 @@ export function isPureContextModeSideChannelText(text: string): boolean {
 }
 
 /**
+ * True when a side-channel carries no useful session memory — only the standard
+ * context-mode hierarchy blurb and/or an empty/mode-only session_state.
+ * These add tokens without helping the model and should be dropped.
+ */
+export function isNoOpSideChannelText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (!isContextModeSideChannelText(t)) return false;
+
+  let rest = t;
+  // Strip standard hierarchy boilerplate lines.
+  rest = rest
+    .replace(/^context-mode active\b[^\n]*$/gim, "")
+    .replace(/^Read\/edit files[^\n]*$/gim, "")
+    .replace(/^Multi-command research[^\n]*$/gim, "")
+    .replace(/^Hierarchy:\s*ctx_batch_execute[^\n]*$/gim, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+
+  // Strip session_state blocks that only carry mode / empty shells.
+  rest = rest
+    .replace(/<session_state\b[^>]*>[\s\S]*?<\/session_state>/gi, (block) => {
+      const inner = block
+        .replace(/<\/?session_state\b[^>]*>/gi, "")
+        .replace(/<session_mode\b[^>]*>[\s\S]*?<\/session_mode>/gi, "")
+        .replace(/<\/?(summary|turns|messages|memory)\b[^>]*>/gi, "")
+        .trim();
+      // Keep the block if it still has meaningful payload text.
+      return inner.length >= 40 ? block : "";
+    })
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+
+  return rest.length < 24;
+}
+
+/**
  * Split a user message that may concatenate real task text with context-mode /
  * session_state injections.
  */
@@ -204,7 +241,7 @@ export function normalizeMessagesForCursor(messages: OpenAIMessage[]): OpenAIMes
 
       const { userText, sideText } = splitUserTextAndSideChannel(text);
 
-      if (sideText) sideParts.push(sideText);
+      if (sideText && !isNoOpSideChannelText(sideText)) sideParts.push(sideText);
 
       if (!userText.trim()) {
         // Pure side-channel (optionally keep images on a stub user turn).

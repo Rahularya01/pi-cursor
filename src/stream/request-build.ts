@@ -54,8 +54,67 @@ import type {
   ParsedTurnStep,
 } from "./types.js";
 
+/**
+ * Whether to truncate verbose tool descriptions/parameter docs before sending
+ * them to Cursor. Default ON — full Pi/MCP prose often costs tens of thousands
+ * of tokens per turn without improving tool selection. Set
+ * PI_CURSOR_SLIM_TOOLS=0 to keep original schemas verbatim.
+ */
+export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS): boolean {
+  const raw = envValue?.trim().toLowerCase();
+  if (!raw) return true;
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+}
+
+function slimJsonSchema(value: unknown, depth = 0): unknown {
+  if (value == null || depth > 8) return value;
+  if (Array.isArray(value)) {
+    // Huge enums are pure token burn for the model.
+    if (value.every((item) => typeof item === "string") && value.length > 24) {
+      return value.slice(0, 24);
+    }
+    return value.map((item) => slimJsonSchema(item, depth + 1));
+  }
+  if (typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(input)) {
+    if (key === "description" && typeof child === "string") {
+      out[key] = child.length > 120 ? `${child.slice(0, 117)}...` : child;
+      continue;
+    }
+    if (key === "examples" || key === "default" || key === "$comment") continue;
+    out[key] = slimJsonSchema(child, depth + 1);
+  }
+  return out;
+}
+
+/** Truncate tool prose/schemas for the Cursor MCP tool surface. */
+export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[] {
+  if (!isSlimToolsEnabled()) return tools;
+  return tools.map((tool) => {
+    const fn = tool.function;
+    const description = (fn.description || "").trim();
+    const slimDescription =
+      description.length > 160 ? `${description.slice(0, 157)}...` : description;
+    const parameters =
+      fn.parameters && typeof fn.parameters === "object"
+        ? (slimJsonSchema(fn.parameters) as Record<string, unknown>)
+        : fn.parameters;
+    return {
+      ...tool,
+      function: {
+        ...fn,
+        description: slimDescription,
+        ...(parameters ? { parameters } : {}),
+      },
+    };
+  });
+}
+
 export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefinition[] {
-  return tools.map((t) => {
+  const prepared = slimOpenAIToolsForCursor(tools);
+  return prepared.map((t) => {
     const fn = t.function;
     const jsonSchema: JsonValue =
       fn.parameters && typeof fn.parameters === "object"
@@ -75,6 +134,52 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
       inputSchema,
     });
   });
+}
+
+export function summarizeRequestSize(input: {
+  systemPrompt: string;
+  userText: string;
+  tools: OpenAIToolDef[];
+  mcpTools: McpToolDefinition[];
+  requestBytes: Uint8Array;
+  blobStore: Map<string, Uint8Array>;
+  turnCount?: number;
+}): {
+  systemChars: number;
+  userChars: number;
+  toolCount: number;
+  toolJsonChars: number;
+  mcpSchemaBytes: number;
+  requestBytes: number;
+  blobBytes: number;
+  turnCount: number;
+  approxInputTokens: number;
+} {
+  let blobBytes = 0;
+  for (const bytes of input.blobStore.values()) blobBytes += bytes.byteLength;
+  let mcpSchemaBytes = 0;
+  for (const tool of input.mcpTools) {
+    mcpSchemaBytes += tool.inputSchema?.byteLength ?? 0;
+    mcpSchemaBytes += (tool.description?.length ?? 0) + (tool.name?.length ?? 0);
+  }
+  const toolJsonChars = JSON.stringify(input.tools).length;
+  const systemChars = input.systemPrompt.length;
+  const userChars = input.userText.length;
+  // Rough UTF-8/Latin heuristic used only for diagnostics, not billing.
+  const approxInputTokens = Math.round(
+    (systemChars + userChars + toolJsonChars + mcpSchemaBytes + blobBytes) / 4,
+  );
+  return {
+    systemChars,
+    userChars,
+    toolCount: input.tools.length,
+    toolJsonChars,
+    mcpSchemaBytes,
+    requestBytes: input.requestBytes.byteLength,
+    blobBytes,
+    turnCount: input.turnCount ?? 0,
+    approxInputTokens,
+  };
 }
 
 export function decodeMcpArgValue(value: Uint8Array): unknown {

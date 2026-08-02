@@ -1,6 +1,7 @@
 node_modules
 dist
 .claude
+.pi-subagents
 package-lock.json
 scripts/**
 src/proto/**
