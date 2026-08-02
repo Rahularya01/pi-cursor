@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.2] - 2026-08-02
+
+### Fixed
+
+- **npm publish CI failed with E403 after a manual publish.** The tag workflow always ran `npm publish`, so when a version was already on the registry it failed the release job. Publish now skips cleanly if `${name}@${version}` already exists, and asserts the git tag matches `package.json`.
+
 ## [1.4.1] - 2026-08-02
 
 ### Fixed
