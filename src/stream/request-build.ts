@@ -66,6 +66,50 @@ export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS):
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
+const TRIVIAL_CONVERSATIONAL_TURNS = new Set([
+  "hi",
+  "hello",
+  "hey",
+  "hi there",
+  "hello there",
+  "hey there",
+  "yo",
+  "how are you",
+  "whats up",
+  "good morning",
+  "good afternoon",
+  "good evening",
+  "thanks",
+  "thank you",
+  "thanks a lot",
+  "thank you very much",
+  "thx",
+  "ty",
+  "ok",
+  "okay",
+  "got it",
+  "sounds good",
+  "cool",
+  "great",
+  "nice",
+  "ping",
+]);
+
+/**
+ * Narrow allowlist for turns that cannot reasonably require a tool. Exact
+ * matching is intentional: "hi, inspect src" must retain the full tool set.
+ */
+export function isTrivialConversationalTurn(text: string): boolean {
+  const normalized = text
+    .trim()
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length <= 40 && TRIVIAL_CONVERSATIONAL_TURNS.has(normalized);
+}
+
 const SCHEMA_ANNOTATION_KEYS = new Set([
   "description",
   "title",

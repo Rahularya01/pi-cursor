@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.6] - 2026-08-02
+
+### Fixed
+
+- **Trivial conversational turns no longer send tool schemas.** Exact greetings and acknowledgements such as `hi`, `hello`, `thanks`, and `sounds good` cannot require repository/MCP tools, yet previously paid for all 48 contracts. These turns now omit tools entirely; actionable text such as `hi, inspect src` still receives the full compact tool surface.
+- Adds a `tools_omitted` lifecycle event with the original tool count. On the measured 48-tool `hi` request this should reduce estimated input from ~16.7k tokens to ~8.5k (roughly 10% → 5% for the current model). The remaining floor is Pi's system/project prompt.
+
 ## [1.4.5] - 2026-08-02
 
 ### Fixed

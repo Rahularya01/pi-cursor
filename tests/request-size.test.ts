@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMcpToolDefinitions,
   isSlimToolsEnabled,
+  isTrivialConversationalTurn,
   slimOpenAIToolsForCursor,
   summarizeRequestSize,
 } from "../src/stream/request-build.js";
@@ -27,6 +28,22 @@ function fatTools(count: number): OpenAIToolDef[] {
     },
   }));
 }
+
+describe("trivial conversational turns", () => {
+  it.each(["hi", "Hello!", "thank you", "PING", "sounds good."])(
+    "identifies %j as tool-free",
+    (text) => expect(isTrivialConversationalTurn(text)).toBe(true),
+  );
+
+  it.each([
+    "hi, inspect src",
+    "thanks, now run tests",
+    "test the build",
+    "how are you doing this?",
+  ])("keeps tools for actionable text %j", (text) =>
+    expect(isTrivialConversationalTurn(text)).toBe(false),
+  );
+});
 
 describe("slim tools for Cursor", () => {
   it("defaults slim mode on", () => {

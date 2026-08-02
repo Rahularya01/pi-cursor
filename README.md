@@ -136,6 +136,7 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 
 - **Transport:** Native Connect/protobuf streaming over HTTP/2 via `h2-bridge.mjs`.
 - **Context-Mode Normalization:** Side-channel user messages (such as context-mode routing or post-compaction `<session_state>` blocks) are safely normalized into the system prompt so Cursor models stay focused on your primary task.
+- **Context-Efficient Tools:** MCP schemas are compacted without changing callable constraints, and exact conversational-only turns (`hi`, `thanks`, etc.) omit tools entirely. Actionable prompts always retain tools.
 - **Cross-Platform:** Tested and fully compatible with macOS, Linux, Windows, and WSL.
 
 ## Configuration

@@ -84,11 +84,13 @@ import {
   buildCursorRequest,
   buildMcpSuccessContent,
   buildMcpToolDefinitions,
+  isTrivialConversationalTurn,
   summarizeRequestSize,
 } from "./request-build.js";
 export {
   buildCursorRequest,
   isSlimToolsEnabled,
+  isTrivialConversationalTurn,
   slimOpenAIToolsForCursor,
   summarizeRequestSize,
   type BuildCursorRequestOptions,
@@ -577,6 +579,20 @@ async function handleCursorNativeRequest(
   }
 
   const { systemPrompt, userText, userImages, turns, toolResults, inFlightTurn } = parsedMessages;
+  const omitToolsForTrivialTurn =
+    toolResolution.tools.length > 0 &&
+    toolResults.length === 0 &&
+    userImages.length === 0 &&
+    isTrivialConversationalTurn(userText);
+  const selectedTools = omitToolsForTrivialTurn ? [] : toolResolution.tools;
+  if (omitToolsForTrivialTurn) {
+    setLastStreamEvent("tools_omitted_trivial_turn");
+    lifecycleLog("tools_omitted", {
+      requestId,
+      reason: "trivial_conversational_turn",
+      originalToolCount: toolResolution.tools.length,
+    });
+  }
   const modelId = resolveRequestedModelId(body.model, body.reasoning_effort, body.cursor_model_id);
   const maxMode =
     typeof body.cursor_model_max_mode === "boolean"
@@ -686,7 +702,7 @@ async function handleCursorNativeRequest(
         recoveryPath: "stored_checkpoint",
         pendingToolCallIds: toolResults.map((r) => r.toolCallId),
       });
-      const mcpTools = buildMcpToolDefinitions(toolResolution.tools);
+      const mcpTools = buildMcpToolDefinitions(selectedTools);
       // Images ride the recovered user turn on this path too — dropping them here silently lost
       // screenshots that the rebuild path preserves.
       const recoveredUserImages = collectToolResultImages(toolResults);
@@ -741,7 +757,7 @@ async function handleCursorNativeRequest(
         modelId,
         decision,
       });
-      const mcpTools = buildMcpToolDefinitions(toolResolution.tools);
+      const mcpTools = buildMcpToolDefinitions(selectedTools);
       const rebuiltCompletedTurns = [...decision.completedTurns, decision.inFlightTurn];
       const recoveredUserImages = collectToolResultImages(decision.toolResults);
       const recoveredCurrentTurn: ParsedTurn = {
@@ -839,7 +855,7 @@ async function handleCursorNativeRequest(
   evictStaleConversations();
   discardStaleCheckpointIfNeeded(stored, turns, requestId, convKey);
 
-  const mcpTools = buildMcpToolDefinitions(toolResolution.tools);
+  const mcpTools = buildMcpToolDefinitions(selectedTools);
   const effectiveUserText = userText;
   const effectiveUserImages = userText || userImages.length > 0 ? userImages : [];
   const payload = buildCursorRequest(
@@ -866,7 +882,7 @@ async function handleCursorNativeRequest(
   const size = summarizeRequestSize({
     systemPrompt,
     userText: effectiveUserText,
-    tools: toolResolution.tools,
+    tools: selectedTools,
     mcpTools,
     requestBytes: payload.requestBytes,
     blobStore: payload.blobStore,
