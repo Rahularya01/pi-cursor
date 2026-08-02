@@ -104,6 +104,8 @@ export function interactionUpdateCountsAsProgress(
   if (updateCase === "toolCallDelta") return true;
   if (updateCase === "thinkingCompleted") return true;
   if (updateCase === "heartbeat") return true;
+  if (updateCase === "turnEnded") return true;
+  if (updateCase === "stepStarted" || updateCase === "stepCompleted") return true;
   if (
     updateCase === "summary" ||
     updateCase === "summaryStarted" ||
@@ -116,6 +118,18 @@ export function interactionUpdateCountsAsProgress(
 /** Whether a blind full-request restart is safe given already-streamed content. */
 export function canBlindIdleRestart(emittedUserVisibleContent: boolean): boolean {
   return !emittedUserVisibleContent;
+}
+
+/**
+ * Cursor often GOAWAYs the HTTP/2 connection right after a finished turn.
+ * Once `turnEnded` has arrived and we are not mid tool-call pause, treat that
+ * close as successful completion instead of retrying/duplicating output.
+ */
+export function canCompleteAfterGoaway(options: {
+  sawTurnEnded: boolean;
+  mcpExecReceived: boolean;
+}): boolean {
+  return options.sawTurnEnded && !options.mcpExecReceived;
 }
 
 export function resolveMidPauseRebuildMaxAgeMs(envValue?: string): number {

@@ -91,6 +91,7 @@ export function processServerMessage(
   onText: (text: string, isThinking?: boolean) => void,
   onMcpExec: (exec: PendingExec) => void,
   onCheckpoint?: (checkpointBytes: Uint8Array) => void,
+  onTurnEnded?: () => void,
 ): boolean {
   const msgCase = msg.message.case;
   debugLog("server_message", { msgCase, msg });
@@ -141,6 +142,27 @@ export function processServerMessage(
           errorUnknown: value?.$unknown,
         });
       }
+      return interactionUpdateCountsAsProgress(updateCase);
+    }
+    if (
+      updateCase === "thinkingCompleted" ||
+      updateCase === "heartbeat" ||
+      updateCase === "toolCallStarted" ||
+      updateCase === "partialToolCall" ||
+      updateCase === "toolCallDelta" ||
+      updateCase === "stepStarted" ||
+      updateCase === "stepCompleted" ||
+      updateCase === "summary" ||
+      updateCase === "summaryStarted" ||
+      updateCase === "summaryCompleted" ||
+      updateCase === "shellOutputDelta" ||
+      updateCase === "userMessageAppended"
+    ) {
+      return interactionUpdateCountsAsProgress(updateCase, true);
+    }
+    if (updateCase === "turnEnded") {
+      onTurnEnded?.();
+      setLastStreamEvent("interaction_update:turnEnded");
       return interactionUpdateCountsAsProgress(updateCase);
     }
     // Unrecognized update cases are informational rather than stranding — the

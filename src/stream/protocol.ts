@@ -18,6 +18,11 @@ export function isProtocolMismatchMessage(message: string): boolean {
   return PROTOCOL_ERROR_RE.test(message);
 }
 
+/** Connect end-stream / bridge errors that are Cursor's graceful HTTP/2 GOAWAY. */
+export function isRetriableGoawayMessage(message: string): boolean {
+  return /\bGOAWAY\b/i.test(message) && /\bretriable\b/i.test(message);
+}
+
 export function formatProtocolMismatchHint(message: string): string {
   const version = getCursorClientVersion();
   return (

@@ -23,7 +23,7 @@
 import http2 from "node:http2";
 import crypto from "node:crypto";
 
-const CURSOR_CLIENT_VERSION = process.env.PI_CURSOR_CLIENT_VERSION || "cli-2026.05.01-eea359f";
+const CURSOR_CLIENT_VERSION = process.env.PI_CURSOR_CLIENT_VERSION || "cli-2026.07.23-e383d2b";
 
 /** Write one length-prefixed message to stdout. */
 function writeMessage(data) {

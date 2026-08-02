@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **GOAWAY after a finished turn no longer fails/retries the stream (#3).** Cursor often closes the HTTP/2 connection with `GOAWAY (errorCode=0)` immediately after `interaction_update:turnEnded`. The provider used to surface that as a Connect error, retry the turn, and duplicate assistant output. Finished turns now complete cleanly; mid-turn GOAWAY (no `turnEnded`, or during a tool pause) still retries/errors as before.
+- Recognizes already-schema'd lifecycle updates (`turnEnded`, `stepStarted`/`stepCompleted`, `thinkingCompleted`, `heartbeat`, tool-call lifecycle, summaries) as progress instead of recording them as `wireDrift`.
+
+### Changed
+
+- Default `x-cursor-client-version` is now `cli-2026.07.23-e383d2b` (was `cli-2026.05.01-eea359f`). Override with `PI_CURSOR_CLIENT_VERSION` as before. This does not replace a protobuf schema refresh for remaining unknown fields.
+
 ## [1.4.0] - 2026-07-29
 
 ### Fixed

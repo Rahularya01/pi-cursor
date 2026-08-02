@@ -118,6 +118,7 @@ import {
 export { setBridgeFactoryForTests } from "./bridge-session.js";
 import {
   canBlindIdleRestart,
+  canCompleteAfterGoaway,
   createStreamIdleWatchdog,
   interactionUpdateCountsAsProgress,
   resolveH2ConnectTimeoutMs,
@@ -129,6 +130,7 @@ import {
 } from "./tuning.js";
 export {
   canBlindIdleRestart,
+  canCompleteAfterGoaway,
   interactionUpdateCountsAsProgress,
   resolveActiveBridgeTtlMs,
   resolveH2ConnectTimeoutMs,
@@ -167,7 +169,11 @@ import {
   type PlanRecoveryInput as ExtractedPlanRecoveryInput,
   type LostToolContinuationDiagnosticInput as ExtractedLostToolContinuationDiagnosticInput,
 } from "./recovery.js";
-import { enhanceCursorStreamError, isAuthErrorMessage } from "./protocol.js";
+import {
+  enhanceCursorStreamError,
+  isAuthErrorMessage,
+  isRetriableGoawayMessage,
+} from "./protocol.js";
 import {
   setLastIdleTimeout,
   setLastRecoverySkipReason,
@@ -220,6 +226,7 @@ export const __testInternals = {
   conversationStates,
   createStreamIdleWatchdog,
   canBlindIdleRestart,
+  canCompleteAfterGoaway,
   clearStoredMidPauseMetadata,
   collectToolResultImages,
   debugBase64ImageSummary,
@@ -900,6 +907,8 @@ function writeNativeStream(
   let cancelled = false;
   let streamError: Error | null = null;
   let emittedUserVisibleContent = false;
+  let sawTurnEnded = false;
+  let goawayAfterComplete = false;
   // Only execs the client was actually told about may be recorded as pending: recovery matches the
   // snapshot against the tool results the client sends back, and it can only send back what it saw.
   const emittedExecs: PendingExec[] = [];
@@ -1165,6 +1174,9 @@ function writeNativeStream(
             checkpointRef.current = checkpointBytes;
             debugLog("native.stream.checkpoint_buffered", { requestId, convKey, checkpointBytes });
           },
+          () => {
+            sawTurnEnded = true;
+          },
         );
         if (madeProgress) {
           idleWatchdog.reset();
@@ -1178,6 +1190,27 @@ function writeNativeStream(
     (endStreamBytes) => {
       const endError = parseConnectEndStream(endStreamBytes);
       if (endError) {
+        const completeAfterGoaway =
+          isRetriableGoawayMessage(endError.message) &&
+          canCompleteAfterGoaway({ sawTurnEnded, mcpExecReceived });
+        if (completeAfterGoaway) {
+          goawayAfterComplete = true;
+          setLastStreamEvent("goaway_after_turn_ended");
+          debugLog("native.stream.goaway_after_turn_ended", {
+            requestId,
+            modelId,
+            message: endError.message,
+            sawTurnEnded,
+            emittedUserVisibleContent,
+          });
+          lifecycleLog("goaway_after_turn_ended", {
+            requestId,
+            bridgeKey: bridgeKeyPrefix(bridgeKey),
+            convKey,
+            message: endError.message.slice(0, 200),
+          });
+          return;
+        }
         streamError = endError;
         const enhanced = enhanceCursorStreamError(endError.message);
         debugLog("native.stream.cursor_error", {
@@ -1228,6 +1261,8 @@ function writeNativeStream(
       cancelled,
       mcpExecReceived,
       emittedUserVisibleContent,
+      sawTurnEnded,
+      goawayAfterComplete,
       hasCheckpoint: !!checkpointRef.current,
     });
     idleWatchdog.clear();
@@ -1257,6 +1292,41 @@ function writeNativeStream(
             pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
           },
         );
+      }
+      removeActiveBridge(bridgeKey);
+      return;
+    }
+
+    const completeAfterGoaway =
+      goawayAfterComplete ||
+      (code === 2 && canCompleteAfterGoaway({ sawTurnEnded, mcpExecReceived }));
+    if (completeAfterGoaway) {
+      debugLog("native.stream.goaway_treated_as_complete", {
+        requestId,
+        bridgeKey,
+        convKey,
+        code,
+        sawTurnEnded,
+        goawayAfterComplete,
+      });
+      setLastStreamEvent("goaway_treated_as_complete");
+      if (!mcpExecReceived) {
+        emitFlushed();
+        if (stored) {
+          if (checkpointRef.current) {
+            commitStoredCheckpoint(
+              stored,
+              checkpointRef.current,
+              blobStore,
+              completedTurns,
+              currentTurn,
+            );
+            debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
+          } else {
+            mergeBlobStore(stored, blobStore);
+          }
+        }
+        if (!writer.closed) writer.done("stop", state);
       }
       removeActiveBridge(bridgeKey);
       return;

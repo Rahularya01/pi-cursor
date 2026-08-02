@@ -41,6 +41,7 @@ export {
   enhanceCursorStreamError,
   isAuthErrorMessage,
   isProtocolMismatchMessage,
+  isRetriableGoawayMessage,
 } from "./protocol.js";
 export {
   formatDriftSummary,
