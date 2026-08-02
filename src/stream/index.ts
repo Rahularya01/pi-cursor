@@ -52,3 +52,16 @@ export {
   type DriftSignal,
 } from "./drift.js";
 export { handleInteractionQuery } from "./interaction-query.js";
+export { canRecoverAfterTransportLoss, canBlindIdleRestart } from "./tuning.js";
+export {
+  CHECKPOINT_CONTINUATION_PROMPT,
+  classifyBridgeExit,
+  formatTransportFailure,
+  type TransportFailure,
+} from "./transport-errors.js";
+export {
+  readConversationJournal,
+  writeConversationJournal,
+  serializeConversationJournal,
+  deserializeConversationJournal,
+} from "./run-journal.js";

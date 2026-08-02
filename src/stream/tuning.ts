@@ -19,11 +19,14 @@ export const DEFAULT_ACTIVE_BRIDGE_TTL_MS = 60 * 60 * 1000;
 // (see interactionUpdateCountsAsProgress), and it is paused during tool execution —
 // so long reasoning turns and slow tools are unaffected. It only fires on a genuine
 // park (unanswered exec, dropped/silent upstream). Set the env vars to 0 to disable.
-export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
+// 3 minutes: long pure-thinking stretches without tokenDelta still need headroom,
+// while a true silent park should not hang forever.
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 180_000;
 
-export const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 120_000;
+export const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 180_000;
 
-export const DEFAULT_STREAM_IDLE_MAX_RETRIES = 2;
+// More generations for multi-hour agent sessions; each attempt can force-refresh auth.
+export const DEFAULT_STREAM_IDLE_MAX_RETRIES = 5;
 
 export const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
 
@@ -32,8 +35,13 @@ export const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
 
 export const DEFAULT_H2_CONNECT_TIMEOUT_MS = 30_000;
 
-/** 15 minutes: kill dead H2 sessions that receive no activity. 0 = disabled. */
-export const DEFAULT_H2_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+/**
+ * Activity idle kill after first I/O. Default 0 (disabled): parent heartbeats
+ * already keep the bridge alive, and a hard idle kill during long tool pauses
+ * was a common source of "Bridge connection lost" mid-session. Set
+ * PI_CURSOR_H2_IDLE_TIMEOUT_MS to re-enable a safety net.
+ */
+export const DEFAULT_H2_IDLE_TIMEOUT_MS = 0;
 
 export function resolveActiveBridgeTtlMs(envValue?: string): number {
   if (envValue === undefined || envValue === "") return DEFAULT_ACTIVE_BRIDGE_TTL_MS;
@@ -116,6 +124,20 @@ export function interactionUpdateCountsAsProgress(
 /** Whether a blind full-request restart is safe given already-streamed content. */
 export function canBlindIdleRestart(emittedUserVisibleContent: boolean): boolean {
   return !emittedUserVisibleContent;
+}
+
+/**
+ * Whether recovery is allowed after transport loss.
+ * Blind restart only when nothing was streamed; checkpoint continuation is safe
+ * even after partial text because Cursor resumes server-side state and emits
+ * only new tokens (Pi appends them to the existing writer).
+ */
+export function canRecoverAfterTransportLoss(input: {
+  emittedUserVisibleContent: boolean;
+  hasCheckpoint: boolean;
+}): boolean {
+  if (!input.emittedUserVisibleContent) return true;
+  return input.hasCheckpoint;
 }
 
 export function resolveMidPauseRebuildMaxAgeMs(envValue?: string): number {

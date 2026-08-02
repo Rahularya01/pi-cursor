@@ -258,4 +258,9 @@ export interface NativeStreamAttemptInput {
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
   /** When true, idle timeout tries recovery/rebuild before a blind restart. */
   recoverBeforeRetry?: boolean;
+  /** Required for checkpoint-based continuation after transport loss. */
+  systemPrompt?: string;
+  conversationId?: string;
+  maxMode?: boolean;
+  cursorModelParameters?: CursorModelParameter[];
 }

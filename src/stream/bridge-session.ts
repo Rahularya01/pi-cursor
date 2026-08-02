@@ -55,17 +55,33 @@ export function removeActiveBridge(bridgeKey: string): void {
   activeBridges.delete(bridgeKey);
 }
 
-export function setActiveBridge(
+function armActiveBridgeTtl(
   bridgeKey: string,
   active: Omit<ActiveBridge, "toolTimeoutTimer">,
-): void {
-  clearActiveBridgeToolTimeout(activeBridges.get(bridgeKey));
+): ReturnType<typeof setTimeout> {
   const toolTimeoutTimer = setTimeout(() => {
     debugLog("bridge.active_ttl_expired", { bridgeKey, ttlMs: ACTIVE_BRIDGE_TTL_MS });
     cleanupBridge(active.bridge, active.heartbeatTimer, bridgeKey);
   }, ACTIVE_BRIDGE_TTL_MS);
   toolTimeoutTimer.unref?.();
+  return toolTimeoutTimer;
+}
+
+export function setActiveBridge(
+  bridgeKey: string,
+  active: Omit<ActiveBridge, "toolTimeoutTimer">,
+): void {
+  clearActiveBridgeToolTimeout(activeBridges.get(bridgeKey));
+  const toolTimeoutTimer = armActiveBridgeTtl(bridgeKey, active);
   activeBridges.set(bridgeKey, { ...active, toolTimeoutTimer });
+}
+
+/** Slide the parked-bridge TTL forward while the bridge is still useful. */
+export function touchActiveBridge(bridgeKey: string): void {
+  const active = activeBridges.get(bridgeKey);
+  if (!active) return;
+  clearActiveBridgeToolTimeout(active);
+  active.toolTimeoutTimer = armActiveBridgeTtl(bridgeKey, active);
 }
 
 export function makeHeartbeatBytes(): Uint8Array {
@@ -75,7 +91,11 @@ export function makeHeartbeatBytes(): Uint8Array {
   return frameConnectMessage(toBinary(AgentClientMessageSchema, heartbeat));
 }
 
-export function startBridge(accessToken: string, requestBytes: Uint8Array) {
+export function startBridge(
+  accessToken: string,
+  requestBytes: Uint8Array,
+  options?: { bridgeKey?: string },
+) {
   const bridge = bridgeFactory({
     accessToken,
     rpcPath: "/agent.v1.AgentService/Run",
@@ -87,8 +107,12 @@ export function startBridge(accessToken: string, requestBytes: Uint8Array) {
   bridge.write(frameConnectMessage(requestBytes));
   // Keep heartbeats referenced so long tool pauses do not look idle to the process.
   // 15s interval: frequent enough to prevent mid-pause idle kills, low enough to
-  // avoid flooding a quiet stream with IPC chatter.
-  const heartbeatTimer = setInterval(() => bridge.write(makeHeartbeatBytes()), 15_000);
+  // avoid flooding a quiet stream with IPC chatter. Also slides the parked-bridge
+  // TTL so multi-round tool chains are not killed by the original park timestamp.
+  const heartbeatTimer = setInterval(() => {
+    bridge.write(makeHeartbeatBytes());
+    if (options?.bridgeKey) touchActiveBridge(options.bridgeKey);
+  }, 15_000);
   return { bridge, heartbeatTimer };
 }
 

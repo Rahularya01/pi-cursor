@@ -132,5 +132,5 @@ src/
 | `PI_CURSOR_CLIENT_VERSION`                 | Pin custom `x-cursor-client-version` header sent by `h2-bridge.mjs`                   |
 | `PI_CURSOR_PROVIDER_DEBUG`                 | Set to `1` or `true` to enable verbose debug logging to temp file                     |
 | `PI_CURSOR_RAW_MODELS`                     | Set to `1` or `true` to disable reasoning effort suffix collapsing in model picker    |
-| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream watchdog idle timeout in ms (default: `0` / disabled)                          |
-| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | HTTP/2 bridge activity idle timeout in ms (default: disabled)                         |
+| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables)               |
+| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                   |

@@ -20,6 +20,8 @@ export interface SpawnBridgeOptions {
 export interface BridgeHandle {
   proc: Pick<ChildProcess, "kill">;
   readonly alive: boolean;
+  /** Trailing stderr from the child process (for diagnostics / recovery). */
+  lastStderr(): string;
   write(data: Uint8Array): void;
   end(): void;
   onData(cb: (chunk: Buffer) => void): void;
@@ -169,6 +171,9 @@ function createBridgeHandleForChild(
     proc,
     get alive() {
       return !exited;
+    },
+    lastStderr() {
+      return stderrBuf.trim();
     },
     write(data: Uint8Array) {
       safeWrite(data);

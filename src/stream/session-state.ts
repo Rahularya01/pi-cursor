@@ -23,6 +23,12 @@ import {
   clearStoredMidPauseMetadata as clearStoredMidPauseMetadataImpl,
   fingerprintCompletedTurns as fingerprintCompletedTurnsImpl,
 } from "./recovery.js";
+import {
+  deleteConversationJournal,
+  evictStaleJournals,
+  readConversationJournal,
+  writeConversationJournal,
+} from "./run-journal.js";
 import { CONVERSATION_TTL_MS, MAX_CONVERSATION_BLOB_BYTES } from "./tuning.js";
 import type {
   ChatCompletionRequest,
@@ -34,6 +40,23 @@ import type {
 export const conversationStates = new Map<string, StoredConversation>();
 
 const sessionLocks = new Map<string, Promise<void>>();
+
+function persistJournal(convKey: string, stored: StoredConversation): void {
+  writeConversationJournal(convKey, stored);
+}
+
+/**
+ * Resolve conversation state: memory first, then durable journal.
+ * Hydrates the in-memory map on a journal hit so later turns share one object.
+ */
+export function getOrHydrateConversation(convKey: string): StoredConversation | undefined {
+  const memory = conversationStates.get(convKey);
+  if (memory) return memory;
+  const fromDisk = readConversationJournal(convKey);
+  if (!fromDisk) return undefined;
+  conversationStates.set(convKey, fromDisk);
+  return fromDisk;
+}
 
 export function cleanupAllSessionState(): void {
   debugLog("session.cleanup_all", {
@@ -51,8 +74,10 @@ export function evictStaleConversations(now = Date.now()): void {
     if (!stored.sessionScoped && now - stored.lastAccessMs > CONVERSATION_TTL_MS) {
       debugLog("conversation.evict", { key, stored, now });
       conversationStates.delete(key);
+      deleteConversationJournal(key);
     }
   }
+  evictStaleJournals(now);
 }
 
 export function fingerprintCompletedTurns(turns: ParsedTurn[]): string {
@@ -174,6 +199,7 @@ export function commitStoredCheckpoint(
   blobStore: Map<string, Uint8Array>,
   completedTurns: ParsedTurn[],
   currentTurn: ParsedTurn,
+  convKey?: string,
 ): void {
   const completedHistory = [...completedTurns, currentTurn];
   mergeBlobStore(stored, blobStore);
@@ -182,6 +208,8 @@ export function commitStoredCheckpoint(
   stored.checkpointTurnCount = completedHistory.length;
   stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedHistory);
   clearStoredMidPauseMetadata(stored);
+  stored.lastAccessMs = Date.now();
+  if (convKey) persistJournal(convKey, stored);
 }
 
 export function persistAbortedConversationState(
@@ -198,11 +226,20 @@ export function persistAbortedConversationState(
   // matching checkpoint as well, so the next turn can continue the same native
   // conversation instead of rebuilding from a potentially truncated transcript.
   if (latestCheckpoint) {
-    commitStoredCheckpoint(stored, latestCheckpoint, blobStore, completedTurns, currentTurn);
+    commitStoredCheckpoint(
+      stored,
+      latestCheckpoint,
+      blobStore,
+      completedTurns,
+      currentTurn,
+      convKey,
+    );
   } else {
     // Blob ids referenced by the retained Pi history must outlive the cancelled
     // bridge even when Cursor has not emitted a checkpoint yet.
     mergeBlobStore(stored, blobStore);
+    stored.lastAccessMs = Date.now();
+    persistJournal(convKey, stored);
   }
 
   debugLog("native.stream.abort_state_saved", {
@@ -219,6 +256,7 @@ export function commitStoredCheckpointMidPause(
   blobStore: Map<string, Uint8Array>,
   completedTurns: ParsedTurn[],
   pendingToolCalls: Array<{ toolCallId: string; toolName: string }>,
+  convKey?: string,
 ): void {
   mergeBlobStore(stored, blobStore);
   const completedHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
@@ -242,6 +280,8 @@ export function commitStoredCheckpointMidPause(
   stored.midPauseTurnCount = completedTurns.length;
   stored.midPauseHistoryFingerprint = completedHistoryFingerprint;
   stored.midPauseRecordedAtMs = Date.now();
+  stored.lastAccessMs = Date.now();
+  if (convKey) persistJournal(convKey, stored);
 }
 
 export interface HandleBridgeCloseMidPauseInput {
@@ -250,6 +290,7 @@ export interface HandleBridgeCloseMidPauseInput {
   blobStore: Map<string, Uint8Array>;
   completedTurns: ParsedTurn[];
   pendingExecs: Array<{ toolCallId: string; toolName: string }>;
+  convKey?: string;
 }
 
 export function handleBridgeCloseMidPause(input: HandleBridgeCloseMidPauseInput): {
@@ -262,6 +303,7 @@ export function handleBridgeCloseMidPause(input: HandleBridgeCloseMidPauseInput)
     input.blobStore,
     input.completedTurns,
     input.pendingExecs,
+    input.convKey,
   );
   return { committed: true };
 }
@@ -340,6 +382,7 @@ export function cleanupSessionState(sessionId?: string): void {
   });
   if (active) cleanupBridge(active.bridge, active.heartbeatTimer, bridgeKey);
   conversationStates.delete(convKey);
+  deleteConversationJournal(convKey);
 }
 
 export function deterministicConversationId(convKey: string): string {

@@ -38,9 +38,9 @@ describe("idle progress classification", () => {
 
 describe("idle timeout resolvers", () => {
   it("defaults stream/resume idle to a silence safety net; retries bounded", () => {
-    expect(resolveStreamIdleTimeoutMs(undefined)).toBe(120_000);
-    expect(resolveResumeIdleTimeoutMs(undefined)).toBe(120_000);
-    expect(resolveStreamIdleMaxRetries(undefined)).toBe(2);
+    expect(resolveStreamIdleTimeoutMs(undefined)).toBe(180_000);
+    expect(resolveResumeIdleTimeoutMs(undefined)).toBe(180_000);
+    expect(resolveStreamIdleMaxRetries(undefined)).toBe(5);
   });
 
   it("still allows disabling the idle watchdog explicitly with 0", () => {
@@ -49,16 +49,16 @@ describe("idle timeout resolvers", () => {
     expect(resolveStreamIdleMaxRetries("0")).toBe(0);
   });
 
-  it("defaults h2 activity idle to 15 minutes; connect timeout stays 30s", () => {
+  it("defaults h2 activity idle to disabled; connect timeout stays 30s", () => {
     expect(resolveH2ConnectTimeoutMs(undefined)).toBe(30_000);
-    // 15-minute default kills dead H2 sessions; set PI_CURSOR_H2_IDLE_TIMEOUT_MS=0 to disable.
-    expect(resolveH2IdleTimeoutMs(undefined)).toBe(15 * 60 * 1000);
+    // Disabled by default; parent heartbeats own liveness. Opt in via env.
+    expect(resolveH2IdleTimeoutMs(undefined)).toBe(0);
   });
 
   it("parses env overrides and rejects invalid values", () => {
     expect(resolveStreamIdleTimeoutMs("90000")).toBe(90_000);
     expect(resolveStreamIdleTimeoutMs("0")).toBe(0);
-    expect(resolveStreamIdleTimeoutMs("nope")).toBe(120_000);
+    expect(resolveStreamIdleTimeoutMs("nope")).toBe(180_000);
     expect(resolveStreamIdleMaxRetries("0")).toBe(0);
     expect(resolveStreamIdleMaxRetries("99")).toBe(10);
     expect(resolveH2IdleTimeoutMs("60000")).toBe(60_000);

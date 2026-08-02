@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.1] - 2026-08-02
+
+### Fixed
+
+- **Long sessions dying with bridge/idle timeouts.** After partial assistant output, transport loss (GOAWAY, bridge crash, silence) previously hard-failed because blind retries were blocked to avoid duplicated text. Recovery now continues from the latest upstream **checkpoint** even when text/thinking already streamed — Cursor resumes server-side state and emits only new tokens, which Pi appends.
+- **H2 activity idle default no longer kills healthy long runs.** `PI_CURSOR_H2_IDLE_TIMEOUT_MS` defaults to `0` (disabled). Parent heartbeats already keep the bridge alive; the previous 15-minute default was a common mid-session `Bridge connection lost` source.
+- **Parked tool bridges no longer expire from the original park timestamp alone.** Heartbeats slide the active-bridge TTL forward during multi-round tool chains.
+- **Vague `Bridge connection lost` errors.** Failures are classified (GOAWAY / reset / auth / timeout / crash) with retryability and actionable hints.
+
+### Added
+
+- **Durable run journal** (`src/stream/run-journal.ts`) under the pi-cursor cache dir. Checkpoints, mid-pause tool metadata, and referenced blobs survive bridge death so tool continuation / checkpoint resume can hydrate after a lost in-memory map.
+- **Transport failure classifier** (`src/stream/transport-errors.ts`) and checkpoint-continuation prompt used by the stream runtime.
+- Bridge handles expose `lastStderr()` for diagnostics.
+- Unit coverage in `tests/transport-recovery.test.ts` for recovery policy, failure classification, timeout defaults, and journal round-trip.
+
+### Changed
+
+- Stream silence watchdog defaults: `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS` / `PI_CURSOR_RESUME_IDLE_TIMEOUT_MS` → **180000 (3 min)**; `PI_CURSOR_STREAM_IDLE_MAX_RETRIES` → **5**.
+- Docs (README, AGENTS, protocol) aligned with the real runtime defaults.
+
 ## [1.4.0] - 2026-07-29
 
 ### Fixed

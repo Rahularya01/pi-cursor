@@ -58,6 +58,7 @@ import {
   discardStaleCheckpointIfNeeded,
   evictStaleConversations,
   fingerprintCompletedTurns,
+  getOrHydrateConversation,
   handleBridgeCloseMidPause,
   mergeBlobStore,
   persistAbortedConversationState,
@@ -118,6 +119,7 @@ import {
 export { setBridgeFactoryForTests } from "./bridge-session.js";
 import {
   canBlindIdleRestart,
+  canRecoverAfterTransportLoss,
   createStreamIdleWatchdog,
   interactionUpdateCountsAsProgress,
   resolveH2ConnectTimeoutMs,
@@ -129,6 +131,7 @@ import {
 } from "./tuning.js";
 export {
   canBlindIdleRestart,
+  canRecoverAfterTransportLoss,
   interactionUpdateCountsAsProgress,
   resolveActiveBridgeTtlMs,
   resolveH2ConnectTimeoutMs,
@@ -137,6 +140,17 @@ export {
   resolveStreamIdleMaxRetries,
   resolveStreamIdleTimeoutMs,
 } from "./tuning.js";
+import {
+  CHECKPOINT_CONTINUATION_PROMPT,
+  classifyBridgeExit,
+  formatTransportFailure,
+} from "./transport-errors.js";
+export {
+  CHECKPOINT_CONTINUATION_PROMPT,
+  classifyBridgeExit,
+  formatTransportFailure,
+  type TransportFailure,
+} from "./transport-errors.js";
 import {
   debugBase64ImageSummary,
   debugLog,
@@ -220,12 +234,14 @@ export const __testInternals = {
   conversationStates,
   createStreamIdleWatchdog,
   canBlindIdleRestart,
+  canRecoverAfterTransportLoss,
   clearStoredMidPauseMetadata,
   collectToolResultImages,
   debugBase64ImageSummary,
   decodeRequestForTests,
   discardStaleCheckpointIfNeeded,
   fingerprintCompletedTurns,
+  getOrHydrateConversation,
   interactionUpdateCountsAsProgress,
   redactForDebug,
   resolveH2ConnectTimeoutMs,
@@ -237,6 +253,7 @@ export const __testInternals = {
   resolveStreamIdleTimeoutMs,
   persistAbortedConversationState,
   trimBlobStore,
+  classifyBridgeExit,
   setMetricEmitterForTests(factory?: MetricEmitter) {
     setMetricEmitter(factory);
   },
@@ -641,7 +658,7 @@ async function handleCursorNativeRequest(
       clearInterval(activeBridge.heartbeatTimer);
       activeBridge.bridge.end();
     }
-    const recoveryStored = conversationStates.get(convKey);
+    const recoveryStored = getOrHydrateConversation(convKey);
     const decision = planRecovery({
       stored: recoveryStored,
       toolResults,
@@ -700,6 +717,10 @@ async function handleCursorNativeRequest(
         requestId,
         streamIdleTimeoutMs: resumeIdleTimeoutMs,
         getAccessToken,
+        systemPrompt,
+        conversationId: decision.conversationId,
+        maxMode,
+        cursorModelParameters: body.cursor_model_parameters ?? [],
       });
       return;
     }
@@ -751,6 +772,10 @@ async function handleCursorNativeRequest(
         requestId,
         streamIdleTimeoutMs: resumeIdleTimeoutMs,
         getAccessToken,
+        systemPrompt,
+        conversationId: decision.conversationId,
+        maxMode,
+        cursorModelParameters: body.cursor_model_parameters ?? [],
       });
       return;
     }
@@ -790,7 +815,7 @@ async function handleCursorNativeRequest(
     removeActiveBridge(bridgeKey);
   }
 
-  let stored = conversationStates.get(convKey);
+  let stored = getOrHydrateConversation(convKey);
   if (!stored) {
     stored = {
       conversationId: deterministicConversationId(convKey),
@@ -853,6 +878,11 @@ async function handleCursorNativeRequest(
     options,
     requestId,
     getAccessToken,
+    recoverBeforeRetry: true,
+    systemPrompt,
+    conversationId: stored.conversationId,
+    maxMode,
+    cursorModelParameters: body.cursor_model_parameters ?? [],
   });
 }
 
@@ -951,13 +981,16 @@ function writeNativeStream(
       cleanupBridge(bridge, heartbeatTimer, bridgeKey);
       options?.signal?.removeEventListener("abort", abort);
 
-      // Never blind-restart onto a writer that already has text/thinking — that
-      // duplicates partial output and looks like "lost context".
-      const allowBlindRestart = canBlindIdleRestart(emittedUserVisibleContent);
+      // Blind restart is only safe with zero streamed content. Checkpoint
+      // continuation is safe even after partial text: Cursor resumes server
+      // state and emits only new tokens, which Pi appends to the writer.
+      const allowRestart = canRecoverAfterTransportLoss({
+        emittedUserVisibleContent,
+        hasCheckpoint: !!checkpointRef.current,
+      });
 
       // Recovery is not a retry, so it can run even when maxRetries is zero.
-      // Still blocked when user-visible content is already on the writer.
-      if (idleRetry?.recoverBeforeRetry && allowBlindRestart) {
+      if (idleRetry?.recoverBeforeRetry && allowRestart) {
         debugLog("native.stream.idle_recovery_before_retry", {
           requestId,
           bridgeKey,
@@ -966,6 +999,8 @@ function writeNativeStream(
           modelId,
           attempt,
           maxRetries,
+          hasCheckpoint: !!checkpointRef.current,
+          emittedUserVisibleContent,
         });
         setLastStreamEvent("idle_recovery_before_retry");
         try {
@@ -983,7 +1018,7 @@ function writeNativeStream(
         }
       }
       let finalAttempt = attempt;
-      if (idleRetry && attempt <= maxRetries && allowBlindRestart) {
+      if (idleRetry && attempt <= maxRetries && allowRestart) {
         const nextAttempt = attempt + 1;
         finalAttempt = nextAttempt;
         debugLog("native.stream.idle_retry", {
@@ -994,6 +1029,8 @@ function writeNativeStream(
           attempt,
           nextAttempt,
           maxRetries,
+          hasCheckpoint: !!checkpointRef.current,
+          emittedUserVisibleContent,
         });
         setLastStreamEvent("idle_retry");
         try {
@@ -1126,6 +1163,7 @@ function writeNativeStream(
                 blobStore,
                 completedTurns,
                 emittedExecs,
+                convKey,
               );
               debugLog(
                 checkpointRef.current
@@ -1244,6 +1282,7 @@ function writeNativeStream(
           blobStore,
           completedTurns,
           pendingExecs: emittedExecs,
+          convKey,
         });
         debugLog(
           midPauseResult.committed
@@ -1263,23 +1302,32 @@ function writeNativeStream(
     }
 
     if (code !== 0) {
-      // Exit code 2 = retriable transport loss (GOAWAY from server).
-      // Attempt an idle-retry cycle if budget allows and no content was already
-      // streamed to the user (same guard as the idle watchdog path).
-      const isRetriableTransport = code === 2;
-      if (isRetriableTransport && idleRetry && !emittedUserVisibleContent) {
+      const failure = classifyBridgeExit({
+        exitCode: code,
+        stderr: typeof bridge.lastStderr === "function" ? bridge.lastStderr() : "",
+      });
+      const allowRestart =
+        failure.retryable &&
+        canRecoverAfterTransportLoss({
+          emittedUserVisibleContent,
+          hasCheckpoint: !!checkpointRef.current,
+        });
+      if (allowRestart && idleRetry) {
         const attempt = idleRetry.currentAttempt;
         const maxRetries = idleRetry.maxRetries;
         if (attempt <= maxRetries) {
-          debugLog("native.stream.goaway_retry", {
+          debugLog("native.stream.transport_retry", {
             requestId,
             bridgeKey,
             convKey,
             modelId,
             attempt,
             maxRetries,
+            failureKind: failure.kind,
+            hasCheckpoint: !!checkpointRef.current,
+            emittedUserVisibleContent,
           });
-          setLastStreamEvent("goaway_retry");
+          setLastStreamEvent(`transport_retry:${failure.kind}`);
           persistAbortedConversationState(
             convKey,
             checkpointRef.current,
@@ -1312,6 +1360,7 @@ function writeNativeStream(
           blobStore,
           completedTurns,
           pendingExecs: emittedExecs,
+          convKey,
         });
         debugLog(
           midPauseResult.committed
@@ -1322,17 +1371,12 @@ function writeNativeStream(
             bridgeKey,
             convKey,
             code,
+            failureKind: failure.kind,
             pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
           },
         );
       }
-      writer.error(
-        isRetriableTransport
-          ? "Cursor upstream closed the connection (GOAWAY). The stream was not retried because content was already streaming or the retry budget was exhausted. Please retry."
-          : "Bridge connection lost",
-        "error",
-        state,
-      );
+      writer.error(formatTransportFailure(failure), "error", state);
       removeActiveBridge(bridgeKey);
       return;
     }
@@ -1347,6 +1391,7 @@ function writeNativeStream(
             blobStore,
             completedTurns,
             currentTurn,
+            convKey,
           );
           debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
         } else {
@@ -1361,6 +1406,7 @@ function writeNativeStream(
         blobStore,
         completedTurns,
         pendingExecs: emittedExecs,
+        convKey,
       });
       debugLog(
         midPauseResult.committed
@@ -1474,9 +1520,14 @@ function handleNativeToolResultResume(
     // response closed, so the snapshot has to grow with them.
     const stored = conversationStates.get(convKey);
     if (stored) {
-      commitStoredCheckpointMidPause(stored, checkpointRef.current, blobStore, completedTurns, [
-        ...pendingExecs,
-      ]);
+      commitStoredCheckpointMidPause(
+        stored,
+        checkpointRef.current,
+        blobStore,
+        completedTurns,
+        [...pendingExecs],
+        convKey,
+      );
     }
     for (const exec of unresolvedExecs) writer.toolCall(exec);
     writer.done("toolUse", pausedState);
@@ -1574,6 +1625,10 @@ function handleNativeToolResultResume(
           maxIdleRetries: idleRetry.maxRetries,
           streamIdleTimeoutMs: resumeIdleTimeoutMs,
           getAccessToken,
+          systemPrompt,
+          conversationId: decision.conversationId,
+          maxMode,
+          cursorModelParameters,
         });
         return true;
       }
@@ -1645,6 +1700,10 @@ function handleNativeToolResultResume(
         maxIdleRetries: idleRetry.maxRetries,
         streamIdleTimeoutMs: resumeIdleTimeoutMs,
         getAccessToken,
+        systemPrompt,
+        conversationId: decision.conversationId,
+        maxMode,
+        cursorModelParameters,
       });
       return true;
     },
@@ -1720,7 +1779,7 @@ function formatStreamIdleTimeoutMessage(
   const retryPart =
     maxRetries > 0 ? ` over ${attempt} ${attemptLabel} (${maxRetries} ${retryLabel})` : "";
   const partialPart = emittedUserVisibleContent
-    ? " Partial assistant output was already streamed, so an automatic retry was skipped to avoid duplicated text."
+    ? " Partial assistant output was already streamed; automatic retry requires a checkpoint and was unavailable or exhausted."
     : "";
   const tunePart =
     " Tune PI_CURSOR_STREAM_IDLE_TIMEOUT_MS / PI_CURSOR_RESUME_IDLE_TIMEOUT_MS if long reasoning turns are expected.";
@@ -1730,13 +1789,20 @@ function formatStreamIdleTimeoutMessage(
 function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void {
   // Recovered/rebuilt streams enter this helper with ordinary retry semantics to avoid recursive recovery loops.
   let latestAccessToken = input.accessToken;
+  // Mutable across generations so checkpoint continuation can replace the original request body.
+  let requestBytes = input.requestBytes;
+  let blobStore = input.blobStore;
+  let completedTurns = input.completedTurns;
+  let currentTurn = input.currentTurn;
+
   const controller: StreamIdleRetryController = {
     currentAttempt: 1,
     maxRetries:
       input.maxIdleRetries ??
       resolveStreamIdleMaxRetries(process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES),
-    recoverBeforeRetry: input.recoverBeforeRetry,
-    restart(nextAttempt: number, _context: IdleRestartContext) {
+    // Default on: transport loss after partial output can still continue via checkpoint.
+    recoverBeforeRetry: input.recoverBeforeRetry ?? true,
+    restart(nextAttempt: number, context: IdleRestartContext) {
       controller.currentAttempt = nextAttempt;
       debugLog(
         nextAttempt === 1 ? "native.stream.attempt_start" : "native.stream.idle_retry_start",
@@ -1747,23 +1813,84 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           modelId: input.modelId,
           attempt: nextAttempt,
           maxRetries: controller.maxRetries,
+          hasCheckpoint: !!context.latestCheckpoint,
+          emittedUserVisibleContent: context.emittedUserVisibleContent,
         },
       );
 
+      // After the first attempt, prefer checkpoint continuation when available so we do not
+      // blind-replay a request that already produced partial assistant output.
+      if (
+        nextAttempt > 1 &&
+        context.latestCheckpoint &&
+        typeof input.systemPrompt === "string" &&
+        input.conversationId
+      ) {
+        try {
+          const continueText = CHECKPOINT_CONTINUATION_PROMPT;
+          const payload = buildCursorRequest({
+            modelId: input.modelId,
+            systemPrompt: input.systemPrompt,
+            userText: continueText,
+            turns: context.completedTurns,
+            conversationId: input.conversationId,
+            checkpoint: context.latestCheckpoint,
+            existingBlobStore: context.blobStore,
+            maxMode: input.maxMode ?? false,
+            cursorModelParameters: input.cursorModelParameters ?? [],
+            mcpTools: input.mcpTools,
+          });
+          requestBytes = payload.requestBytes;
+          blobStore = payload.blobStore;
+          completedTurns = context.completedTurns;
+          currentTurn = { userText: continueText, steps: [] };
+          const stored = conversationStates.get(input.convKey);
+          if (stored) {
+            commitStoredCheckpoint(
+              stored,
+              context.latestCheckpoint,
+              context.blobStore,
+              context.completedTurns,
+              context.currentTurn,
+              input.convKey,
+            );
+          }
+          setLastStreamEvent("checkpoint_continuation");
+          debugLog("native.stream.checkpoint_continuation", {
+            requestId: input.requestId,
+            bridgeKey: input.bridgeKey,
+            convKey: input.convKey,
+            attempt: nextAttempt,
+          });
+        } catch (error) {
+          debugLog("native.stream.checkpoint_continuation_failed", {
+            requestId: input.requestId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          // Fall back to the previous request bytes only when no user-visible content was emitted.
+          if (context.emittedUserVisibleContent) return false;
+        }
+      } else if (nextAttempt > 1 && context.emittedUserVisibleContent) {
+        // No checkpoint and partial output: cannot safely restart.
+        return false;
+      }
+
       const launch = (accessToken: string) => {
         latestAccessToken = accessToken;
-        const { bridge, heartbeatTimer } = startBridge(accessToken, input.requestBytes);
+        const { bridge, heartbeatTimer } = startBridge(accessToken, requestBytes, {
+          bridgeKey: input.bridgeKey,
+        });
         writeNativeStream(
           bridge,
           heartbeatTimer,
-          input.blobStore,
+          blobStore,
           input.mcpTools,
           input.model,
           input.modelId,
           input.bridgeKey,
           input.convKey,
-          input.completedTurns,
-          input.currentTurn,
+          completedTurns,
+          currentTurn,
           input.writer,
           input.options,
           input.requestId,

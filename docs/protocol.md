@@ -64,14 +64,14 @@ Because Node.js HTTP/2 client sessions require persistent stream handling, `pi-c
 
 ## Stream idle watchdog
 
-`writeNativeStream` can arm an idle watchdog via `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`. **Default is `0` (disabled)** so Cursor can think/tool for as long as the upstream stream stays open. When enabled, the watchdog resets on:
+`writeNativeStream` arms a silence idle watchdog via `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`. **Default is `180000` (3 min)**. Set to `0` to disable. The watchdog resets on:
 
 - non-empty text/thinking deltas
 - **tokenDelta** (long pure-reasoning turns)
 - handled exec round-trips (MCP tools **and** native-tool rejects)
 - checkpoints, KV blob get/set, handled interaction queries
 
-Silent retries (`PI_CURSOR_STREAM_IDLE_MAX_RETRIES`) are also **off by default**. If you re-enable them, partial text/thinking already streamed blocks blind retries to avoid duplicated output.
+Silent retries (`PI_CURSOR_STREAM_IDLE_MAX_RETRIES`, default `5`) recover from silence and transport loss. Blind full-request restarts are blocked once text/thinking was streamed; checkpoint continuation is still allowed so partial output does not force a hard failure.
 
 ## Attributions
 
