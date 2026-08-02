@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.3] - 2026-08-02
+
+### Fixed
+
+- **Context-mode / compaction injections swallowed the real user message.** When Pi appended `context-mode active…` / `<session_state>` to the same user turn as the actual prompt (e.g. `hi\n\ncontext-mode active…`), the whole turn was classified as side-channel and folded into the system prompt — leaving an empty user task. Models then answered the prior session summary ("I'll re-read those three files…") instead of the new message. Mixed messages are now split: infrastructure blocks move to `<provider_context>`, and the residual user text stays as the live turn. Priority framing also states that the latest user message is the only task.
+
 ## [1.4.2] - 2026-08-02
 
 ### Fixed

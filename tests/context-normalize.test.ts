@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   isContextModeSideChannelText,
+  isPureContextModeSideChannelText,
   normalizeMessagesForCursor,
+  splitUserTextAndSideChannel,
 } from "../src/stream/context-normalize.js";
+import { parseMessages } from "../src/stream/message-parsing.js";
 
 const injection = [
   "context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_execute_file > ctx_search.",
@@ -10,6 +13,7 @@ const injection = [
   "",
   '<session_state source="compaction">',
   "<session_mode>implement</session_mode>",
+  "<summary>You were editing README.md, AGENTS.md, package.json before this message.</summary>",
   "</session_state>",
 ].join("\n");
 
@@ -19,6 +23,8 @@ describe("context-mode normalization", () => {
     expect(isContextModeSideChannelText("[context] session resume block")).toBe(true);
     expect(isContextModeSideChannelText("<compaction summary>prior work</compaction>")).toBe(true);
     expect(isContextModeSideChannelText("please implement dual auth")).toBe(false);
+    expect(isPureContextModeSideChannelText(injection)).toBe(true);
+    expect(isPureContextModeSideChannelText(`hi\n\n${injection}`)).toBe(false);
   });
 
   it("moves side-channel user messages into the system prompt", () => {
@@ -34,7 +40,51 @@ describe("context-mode normalization", () => {
 
     const system = String(normalized.find((m) => m.role === "system")?.content ?? "");
     expect(system).toMatch(/provider_context source="context-mode"/);
-    expect(system).toMatch(/Prioritize the user's actual request/);
+    expect(system).toMatch(/latest user message is the only task/i);
     expect(system).toMatch(/session_mode/);
+  });
+
+  it("splits a real prompt that was concatenated with a context-mode injection", () => {
+    const { userText, sideText } = splitUserTextAndSideChannel(`hi\n\n${injection}`);
+    expect(userText).toBe("hi");
+    expect(sideText).toMatch(/context-mode active/);
+    expect(sideText).toMatch(/session_state/);
+
+    const normalized = normalizeMessagesForCursor([
+      { role: "system", content: "You are Pi." },
+      { role: "user", content: `hi\n\n${injection}` },
+    ]);
+    const users = normalized.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]?.content).toBe("hi");
+
+    const parsed = parseMessages(normalized as any);
+    expect(parsed.userText).toBe("hi");
+    expect(parsed.systemPrompt).toMatch(/provider_context source="context-mode"/);
+    // Real user text must not be parked only inside provider_context.
+    expect(parsed.systemPrompt).not.toMatch(
+      /<provider_context[^>]*>\s*hi\s*\n\s*context-mode active/i,
+    );
+  });
+
+  it("keeps a short trailing user task after a leading session_state block", () => {
+    const mixed = `${injection}\n\nhi`;
+    const { userText, sideText } = splitUserTextAndSideChannel(mixed);
+    expect(userText).toBe("hi");
+    expect(sideText).toMatch(/session_state/);
+
+    const parsed = parseMessages([
+      { role: "system", content: "You are Pi." },
+      { role: "user", content: mixed },
+    ] as any);
+    expect(parsed.userText).toBe("hi");
+  });
+
+  it("keeps prose that mentions session_state mid-sentence as the user task", () => {
+    const prose = "please explain what a <session_state> block is used for";
+    const normalized = normalizeMessagesForCursor([{ role: "user", content: prose }]);
+    const users = normalized.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(String(users[0]?.content)).toMatch(/please explain/);
   });
 });
