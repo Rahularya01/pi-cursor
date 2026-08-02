@@ -237,7 +237,6 @@ export function normalizeMessagesForCursor(messages: OpenAIMessage[]): OpenAIMes
   const framed = frameContextModeSideChannel(sideParts.join("\n\n"));
   // Put the real task framing *after* infrastructure context so models that
   // overweight the end of the system prompt still see the priority rule last.
-  const system =
-    systemParts.length > 0 ? `${systemParts.join("\n")}\n\n${framed}` : framed;
+  const system = systemParts.length > 0 ? `${systemParts.join("\n")}\n\n${framed}` : framed;
   return [{ role: "system", content: system }, ...rest];
 }
