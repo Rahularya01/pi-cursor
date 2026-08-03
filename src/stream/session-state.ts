@@ -73,6 +73,25 @@ export function clearStoredCheckpoint(stored: StoredConversation, clearBlobStore
 }
 
 /**
+ * Drop only the unusable upstream checkpoint bytes/metadata.
+ *
+ * Mid-pause snapshots must survive: `planRecovery` falls back to full-history
+ * rebuild when the checkpoint is stale, and that path needs
+ * `midPausePendingToolCalls` + fingerprints + the blob store. Wiping them here
+ * was turning every stale checkpoint into a hard `skipReason=stale_checkpoint`.
+ */
+export function clearStoredCheckpointOnly(
+  stored: StoredConversation,
+  options: { clearBlobStore?: boolean } = {},
+): void {
+  stored.checkpoint = null;
+  delete stored.checkpointSource;
+  delete stored.checkpointTurnCount;
+  delete stored.checkpointHistoryFingerprint;
+  if (options.clearBlobStore) stored.blobStore.clear();
+}
+
+/**
  * Checkpoint bytes are replayed straight into `fromBinary` when a request is built. A truncated or
  * otherwise undecodable checkpoint would throw there and fail the turn — and, because nothing
  * clears it, every later turn in the conversation too. Decoding once here turns that permanent
@@ -120,8 +139,9 @@ export function discardStaleCheckpointIfNeeded(
     currentTurnCount,
     storedCheckpointHistoryFingerprint,
     currentHistoryFingerprint,
+    preservedMidPause: !!stored.midPausePendingToolCalls?.length,
   });
-  clearStoredCheckpoint(stored, true);
+  clearStoredCheckpointOnly(stored);
 }
 
 export function trimBlobStore(

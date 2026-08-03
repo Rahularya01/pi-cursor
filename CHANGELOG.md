@@ -7,6 +7,7 @@
 - **GOAWAY after a finished turn no longer fails/retries the stream (#3).** Cursor often closes the HTTP/2 connection with `GOAWAY (errorCode=0)` immediately after `interaction_update:turnEnded`. The provider used to surface that as a Connect error, retry the turn, and duplicate assistant output. Finished turns now complete cleanly; mid-turn GOAWAY (no `turnEnded`, or during a tool pause) still retries/errors as before.
 - Recognizes already-schema'd lifecycle updates (`turnEnded`, `stepStarted`/`stepCompleted`, `thinkingCompleted`, `heartbeat`, tool-call lifecycle, `shellOutputDelta`, `userMessageAppended`, summaries) as progress instead of recording them as `wireDrift`.
 - Normalizes `PI_CURSOR_CLIENT_VERSION` (trim / reject whitespace-only) on the HTTP/2 bridge and spawn diagnostics paths, matching `getCursorClientVersion()`.
+- **Stale-checkpoint discard no longer wipes mid-pause recovery state.** Discarding an undecodable/mismatched upstream checkpoint used to clear `midPausePendingToolCalls` and the blob store, so the documented full-history rebuild fallback could never run and tool resume failed with `skipReason=stale_checkpoint`. Checkpoint bytes are still dropped; mid-pause metadata and blobs are preserved for rebuild.
 
 ### Changed
 

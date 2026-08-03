@@ -429,7 +429,9 @@ export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
     // Prefer rebuild over hard fail when mid-pause metadata is still trustworthy.
     const rebuilt = tryRebuild("stale_checkpoint");
     if (rebuilt.kind !== "skip") return rebuilt;
-    return skipRecovery("stale_checkpoint", hadStoredCheckpointPreDiscard);
+    // Surface the rebuild skip reason (e.g. midpause mismatch) instead of always
+    // blaming the discarded checkpoint — callers already know it was stale.
+    return skipRecovery(rebuilt.reason, hadStoredCheckpointPreDiscard);
   }
 
   const expected = (input.stored.midPausePendingToolCalls ?? [])

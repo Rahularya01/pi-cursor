@@ -198,6 +198,37 @@ describe("planRecovery", () => {
     }
   });
 
+  it("rebuilds after real discardStaleCheckpointIfNeeded without wiping mid-pause", async () => {
+    const { discardStaleCheckpointIfNeeded } = await import("../src/stream/session-state.js");
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const blob = new Uint8Array([7, 7, 7]);
+    const stored = storedBase({
+      // Undecodable upstream checkpoint — previously also wiped mid-pause + blobs.
+      checkpoint: new Uint8Array([0xff, 0xff, 0xff, 0xff]),
+      checkpointTurnCount: completedTurns.length,
+      checkpointHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+      blobStore: new Map([["keep-me", blob]]),
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+      discardStaleCheckpoint: discardStaleCheckpointIfNeeded,
+    });
+    expect(stored.checkpoint).toBeNull();
+    expect(stored.midPausePendingToolCalls?.map((c) => c.toolCallId)).toEqual(["t1"]);
+    expect(stored.blobStore.get("keep-me")).toEqual(blob);
+    expect(decision.kind).toBe("rebuild_full_history");
+    if (decision.kind === "rebuild_full_history") {
+      expect(decision.rebuildReason).toBe("stale_checkpoint");
+    }
+  });
+
   it("falls back to rebuild when checkpoint tool ids mismatch but mid-pause is valid", () => {
     const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
     const stored = storedBase({

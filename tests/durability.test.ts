@@ -74,11 +74,19 @@ describe("checkpoint durability", () => {
       checkpoint: new Uint8Array([0xff, 0xff, 0xff, 0xff]),
       checkpointTurnCount: 0,
       checkpointHistoryFingerprint: "whatever",
+      midPausePendingToolCalls: [{ toolCallId: "t1", toolName: "read" }],
+      midPauseTurnCount: 0,
+      midPauseHistoryFingerprint: "fp",
+      midPauseRecordedAtMs: Date.now(),
+      blobStore: new Map([["b1", new Uint8Array([1])]]),
     });
 
     discardStaleCheckpointIfNeeded(stored, [], "r1", "c1");
 
     expect(stored.checkpoint).toBeNull();
+    // Rebuild fallback needs these; wiping them caused skipReason=stale_checkpoint.
+    expect(stored.midPausePendingToolCalls).toEqual([{ toolCallId: "t1", toolName: "read" }]);
+    expect(stored.blobStore.has("b1")).toBe(true);
   });
 });
 
