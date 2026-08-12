@@ -951,6 +951,7 @@ function writeNativeStream(
   idleRetry?: StreamIdleRetryController,
   streamIdleTimeoutMs = resolveStreamIdleTimeoutMs(process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS),
   checkpointRef: CheckpointRef = { current: null },
+  preservedMidPauseExecs: PendingExec[] = [],
 ): void {
   debugLog("native.stream.start", {
     requestId,
@@ -1025,6 +1026,7 @@ function writeNativeStream(
         blobStore,
         completedTurns,
         currentTurn,
+        emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
       );
       cleanupBridge(bridge, heartbeatTimer, bridgeKey);
       options?.signal?.removeEventListener("abort", abort);
@@ -1115,6 +1117,7 @@ function writeNativeStream(
       blobStore,
       completedTurns,
       currentTurn,
+      emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
     );
     debugLog("native.stream.abort", {
       requestId,
@@ -1382,6 +1385,7 @@ function writeNativeStream(
             blobStore,
             completedTurns,
             currentTurn,
+            emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
           );
           cleanupBridge(bridge, heartbeatTimer, bridgeKey);
           options?.signal?.removeEventListener("abort", abort);
@@ -1775,6 +1779,9 @@ function handleNativeToolResultResume(
     resumeIdleTimeoutMs,
     // Same bridge, so the same checkpoint cell: frames that landed during the pause stay visible.
     checkpointRef,
+    // A timeout after Cursor receives the tool result still needs the original pause
+    // snapshot so recovery can safely recreate that continuation.
+    pendingExecs,
   );
 }
 

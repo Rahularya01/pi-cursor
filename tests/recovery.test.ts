@@ -174,6 +174,31 @@ describe("planRecovery", () => {
     }
   });
 
+  it("does not replay tool results into a checkpoint without a mid-pause snapshot", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: new Uint8Array([1, 2, 3]),
+      midPausePendingToolCalls: undefined,
+      midPauseTurnCount: undefined,
+      midPauseHistoryFingerprint: undefined,
+      midPauseRecordedAtMs: undefined,
+    });
+
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    }
+  });
+
   it("falls back to full-history rebuild when checkpoint is discarded as stale", () => {
     const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
     const stored = storedBase({

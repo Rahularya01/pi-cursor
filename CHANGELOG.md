@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.9] - 2026-08-12
+
+### Fixed
+
+- **Tool continuation recovery after a silent resumed bridge.** Idle-timeout, abort, and transport-retry persistence now retain the mid-pause checkpoint and pending tool-call metadata when a tool result is being resumed, preventing valid checkpoints from being discarded as stale after the 3-minute watchdog fires.
+- Added a recovery guard that refuses to replay tool results into a checkpoint when no matching durable mid-pause snapshot exists.
+
 ## [1.4.8] - 2026-08-02
 
 ### Fixed

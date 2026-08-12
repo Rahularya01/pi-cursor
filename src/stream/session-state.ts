@@ -233,9 +233,32 @@ export function persistAbortedConversationState(
   blobStore: Map<string, Uint8Array>,
   completedTurns: ParsedTurn[],
   currentTurn: ParsedTurn,
+  pendingToolCalls: Array<{ toolCallId: string; toolName: string }> = [],
 ): void {
   const stored = conversationStates.get(convKey);
   if (!stored) return;
+
+  // An interrupted tool pause must retain its matching snapshot. Treating its
+  // checkpoint as a completed turn clears that metadata, making the next tool
+  // result reject a valid off-by-one checkpoint as stale.
+  if (pendingToolCalls.length > 0) {
+    commitStoredCheckpointMidPause(
+      stored,
+      latestCheckpoint,
+      blobStore,
+      completedTurns,
+      pendingToolCalls,
+      convKey,
+    );
+    debugLog("native.stream.abort_state_saved", {
+      convKey,
+      hasCheckpoint: !!latestCheckpoint,
+      completedTurnCount: completedTurns.length,
+      pendingToolCallIds: pendingToolCalls.map((call) => call.toolCallId),
+      currentTurn,
+    });
+    return;
+  }
 
   // Pi records the partial assistant response on an aborted stream. Keep Cursor's
   // matching checkpoint as well, so the next turn can continue the same native

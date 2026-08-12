@@ -436,6 +436,14 @@ export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
     .map((c) => c.toolCallId)
     .filter(identifiableToolCallId);
   const received = input.toolResults.map((r) => r.toolCallId).filter(identifiableToolCallId);
+  // Tool results are meaningful only when a matching tool pause was durably
+  // recorded. Without that evidence, accepting an empty expected set would
+  // replay arbitrary results into a checkpoint from an unrelated turn.
+  if (expected.length === 0 && received.length > 0) {
+    const rebuilt = tryRebuild("checkpoint_tool_mismatch");
+    if (rebuilt.kind !== "skip") return rebuilt;
+    return skipRecovery("pending_tool_call_mismatch", true, expected, received);
+  }
   const match = validatePendingCoveredByReceived(expected, received);
   if (!match.ok) {
     const rebuilt = tryRebuild("checkpoint_tool_mismatch");

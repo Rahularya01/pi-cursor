@@ -63,4 +63,32 @@ describe("aborted native streams", () => {
     expect(stored.checkpoint).toBeNull();
     expect(stored.blobStore.get("blob-1")).toEqual(new Uint8Array([4, 5, 6]));
   });
+
+  it("preserves a mid-pause snapshot when an interrupted stream awaits tool results", () => {
+    const convKey = "conv-key";
+    const stored = storedConversation();
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const checkpoint = new Uint8Array([1, 2, 3]);
+    __testInternals.conversationStates.set(convKey, stored);
+
+    __testInternals.persistAbortedConversationState(
+      convKey,
+      checkpoint,
+      new Map(),
+      completedTurns,
+      {
+        userText: "run a command",
+        steps: [{ kind: "toolCall", toolCallId: "call-1", toolName: "shell", arguments: {} }],
+      },
+      [{ toolCallId: "call-1", toolName: "shell" }],
+    );
+
+    expect(stored.checkpoint).toBe(checkpoint);
+    expect(stored.checkpointTurnCount).toBe(completedTurns.length);
+    expect(stored.checkpointHistoryFingerprint).toBe(
+      __testInternals.fingerprintCompletedTurns(completedTurns),
+    );
+    expect(stored.midPausePendingToolCalls).toEqual([{ toolCallId: "call-1", toolName: "shell" }]);
+    expect(stored.midPauseTurnCount).toBe(completedTurns.length);
+  });
 });
