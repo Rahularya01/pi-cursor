@@ -192,6 +192,8 @@ export interface StreamState {
   pendingExecs: PendingExec[];
   outputTokens: number;
   totalTokens: number;
+  /** Set once Cursor reported `turnEnded`; a connection close after it is a completed turn. */
+  turnEnded: boolean;
 }
 
 // ── Native streamSimple runtime ──
