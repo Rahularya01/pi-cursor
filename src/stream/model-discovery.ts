@@ -22,6 +22,10 @@ import {
 import { callUnaryOverH2, supportsInProcessH2 } from "../client/h2-unary.js";
 import { getBridgeFactory } from "./bridge-session.js";
 import { getCursorAgentUrl } from "./config.js";
+import {
+  CURSOR_FALLBACK_CONTEXT_WINDOW,
+  lookupCursorContextWindow,
+} from "../models/context-windows.js";
 import { writeCachedCatalog } from "./model-cache.js";
 
 export async function callCursorUnaryRpc(options: {
@@ -243,11 +247,19 @@ export async function discoverCursorCatalog(
   return { rawModels, parameterizedModels };
 }
 
-export function inferCursorContextWindow(id: string, name: string): number {
+/**
+ * Context window for a model Cursor discovery returned without one.
+ *
+ * Curated per-family table first (see `src/models/context-windows.ts`), then
+ * the legacy display-name heuristic, then Cursor's documented default window.
+ */
+export function inferCursorContextWindow(id: string, name: string, maxMode = false): number {
+  const documented = lookupCursorContextWindow(id, maxMode);
+  if (documented !== undefined) return documented;
   const text = `${id} ${name}`.toLowerCase();
   if (/\b1\s*m\b|(?:^|-)1m(?:-|$)/.test(text)) return 1_000_000;
   if (/\b272\s*k\b|(?:^|-)272k(?:-|$)/.test(text)) return 272_000;
-  return 200_000;
+  return CURSOR_FALLBACK_CONTEXT_WINDOW;
 }
 
 function normalizeCursorModels(models: readonly unknown[]): CursorModel[] {
@@ -261,7 +273,7 @@ function normalizeCursorModels(models: readonly unknown[]): CursorModel[] {
       id,
       name,
       reasoning: Boolean(m.thinkingDetails),
-      contextWindow: inferCursorContextWindow(id, name),
+      contextWindow: inferCursorContextWindow(id, name, Boolean(m.maxMode)),
       maxTokens: 64_000,
     });
   }
