@@ -183,6 +183,7 @@ import {
 import {
   planRecovery as planRecoveryImpl,
   wrapRecoveredToolResults as wrapRecoveredToolResultsImpl,
+  collapseToolResultsById as collapseToolResultsByIdImpl,
   lostToolContinuationErrorBody as lostToolContinuationErrorBodyImpl,
   formatLostToolContinuationDiagnostic as formatLostToolContinuationDiagnosticImpl,
   lostToolContinuationMessage as lostToolContinuationMessageImpl,
@@ -675,6 +676,7 @@ async function handleCursorNativeRequest(
             convKey,
             sessionId,
             completedTurns: turns,
+            inFlightTurn,
             maxMode,
             cursorModelParameters: body.cursor_model_parameters ?? [],
             getAccessToken,
@@ -710,8 +712,9 @@ async function handleCursorNativeRequest(
       });
       const mcpTools = buildMcpToolDefinitions(selectedTools);
       // Images ride the recovered user turn on this path too — dropping them here silently lost
-      // screenshots that the rebuild path preserves.
-      const recoveredUserImages = collectToolResultImages(toolResults);
+      // screenshots that the rebuild path preserves. Duplicate results are collapsed first so the
+      // image payload matches the collapsed wrapped text (see collapseToolResultsById).
+      const recoveredUserImages = collectToolResultImages(collapseToolResultsByIdImpl(toolResults));
       const recoveredCurrentTurn: ParsedTurn = {
         userText: decision.wrappedText,
         steps: [],
@@ -1529,6 +1532,13 @@ interface ResumeContext {
   convKey: string;
   sessionId: string | undefined;
   completedTurns: ParsedTurn[];
+  /**
+   * The full in-flight user turn as parsed from the resume request. The bridge's own
+   * `currentTurn` only accumulates execs of the last writeNativeStream round, while the
+   * client re-sends every tool result of the whole multi-round turn. Recovery planning
+   * needs this full view so its exact-match guard compares like with like.
+   */
+  inFlightTurn?: ParsedTurn;
   maxMode: boolean;
   cursorModelParameters: CursorModelParameter[];
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
@@ -1551,6 +1561,7 @@ function handleNativeToolResultResume(
     convKey,
     sessionId,
     completedTurns,
+    inFlightTurn,
     maxMode,
     cursorModelParameters,
     getAccessToken,
@@ -1682,7 +1693,7 @@ function handleNativeToolResultResume(
         stored,
         toolResults,
         completedTurns,
-        inFlightTurn: stripInFlightResults(currentTurn),
+        inFlightTurn: inFlightTurn ?? stripInFlightResults(currentTurn),
         rebuildReason: "synthesized_after_idle",
         sessionId,
         requestId: requestId ?? "native-tool-idle-retry",
@@ -1774,7 +1785,7 @@ function handleNativeToolResultResume(
         attempt: nextAttempt,
         pendingToolCallIds: toolResults.map((r) => r.toolCallId),
       });
-      const recoveredUserImages = collectToolResultImages(toolResults);
+      const recoveredUserImages = collectToolResultImages(collapseToolResultsByIdImpl(toolResults));
       const recoveredCurrentTurn: ParsedTurn = {
         userText: decision.wrappedText,
         steps: [],

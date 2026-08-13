@@ -21,9 +21,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";
-import { appendFile } from "node:fs";
+import { appendFile, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join as pathJoin } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   generateCursorAuthParams,
   getTokenExpiry,
@@ -650,6 +651,40 @@ export const CURSOR_NATIVE_API = "cursor-native" as const;
 
 /** Source id so /reload can replace our global API registration cleanly. */
 const CURSOR_API_PROVIDER_SOURCE = "@rahularya01/pi-cursor";
+
+/**
+ * Pi resolves extension imports of `@earendil-works/*` through its loader
+ * aliases to the host modules, but a `bun install` (or `npm install`) inside
+ * this package auto-installs the peerDependencies as a *nested* node_modules
+ * copy unless opted out. That nested copy is a different module instance with
+ * its own compat api registry, so `registerApiProvider` writes there are
+ * invisible to paths dispatching through the host registry (e.g.
+ * pi-advisor-flow's `stream()`), surfacing as
+ * `No API provider registered for api: cursor-native`.
+ *
+ * package.json peerDependenciesMeta + bunfig.toml prevent the stale install;
+ * this check surfaces the condition in /cursor.doctor if it still exists (e.g.
+ * an install that predates the fix).
+ */
+let staleNestedPeersCache: string[] | undefined;
+function detectStaleNestedPeers(): string[] {
+  if (staleNestedPeersCache) return staleNestedPeersCache;
+  const pkgRoot = fileURLToPath(new URL("..", import.meta.url));
+  const found: string[] = [];
+  for (const name of ["pi-ai", "pi-coding-agent"]) {
+    const manifest = pathJoin(pkgRoot, "node_modules", "@earendil-works", name, "package.json");
+    try {
+      const { version } = JSON.parse(readFileSync(manifest, "utf8")) as {
+        version?: string;
+      };
+      found.push(`${name}@${version ?? "?"}`);
+    } catch {
+      // no nested peer installed — clean
+    }
+  }
+  staleNestedPeersCache = found;
+  return found;
+}
 
 export function modelConfig(m: ProcessedModel) {
   const input = (m.supportsImages === false ? ["text"] : ["text", "image"]) as ("text" | "image")[];
@@ -1348,6 +1383,12 @@ export default async function (pi: ExtensionAPI) {
         `clientVersion=${d.clientVersion || getCursorClientVersion()}`,
         `tokenSource=${d.tokenSource || currentTokenSource || "none"}`,
         `systemCredentials=${d.systemCredentials || resolveSystemCredentialPolicy()}`,
+        `staleNestedPeers=${
+          detectStaleNestedPeers().length > 0
+            ? detectStaleNestedPeers().join(",") +
+              " (WARNING: nested peer shadows host @earendil-works; compat-registry paths like pi-advisor-flow fail with 'No API provider registered for api: cursor-native' — delete node_modules/@earendil-works and reinstall)"
+            : "none"
+        }`,
         `lastResolvedRuntimeModel=${d.resolvedRuntimeModel || "none"}`,
         `availableModels=${d.availableModels || lastRegisteredModels.length || "none"}`,
         `catalogCache=${
@@ -1520,6 +1561,13 @@ export default async function (pi: ExtensionAPI) {
     rawModels: CursorModel[],
     parameterizedModels: CursorParameterizedModel[] = [],
   ) {
+    const staleNestedPeers = detectStaleNestedPeers();
+    if (staleNestedPeers.length > 0) {
+      debugExtensionLog("extension.stale_nested_peers", {
+        peers: staleNestedPeers.join(","),
+        hint: "delete node_modules/@earendil-works or reinstall (peer=false); compat-registry paths like pi-advisor-flow fail with 'No API provider registered for api: cursor-native'",
+      });
+    }
     const processed = applyModels(rawModels, parameterizedModels);
 
     const streamSimple = createCursorNativeStream({

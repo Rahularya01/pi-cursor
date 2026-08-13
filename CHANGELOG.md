@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`pending_tool_call_mismatch` (`tool_continuation_lost`) after any bridge loss during a multi-round tool chain.** When the 3-minute idle watchdog restarted a resumed stream, recovery planning was handed the bridge's `currentTurn` — which only tracks the execs of the _last_ round — while the client re-sends _every_ tool result of the whole user turn. The exact-match guard compared e.g. 4 ids against 39 and hard-skipped, so every lost bridge mid-chain surfaced as “Cursor tool continuation was lost” even though the mid-pause snapshot and history were perfectly valid. Recovery planning now uses the full in-flight turn parsed from the resume request.
+- **Re-emitted tool calls no longer poison recovery validation.** After a partial-wait resume, Pi records a fresh assistant message that reuses an already-answered exec id; the duplicate previously tripped the validators' duplicate tripwire into `pending_tool_call_mismatch`. Tool-id lists are de-duplicated before comparison — a repeated id is an artifact, not a missing result.
+- **Duplicate tool results are collapsed before being replayed after bridge loss.** The recovery validators tolerate repeated tool ids (a partial-wait resume re-emits an already-answered exec id), but the raw result list was previously wrapped verbatim — so checkpoint and rebuild recovery could feed Cursor the same tool output twice. `collapseToolResultsById` now keeps only the freshest result per id (first-seen order) in both the wrapped replay text and the rebuilt turn's image payload.
+- **Stale nested `@earendil-works/*` peers no longer shadow the host modules.** A `bun install` / `npm install` inside this package auto-installed the `peerDependencies` as a nested `node_modules` copy. That nested copy is a separate module instance with its own compat api registry, so `registerApiProvider` wrote `cursor-native` somewhere the host dispatcher (and extensions like pi-advisor-flow that call compat `stream()` directly) never look, surfacing as `No API provider registered for api: cursor-native`. The peers are now declared optional (`peerDependenciesMeta`) and `bunfig.toml` sets `[install] peer = false` so installers no longer create the stale copies; `package.json` keeps the peer contract for tooling. Activation now detects an existing nested peer (e.g. from an install that predates the fix) and reports it in `/cursor.doctor` as `staleNestedPeers`. `package-lock.json` was regenerated so locked installs no longer recreate the nested peers — the `@earendil-works/*` modules are now dev-only dependencies (available to the typecheck/test toolchain, never installed by pi's production install).
+
 ## [1.4.14] - 2026-08-15
 
 ### Fixed
@@ -40,6 +49,23 @@
 - Hardened permission handling, transport framing, OAuth cancellation, recovery journals, logging, and MCP tool validation.
 - Startup model discovery now uses stale-while-revalidate behavior so Pi can activate from cached or bundled models without waiting for network discovery.
 - Added bounded payloads, backpressure handling, cleanup on aborted/failing streams, and expanded regression coverage.
+
+## [Unreleased]
+
+### Fixed
+
+- **Duplicate tool results are collapsed before being replayed after bridge loss.** The recovery validators tolerate repeated tool ids (a partial-wait resume re-emits an already-answered exec id), but the raw result list was previously wrapped verbatim — so checkpoint and rebuild recovery could feed Cursor the same tool output twice. `collapseToolResultsById` now keeps only the freshest result per id (first-seen order) in both the wrapped replay text and the rebuilt turn's image payload.
+
+- **Stale nested `@earendil-works/*` peers no longer shadow the host modules.** A `bun install` / `npm install` inside this package auto-installed the `peerDependencies` as a nested `node_modules` copy. That nested copy is a separate module instance with its own compat api registry, so `registerApiProvider` wrote `cursor-native` somewhere the host dispatcher (and extensions like pi-advisor-flow that call compat `stream()` directly) never look, surfacing as `No API provider registered for api: cursor-native`. The peers are now declared optional (`peerDependenciesMeta`) and `bunfig.toml` sets `[install] peer = false` so installers no longer create the stale copies; `package.json` keeps the peer contract for tooling. Activation now detects an existing nested peer (e.g. from an install that predates the fix) and reports it in `/cursor.doctor` as `staleNestedPeers`. `package-lock.json` was regenerated so locked installs no longer recreate the nested peers — the `@earendil-works/*` modules are now dev-only dependencies (available to the typecheck/test toolchain, never installed by pi's production install).
+
+## [1.4.10] - 2026-08-13
+
+### Fixed
+
+- **`pending_tool_call_mismatch` (`tool_continuation_lost`) after any bridge loss during a multi-round tool chain.** When the 3-minute idle watchdog restarted a resumed stream, recovery planning was handed the bridge's `currentTurn` — which only tracks the execs of the _last_ round — while the client re-sends _every_ tool result of the whole user turn. The exact-match guard compared e.g. 4 ids against 39 and hard-skipped, so every lost bridge mid-chain surfaced as “Cursor tool continuation was lost” even though the mid-pause snapshot and history were perfectly valid. Recovery planning now uses the full in-flight turn parsed from the resume request.
+- **Re-emitted tool calls no longer poison recovery validation.** After a partial-wait resume, Pi records a fresh assistant message that reuses an already-answered exec id; the duplicate previously tripped the validators' duplicate tripwire into `pending_tool_call_mismatch`. Tool-id lists are de-duplicated before comparison — a repeated id is an artifact, not a missing result.
+
+> > > > > > > e78a775 (fix: recover multi-round tool chains after bridge loss instead of pending_tool_call_mismatch)
 
 ## [1.4.9] - 2026-08-12
 

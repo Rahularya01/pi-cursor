@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  collapseToolResultsById,
   fingerprintCompletedTurns,
   planRecovery,
   wrapRecoveredToolResults,
@@ -252,6 +253,215 @@ describe("planRecovery", () => {
       expect(decision.reason).toBe("pending_tool_call_mismatch");
     }
   });
+
+  it("rebuilds a multi-round turn when the request carries the full in-flight turn", () => {
+    // Regression: the bridge's currentTurn accumulates only the execs of the last
+    // writeNativeStream round, while the client re-sends every tool result of the whole
+    // multi-round user turn. handleNativeToolResultResume now hands recovery planning the
+    // full parsed in-flight turn instead of the bridge's last-round view; validate that a
+    // 20-call turn with all results still rebuilds instead of hard-skipping.
+    const completedTurns: ParsedTurn[] = Array.from({ length: 4 }, (_, i) => ({
+      userText: `earlier ${i}`,
+      steps: [] as ParsedTurn["steps"],
+    }));
+    const allIds = [...Array.from({ length: 16 }, (_, i) => `r${i + 1}`), "l1", "l2", "l3", "l4"];
+    const toolResults: ToolResultInfo[] = allIds.map((toolCallId) => ({
+      toolCallId,
+      content: "ok",
+    }));
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: ["l1", "l2", "l3", "l4"].map((toolCallId) => ({
+        toolCallId,
+        toolName: "read",
+      })),
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+
+    const decision = planRecovery({
+      stored,
+      toolResults,
+      completedTurns,
+      // What handleNativeToolResultResume now passes: the full in-flight turn parsed
+      // from the resume request (every round of the multi-round turn).
+      inFlightTurn: toolTurn(allIds),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+  });
+
+  it("hard-skips when the in-flight turn only tracks the parked round (pre-fix bridge view)", () => {
+    // Contract guard: recovery planning demands that the in-flight turn handed to it covers
+    // every result the client re-sent (exact id match). A caller that passes only the
+    // bridge's last-round view — as handleNativeToolResultResume did before the fix — must
+    // still hard-skip rather than rebuild an incomplete transcript that silently drops the
+    // earlier rounds of the turn. The fix belongs in the caller (pass the full parsed turn),
+    // never in relaxing this equality.
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const allIds = ["r1", "r2", "r3", "r4", "l1", "l2", "l3", "l4"];
+    const toolResults: ToolResultInfo[] = allIds.map((toolCallId) => ({
+      toolCallId,
+      content: "ok",
+    }));
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: ["l1", "l2", "l3", "l4"].map((toolCallId) => ({
+        toolCallId,
+        toolName: "read",
+      })),
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+
+    const decision = planRecovery({
+      stored,
+      toolResults,
+      completedTurns,
+      // The bridge's currentTurn view: only the parked round's execs, not the whole turn.
+      inFlightTurn: toolTurn(["l1", "l2", "l3", "l4"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    }
+  });
+
+  it("tolerates a re-emitted tool call duplicated in the client history", () => {
+    // Regression: after a partial-wait resume, Pi records a fresh assistant message that
+    // re-emits an already-answered exec id. The duplicate must be treated as answered
+    // rather than tripping the validator's duplicate tripwire into pending_tool_call_mismatch.
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [
+        { toolCallId: "t1", toolName: "read" },
+        { toolCallId: "t2", toolName: "read" },
+      ],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const inFlightTurn = toolTurn(["t1", "t2"]);
+    // Partial-wait re-emission: the same ids appear again in a later assistant message.
+    inFlightTurn.steps.push(
+      { kind: "toolCall", toolCallId: "t2", toolName: "read", arguments: {} },
+      { kind: "toolCall", toolCallId: "t1", toolName: "read", arguments: {} },
+    );
+    const decision = planRecovery({
+      stored,
+      toolResults: [
+        { toolCallId: "t1", content: "ok" },
+        { toolCallId: "t2", content: "ok" },
+      ],
+      completedTurns,
+      inFlightTurn,
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+  });
+
+  it("still skips when a parked tool call has no result even with duplicate artifacts", () => {
+    // Dedupe must not weaken the real guard: a parked exec that genuinely has no result
+    // in the request still makes the rebuild unsafe and must hard-skip.
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [
+        { toolCallId: "t1", toolName: "read" },
+        { toolCallId: "t2", toolName: "read" },
+        { toolCallId: "t3", toolName: "read" },
+      ],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const inFlightTurn = toolTurn(["t1", "t2", "t3"]);
+    inFlightTurn.steps.push(
+      { kind: "toolCall", toolCallId: "t1", toolName: "read", arguments: {} },
+      { kind: "toolCall", toolCallId: "t2", toolName: "read", arguments: {} },
+    );
+    const decision = planRecovery({
+      stored,
+      // t3 parked but never answered
+      toolResults: [
+        { toolCallId: "t1", content: "ok" },
+        { toolCallId: "t2", content: "ok" },
+      ],
+      completedTurns,
+      inFlightTurn,
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    }
+  });
+  it("collapses duplicate tool results on checkpoint recovery (last result wins)", () => {
+    // Regression: the validators tolerate repeated ids (partial-wait re-emission), so the
+    // coverage check passes with two results for the same tool_call_id — but the raw list
+    // must not be wrapped and replayed, or Cursor receives the same tool output twice.
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: new Uint8Array([0x0a, 0x00]),
+      midPausePendingToolCalls: [{ toolCallId: "t1", toolName: "read" }],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [
+        { toolCallId: "t1", content: "stale output" },
+        { toolCallId: "t1", content: "fresh output" },
+      ],
+      completedTurns,
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("recover");
+    if (decision.kind === "recover") {
+      expect(decision.wrappedText).toContain("fresh output");
+      expect(decision.wrappedText).not.toContain("stale output");
+      expect(decision.wrappedText.split("Tool call id: t1").length - 1).toBe(1);
+    }
+  });
+
+  it("collapses duplicate tool results on full-history rebuild (last result wins)", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [
+        { toolCallId: "t1", toolName: "read" },
+        { toolCallId: "t2", toolName: "read" },
+      ],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [
+        { toolCallId: "t1", content: "stale output" },
+        { toolCallId: "t1", content: "fresh output" },
+        { toolCallId: "t2", content: "round two" },
+      ],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1", "t2"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+    if (decision.kind === "rebuild_full_history") {
+      expect(decision.toolResults).toEqual([
+        { toolCallId: "t1", content: "fresh output" },
+        { toolCallId: "t2", content: "round two" },
+      ]);
+      expect(decision.wrappedText).toContain("fresh output");
+      expect(decision.wrappedText).not.toContain("stale output");
+    }
+  });
 });
 
 describe("wrapRecoveredToolResults", () => {
@@ -260,5 +470,19 @@ describe("wrapRecoveredToolResults", () => {
     expect(text).toContain("recovery:fixed-id");
     expect(text).toContain("Tool call id: abc");
     expect(text).toContain("hello");
+  });
+
+  it("collapseToolResultsById keeps the last result per tool call id in first-seen order", () => {
+    const collapsed = collapseToolResultsById([
+      { toolCallId: "t1", content: "first" },
+      { toolCallId: "t2", content: "middle" },
+      { toolCallId: "t1", content: "last" },
+      { toolCallId: "t3", content: "tail" },
+    ]);
+    expect(collapsed).toEqual([
+      { toolCallId: "t1", content: "last" },
+      { toolCallId: "t2", content: "middle" },
+      { toolCallId: "t3", content: "tail" },
+    ]);
   });
 });

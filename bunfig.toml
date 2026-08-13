@@ -1,0 +1,8 @@
+# pi-managed extension: core @earendil-works/* APIs are provided by the host pi
+# process via loader aliases/virtual modules, not installed as peers.
+# Without this, `bun install` auto-installs stale peer copies that shadow the
+# host version and break compat-registry paths (e.g. pi-advisor-flow) with
+# "No API provider registered for api: cursor-native". See pi extension loader
+# docs for the same rationale used in pi's own npm extension tree.
+[install]
+peer = false

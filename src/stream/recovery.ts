@@ -134,6 +134,20 @@ export function formatLostToolContinuationDiagnostic(
   );
 }
 
+/**
+ * Collapse duplicate tool results so the replay payload carries at most one result per tool
+ * call id, keeping the last result received for each id (in first-seen order). The validators
+ * tolerate repeated ids — a partial-wait resume re-emits an already-answered exec id — but
+ * forwarding the raw list into `wrapRecoveredToolResults` would feed Cursor the same tool
+ * output twice. The freshest result per id is the one whose side effects led to the current
+ * state, so later occurrences win over earlier ones.
+ */
+export function collapseToolResultsById(toolResults: ToolResultInfo[]): ToolResultInfo[] {
+  const byId = new Map<string, ToolResultInfo>();
+  for (const result of toolResults) byId.set(result.toolCallId, result);
+  return [...byId.values()];
+}
+
 export function wrapRecoveredToolResults(
   toolResults: Array<Pick<ToolResultInfo, "toolCallId" | "content">>,
   recoveryId: string = crypto.randomUUID(),
@@ -273,15 +287,24 @@ export function skipRecovery(
   };
 }
 
+/**
+ * Tool ids are de-duplicated before comparison because the client history can legitimately
+ * repeat a tool call: when the live bridge re-emits unresolved execs during a partial-wait,
+ * Pi records a fresh assistant tool-call message that reuses the same id. A repeated id is an
+ * artifact, not corruption — the call was still answered exactly once — so it must not trip
+ * the duplicate tripwire and turn an otherwise sound recovery into `pending_tool_call_mismatch`.
+ */
+function dedupeIds(ids: string[]): string[] {
+  return [...new Set(ids)];
+}
+
 export function validateExactToolResultMatch(
   expected: string[],
   received: string[],
 ): { ok: true } | { ok: false; expected: string[]; received: string[] } {
-  const expectedSet = new Set(expected);
-  const receivedSet = new Set(received);
-  const hasDuplicates =
-    expectedSet.size !== expected.length || receivedSet.size !== received.length;
-  if (hasDuplicates || !setsEqual(expectedSet, receivedSet)) {
+  const expectedSet = new Set(dedupeIds(expected));
+  const receivedSet = new Set(dedupeIds(received));
+  if (!setsEqual(expectedSet, receivedSet)) {
     return { ok: false, expected, received };
   }
   return { ok: true };
@@ -301,11 +324,9 @@ export function validatePendingCoveredByReceived(
   expected: string[],
   received: string[],
 ): { ok: true } | { ok: false; expected: string[]; received: string[] } {
-  const expectedSet = new Set(expected);
-  const receivedSet = new Set(received);
-  const hasDuplicates =
-    expectedSet.size !== expected.length || receivedSet.size !== received.length;
-  if (hasDuplicates || [...expectedSet].some((id) => !receivedSet.has(id))) {
+  const expectedSet = new Set(dedupeIds(expected));
+  const receivedSet = new Set(dedupeIds(received));
+  if ([...expectedSet].some((id) => !receivedSet.has(id))) {
     return { ok: false, expected, received };
   }
   return { ok: true };
@@ -380,15 +401,16 @@ export function planFullHistoryRebuild(
     );
   }
 
+  const collapsedToolResults = collapseToolResultsById(input.toolResults);
   return {
     kind: "rebuild_full_history",
     hadStoredCheckpoint,
     conversationId: input.stored.conversationId,
     completedTurns: input.completedTurns,
     inFlightTurn: strippedInFlightTurn,
-    toolResults: input.toolResults,
+    toolResults: collapsedToolResults,
     blobStore: input.stored.blobStore,
-    wrappedText: wrapRecoveredToolResults(input.toolResults),
+    wrappedText: wrapRecoveredToolResults(collapsedToolResults),
     rebuildReason,
   };
 }
@@ -451,12 +473,13 @@ export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
     return skipRecovery("pending_tool_call_mismatch", true, match.expected, match.received);
   }
 
+  const collapsedToolResults = collapseToolResultsById(input.toolResults);
   return {
     kind: "recover",
     hadStoredCheckpoint: true,
     checkpoint: input.stored.checkpoint,
     conversationId: input.stored.conversationId,
     blobStore: input.stored.blobStore,
-    wrappedText: wrapRecoveredToolResults(input.toolResults),
+    wrappedText: wrapRecoveredToolResults(collapsedToolResults),
   };
 }
