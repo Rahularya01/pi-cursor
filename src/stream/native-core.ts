@@ -264,6 +264,7 @@ export const __testInternals = {
   persistAbortedConversationState,
   trimBlobStore,
   classifyBridgeExit,
+  writeNativeStream,
   setMetricEmitterForTests(factory?: MetricEmitter) {
     setMetricEmitter(factory);
   },
@@ -973,6 +974,7 @@ function writeNativeStream(
     pendingExecs: [],
     outputTokens: 0,
     totalTokens: 0,
+    turnEnded: false,
   };
   const tagFilter = createThinkingTagFilter();
   let mcpExecReceived = false;
@@ -1267,6 +1269,16 @@ function writeNativeStream(
     (endStreamBytes) => {
       const endError = parseConnectEndStream(endStreamBytes);
       if (endError) {
+        // Cursor closes the connection right after `turnEnded`. That close ends a completed
+        // turn; reporting it as an error made Pi retry and duplicate the answer (upstream #3).
+        if (state.turnEnded && !pauseRequested) {
+          debugLog("native.stream.post_turn_close", {
+            requestId,
+            modelId,
+            message: endError.message,
+          });
+          return;
+        }
         streamError = endError;
         const enhanced = enhanceCursorStreamError(endError.message);
         debugLog("native.stream.cursor_error", {
@@ -1352,7 +1364,11 @@ function writeNativeStream(
       return;
     }
 
-    if (code !== 0) {
+    // Same completed-turn rule as the end-stream frame: the non-zero exit that follows a
+    // GOAWAY after `turnEnded` must finalize the turn, not restart it (upstream #3).
+    const completedTurnClose = state.turnEnded && !mcpExecReceived;
+
+    if (code !== 0 && !completedTurnClose) {
       const failure = classifyBridgeExit({
         exitCode: code,
         stderr: typeof bridge.lastStderr === "function" ? bridge.lastStderr() : "",

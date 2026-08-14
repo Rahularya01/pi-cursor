@@ -143,6 +143,15 @@ export function processServerMessage(
       }
       return interactionUpdateCountsAsProgress(updateCase);
     }
+    if (updateCase === "turnEnded") {
+      // Cursor closes the HTTP/2 connection right after this. Recorded so the close is
+      // finalized as a completed turn instead of retried as a failure (upstream #3).
+      state.turnEnded = true;
+      return true;
+    }
+    // Liveness cases (heartbeat, toolCallStarted, partialToolCall, ...) are already defined by
+    // interactionUpdateCountsAsProgress; reuse it rather than keeping a second list here.
+    if (interactionUpdateCountsAsProgress(updateCase)) return true;
     // Unrecognized update cases are informational rather than stranding — the
     // stream keeps flowing — but they are the first sign our schema is behind.
     recordDriftSignal("interaction_update", updateCase);

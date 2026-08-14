@@ -1,4 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { create } from "@bufbuild/protobuf";
+import {
+  AgentServerMessageSchema,
+  HeartbeatUpdateSchema,
+  InteractionUpdateSchema,
+  PartialToolCallUpdateSchema,
+  ToolCallStartedUpdateSchema,
+} from "../src/proto/agent_pb.js";
+import { processServerMessage } from "../src/stream/server-messages.js";
+import type { StreamState } from "../src/stream/types.js";
 import {
   __testInternals,
   canBlindIdleRestart,
@@ -21,6 +31,39 @@ describe("idle progress classification", () => {
     expect(interactionUpdateCountsAsProgress("heartbeat")).toBe(true);
     expect(interactionUpdateCountsAsProgress("thinkingCompleted")).toBe(true);
     expect(interactionUpdateCountsAsProgress("toolCallStarted")).toBe(true);
+  });
+
+  it("resets the watchdog for liveness updates the dispatcher receives", () => {
+    const liveness = [
+      { case: "heartbeat" as const, value: create(HeartbeatUpdateSchema, {}) },
+      { case: "toolCallStarted" as const, value: create(ToolCallStartedUpdateSchema, {}) },
+      { case: "partialToolCall" as const, value: create(PartialToolCallUpdateSchema, {}) },
+    ];
+    for (const message of liveness) {
+      const state: StreamState = {
+        toolCallIndex: 0,
+        pendingExecs: [],
+        outputTokens: 0,
+        totalTokens: 0,
+        turnEnded: false,
+      };
+      const serverMessage = create(AgentServerMessageSchema, {
+        message: {
+          case: "interactionUpdate",
+          value: create(InteractionUpdateSchema, { message }),
+        },
+      });
+      const madeProgress = processServerMessage(
+        serverMessage,
+        new Map(),
+        [],
+        () => {},
+        state,
+        () => {},
+        () => {},
+      );
+      expect([message.case, madeProgress]).toEqual([message.case, true]);
+    }
   });
 
   it("requires non-empty text for text/thinking deltas", () => {

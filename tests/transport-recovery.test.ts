@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  AgentServerMessageSchema,
+  InteractionUpdateSchema,
+  TextDeltaUpdateSchema,
+  TurnEndedUpdateSchema,
+  type InteractionUpdate,
+} from "../src/proto/agent_pb.js";
+import { frameConnectMessage } from "../src/client/bridge.js";
+import { __testInternals } from "../src/stream/native-core.js";
 import {
   canBlindIdleRestart,
   canRecoverAfterTransportLoss,
@@ -159,5 +169,105 @@ describe("durable run journal", () => {
     expect(loaded!.conversationId).toBe("conv-journal-1");
     expect(loaded!.sessionId).toBe("session-1");
     expect(Array.from(loaded!.checkpoint ?? [])).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("completed-turn connection close", () => {
+  function frame(bytes: Uint8Array, flags = 0): Buffer {
+    return frameConnectMessage(bytes, flags);
+  }
+
+  function updateFrame(message: InteractionUpdate["message"]): Buffer {
+    return frame(
+      toBinary(
+        AgentServerMessageSchema,
+        create(AgentServerMessageSchema, {
+          message: {
+            case: "interactionUpdate",
+            value: create(InteractionUpdateSchema, { message }),
+          },
+        }),
+      ),
+    );
+  }
+
+  it("finalizes the turn when Cursor GOAWAYs after turnEnded (upstream #3)", () => {
+    const calls: string[] = [];
+    const writer = {
+      output: {} as never,
+      closed: false,
+      start() {},
+      text() {},
+      thinking() {},
+      toolCall() {},
+      done(reason: string) {
+        calls.push(`done:${reason}`);
+        this.closed = true;
+      },
+      error(message: string) {
+        calls.push(`error:${message}`);
+        this.closed = true;
+      },
+    };
+    let onData: (chunk: Buffer) => void = () => {};
+    let onClose: (code: number) => void = () => {};
+    const bridge = {
+      proc: { kill: () => true },
+      alive: true,
+      lastStderr: () => "GOAWAY errorCode=0",
+      write: () => {},
+      end: () => {},
+      onData: (cb: (chunk: Buffer) => void) => {
+        onData = cb;
+      },
+      onClose: (cb: (code: number) => void) => {
+        onClose = cb;
+      },
+    };
+    const heartbeatTimer = setInterval(() => {}, 60_000);
+
+    __testInternals.writeNativeStream(
+      bridge,
+      heartbeatTimer,
+      new Map(),
+      [],
+      {} as never,
+      "claude-4.5-sonnet",
+      "bridge-key",
+      "conv-key",
+      [],
+      { userText: "hi", steps: [] },
+      writer as never,
+      undefined,
+      "req-1",
+      undefined,
+      0,
+    );
+
+    onData(
+      updateFrame({
+        case: "textDelta",
+        value: create(TextDeltaUpdateSchema, { text: "hello" }),
+      }),
+    );
+    onData(updateFrame({ case: "turnEnded", value: create(TurnEndedUpdateSchema, {}) }));
+    // Cursor's GOAWAY arrives as a Connect end-stream error, then the bridge exits 2.
+    onData(
+      frame(
+        new TextEncoder().encode(
+          JSON.stringify({
+            error: {
+              code: "unavailable",
+              message: "Cursor GOAWAY (errorCode=0): upstream connection closed, retriable",
+            },
+          }),
+        ),
+        2,
+      ),
+    );
+    onClose(2);
+    clearInterval(heartbeatTimer);
+
+    expect(calls).toEqual(["done:stop"]);
   });
 });
