@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { getCursorClientVersion } from "../stream/config.js";
 
 const CURSOR_API_URL = "https://api2.cursor.sh";
+export const MAX_UNARY_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 export interface UnaryH2Options {
   accessToken: string;
@@ -127,12 +128,21 @@ export function callUnaryOverH2(options: UnaryH2Options): Promise<UnaryH2Result>
     });
 
     const chunks: Buffer[] = [];
+    let responseBytes = 0;
     let status = 0;
 
     request.on("response", (headers) => {
       status = Number(headers[":status"] ?? 0);
     });
-    request.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    request.on("data", (chunk: Buffer) => {
+      responseBytes += chunk.byteLength;
+      if (responseBytes > MAX_UNARY_RESPONSE_BYTES) {
+        request.close(http2.constants.NGHTTP2_CANCEL);
+        fail(new Error(`Cursor unary response exceeds ${MAX_UNARY_RESPONSE_BYTES} bytes`));
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
     request.on("error", (err) => fail(err));
     request.on("end", () => succeed({ status, body: Buffer.concat(chunks) }));
 

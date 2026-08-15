@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -169,6 +169,102 @@ describe("durable run journal", () => {
     expect(loaded!.conversationId).toBe("conv-journal-1");
     expect(loaded!.sessionId).toBe("session-1");
     expect(Array.from(loaded!.checkpoint ?? [])).toEqual([1, 2, 3, 4]);
+    expect(statSync(join(dir, "run-journal")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, "run-journal", "ck-disk-1.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects oversized journal files before reading them", () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-cursor-journal-"));
+    process.env.PI_CURSOR_CACHE_DIR = dir;
+    resetCacheDirForTests();
+    const journalDir = join(dir, "run-journal");
+    mkdirSync(journalDir, { mode: 0o700 });
+    const journalPath = join(journalDir, "oversized.json");
+    writeFileSync(journalPath, "");
+    truncateSync(journalPath, journalInternals.MAX_JOURNAL_FILE_BYTES + 1);
+
+    expect(readConversationJournal("oversized")).toBeUndefined();
+  });
+});
+
+describe("native stream terminal cleanup", () => {
+  function setup(signal?: AbortSignal) {
+    const calls: string[] = [];
+    let endCalls = 0;
+    let onData: (chunk: Buffer) => void = () => {};
+    const bridge = {
+      proc: { kill: () => true },
+      alive: true,
+      lastStderr: () => "",
+      write: () => {},
+      end: () => {
+        endCalls++;
+      },
+      onData: (cb: (chunk: Buffer) => void) => {
+        onData = cb;
+      },
+      onClose: () => {},
+    };
+    const writer = {
+      output: {} as never,
+      closed: false,
+      start() {},
+      text() {},
+      thinking() {},
+      toolCall() {},
+      done(reason: string) {
+        calls.push(`done:${reason}`);
+        this.closed = true;
+      },
+      error(message: string) {
+        calls.push(`error:${message}`);
+        this.closed = true;
+      },
+    };
+    const heartbeatTimer = setInterval(() => {}, 60_000);
+    __testInternals.writeNativeStream(
+      bridge,
+      heartbeatTimer,
+      new Map(),
+      [],
+      {} as never,
+      "claude-4.5-sonnet",
+      "bridge-cleanup",
+      "conv-cleanup",
+      [],
+      { userText: "hi", steps: [] },
+      writer as never,
+      signal ? ({ signal } as never) : undefined,
+      "req-cleanup",
+      undefined,
+      0,
+    );
+    return {
+      calls,
+      get endCalls() {
+        return endCalls;
+      },
+      onData,
+      heartbeatTimer,
+    };
+  }
+
+  it("honors a signal that was aborted before the stream starts", () => {
+    const controller = new AbortController();
+    controller.abort();
+    const harness = setup(controller.signal);
+    clearInterval(harness.heartbeatTimer);
+    expect(harness.calls).toEqual(["error:Aborted"]);
+    expect(harness.endCalls).toBe(1);
+  });
+
+  it("terminates the bridge when a server frame cannot be decoded", () => {
+    const harness = setup();
+    const malformed = Buffer.from([0, 0, 0, 0, 1, 0xff]);
+    harness.onData(malformed);
+    clearInterval(harness.heartbeatTimer);
+    expect(harness.calls[0]).toMatch(/^error:/);
+    expect(harness.endCalls).toBe(1);
   });
 });
 

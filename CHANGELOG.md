@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.10] - 2026-08-15
+
+### Fixed
+
+- Hardened permission handling, transport framing, OAuth cancellation, recovery journals, logging, and MCP tool validation.
+- Startup model discovery now uses stale-while-revalidate behavior so Pi can activate from cached or bundled models without waiting for network discovery.
+- Added bounded payloads, backpressure handling, cleanup on aborted/failing streams, and expanded regression coverage.
+
 ## [1.4.9] - 2026-08-12
 
 ### Fixed

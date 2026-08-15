@@ -161,15 +161,18 @@ async function readVscdbTokens(): Promise<StoredTokens> {
   for (const dbPath of dbPaths) {
     try {
       const db = new DatabaseSyncClass(dbPath, { readOnly: true });
-
-      const accessRow = db
-        .prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'")
-        .get() as { value?: string } | undefined;
-      const refreshRow = db
-        .prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/refreshToken'")
-        .get() as { value?: string } | undefined;
-
-      db.close();
+      let accessRow: { value?: string } | undefined;
+      let refreshRow: { value?: string } | undefined;
+      try {
+        accessRow = db
+          .prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'")
+          .get() as { value?: string } | undefined;
+        refreshRow = db
+          .prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/refreshToken'")
+          .get() as { value?: string } | undefined;
+      } finally {
+        db.close();
+      }
 
       const accessToken = typeof accessRow?.value === "string" ? accessRow.value.trim() : undefined;
       const refreshToken =

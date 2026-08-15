@@ -22,15 +22,20 @@
  */
 import http2 from "node:http2";
 import crypto from "node:crypto";
+import { once } from "node:events";
 
 const CURSOR_CLIENT_VERSION = process.env.PI_CURSOR_CLIENT_VERSION || "cli-2026.05.01-eea359f";
+const MAX_BRIDGE_MESSAGE_BYTES = 64 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES = 1024 * 1024;
 
 /** Write one length-prefixed message to stdout. */
 function writeMessage(data) {
+  if (data.length > MAX_BRIDGE_MESSAGE_BYTES) {
+    throw new Error(`bridge output exceeds ${MAX_BRIDGE_MESSAGE_BYTES} bytes`);
+  }
   const lenBuf = Buffer.alloc(4);
   lenBuf.writeUInt32BE(data.length, 0);
-  process.stdout.write(lenBuf);
-  process.stdout.write(data);
+  return process.stdout.write(Buffer.concat([lenBuf, data]));
 }
 
 function connectEndStreamError(code, message) {
@@ -50,6 +55,10 @@ let stdinEnded = false;
 
 process.stdin.on("data", (chunk) => {
   stdinBuf = Buffer.concat([stdinBuf, chunk]);
+  if (stdinBuf.length > MAX_BRIDGE_MESSAGE_BYTES + 4) {
+    process.stderr.write("[h2-bridge] stdin buffer limit exceeded\n");
+    process.exit(1);
+  }
   if (stdinResolve) {
     const r = stdinResolve;
     stdinResolve = null;
@@ -86,6 +95,9 @@ async function readMessage() {
   const lenBuf = await readExact(4);
   if (!lenBuf) return null;
   const len = lenBuf.readUInt32BE(0);
+  if (len > MAX_BRIDGE_MESSAGE_BYTES) {
+    throw new Error(`bridge input exceeds ${MAX_BRIDGE_MESSAGE_BYTES} bytes`);
+  }
   if (len === 0) return Buffer.alloc(0);
   return readExact(len);
 }
@@ -218,6 +230,7 @@ const h2Stream = client.request(headers);
 let responseStatus = 0;
 let responseStatusText = "";
 const errorChunks = [];
+let errorBodyBytes = 0;
 const isErrorStatus = () => responseStatus !== 0 && (responseStatus < 200 || responseStatus >= 300);
 
 h2Stream.on("response", (responseHeaders) => {
@@ -231,9 +244,17 @@ h2Stream.on("response", (responseHeaders) => {
 h2Stream.on("data", (chunk) => {
   resetTimeout();
   if (isErrorStatus()) {
-    errorChunks.push(Buffer.from(chunk));
+    const remaining = MAX_ERROR_BODY_BYTES - errorBodyBytes;
+    if (remaining > 0) {
+      const kept = Buffer.from(chunk).subarray(0, remaining);
+      errorChunks.push(kept);
+      errorBodyBytes += kept.byteLength;
+    }
   } else {
-    writeMessage(chunk);
+    if (!writeMessage(chunk)) {
+      h2Stream.pause();
+      process.stdout.once("drain", () => h2Stream.resume());
+    }
   }
 });
 
@@ -284,7 +305,13 @@ if (unary) {
       }
       if (!h2Stream.closed && !h2Stream.destroyed) {
         resetTimeout();
-        h2Stream.write(msg);
+        if (!h2Stream.write(msg)) {
+          try {
+            await once(h2Stream, "drain");
+          } catch {
+            break;
+          }
+        }
       }
     }
 

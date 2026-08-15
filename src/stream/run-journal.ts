@@ -10,6 +10,7 @@
 import {
   mkdirSync,
   readFileSync,
+  statSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -19,11 +20,15 @@ import { join as pathJoin } from "node:path";
 
 import { getCacheDir } from "../utils/cache-dir.js";
 import { debugLog } from "./debug-log.js";
+import { MAX_INDIVIDUAL_BLOB_BYTES } from "./tuning.js";
 import type { StoredConversation } from "./types.js";
 
 const JOURNAL_VERSION = 1 as const;
 const JOURNAL_SUBDIR = "run-journal";
 const JOURNAL_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_JOURNAL_FILE_BYTES = 192 * 1024 * 1024;
+const MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024;
+const MAX_ENCODED_BLOB_CHARS = Math.ceil((MAX_INDIVIDUAL_BLOB_BYTES * 4) / 3) + 4;
 
 interface JournalBlobEntry {
   id: string;
@@ -57,7 +62,7 @@ function journalDir(): string | undefined {
   if (!base) return undefined;
   const dir = pathJoin(base, JOURNAL_SUBDIR);
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     return dir;
   } catch {
     return undefined;
@@ -85,10 +90,21 @@ function encodeBlobs(blobStore: Map<string, Uint8Array>, maxBlobs = 64): Journal
 
 function decodeBlobs(entries: JournalBlobEntry[] | undefined): Map<string, Uint8Array> {
   const map = new Map<string, Uint8Array>();
-  if (!entries) return map;
-  for (const entry of entries) {
+  if (!Array.isArray(entries)) return map;
+  for (const entry of entries.slice(0, 64)) {
     try {
-      map.set(entry.id, new Uint8Array(Buffer.from(entry.data, "base64")));
+      if (
+        !entry ||
+        typeof entry.id !== "string" ||
+        !entry.id ||
+        typeof entry.data !== "string" ||
+        entry.data.length > MAX_ENCODED_BLOB_CHARS
+      ) {
+        continue;
+      }
+      const data = Buffer.from(entry.data, "base64");
+      if (data.length > MAX_INDIVIDUAL_BLOB_BYTES) continue;
+      map.set(entry.id, new Uint8Array(data));
     } catch {
       // Skip corrupt blob entries.
     }
@@ -136,13 +152,19 @@ export function serializeConversationJournal(
 export function deserializeConversationJournal(
   record: DurableJournalRecord,
 ): StoredConversation | undefined {
+  if (!record || typeof record !== "object") return undefined;
   if (record.version !== JOURNAL_VERSION) return undefined;
-  if (!record.conversationId || !record.convKey) return undefined;
+  if (typeof record.conversationId !== "string" || typeof record.convKey !== "string") {
+    return undefined;
+  }
 
   let checkpoint: Uint8Array | null = null;
   if (record.checkpoint) {
     try {
-      checkpoint = new Uint8Array(Buffer.from(record.checkpoint, "base64"));
+      if (typeof record.checkpoint !== "string") return undefined;
+      const decoded = Buffer.from(record.checkpoint, "base64");
+      if (decoded.length > MAX_CHECKPOINT_BYTES) return undefined;
+      checkpoint = new Uint8Array(decoded);
     } catch {
       checkpoint = null;
     }
@@ -184,7 +206,7 @@ export function writeConversationJournal(convKey: string, stored: StoredConversa
   try {
     const record = serializeConversationJournal(convKey, stored);
     const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(record), "utf8");
+    writeFileSync(tmp, JSON.stringify(record), { encoding: "utf8", mode: 0o600 });
     renameSync(tmp, path);
     debugLog("journal.write", {
       convKey,
@@ -210,6 +232,10 @@ export function readConversationJournal(
   const path = journalPath(convKey);
   if (!path) return undefined;
   try {
+    if (statSync(path).size > MAX_JOURNAL_FILE_BYTES) {
+      debugLog("journal.oversized", { convKey });
+      return undefined;
+    }
     const raw = readFileSync(path, "utf8");
     const record = JSON.parse(raw) as DurableJournalRecord;
     const now = options?.now ?? Date.now();
@@ -252,6 +278,11 @@ export function evictStaleJournals(now = Date.now(), maxAgeMs = JOURNAL_TTL_MS):
       if (!name.endsWith(".json")) continue;
       const full = pathJoin(dir, name);
       try {
+        if (statSync(full).size > MAX_JOURNAL_FILE_BYTES) {
+          unlinkSync(full);
+          removed += 1;
+          continue;
+        }
         const raw = readFileSync(full, "utf8");
         const record = JSON.parse(raw) as DurableJournalRecord;
         const age = now - (record.savedAt || record.lastAccessMs || 0);
@@ -278,6 +309,7 @@ export function evictStaleJournals(now = Date.now(), maxAgeMs = JOURNAL_TTL_MS):
 export const __testInternals = {
   JOURNAL_VERSION,
   JOURNAL_TTL_MS,
+  MAX_JOURNAL_FILE_BYTES,
   serializeConversationJournal,
   deserializeConversationJournal,
   journalPath,

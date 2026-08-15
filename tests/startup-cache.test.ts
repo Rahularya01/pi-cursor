@@ -2,6 +2,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import { unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+
+import cursorExtension from "../src/index.js";
 
 import {
   isRefreshKnownBad,
@@ -29,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  unregisterApiProviders("@rahularya01/pi-cursor");
   delete process.env.PI_CURSOR_CACHE_DIR;
   resetCacheDirForTests();
   resetRefreshGuardForTests();
@@ -141,5 +147,31 @@ describe("model catalog cache", () => {
     writeFileSync(join(cacheDir, "model-catalog.json"), "{not json");
     resetCatalogCacheForTests();
     expect(readCachedCatalog()).toBeUndefined();
+  });
+
+  it("returns the cached catalog without awaiting live discovery during startup", async () => {
+    writeCachedCatalog({ tokenHash: "abc123", rawModels, parameterizedModels });
+    let providerConfig: ProviderConfig | undefined;
+    const pi = {
+      on() {},
+      registerCommand() {},
+      registerProvider(_name: string, config: ProviderConfig) {
+        providerConfig = config;
+      },
+    } as unknown as ExtensionAPI;
+    await cursorExtension(pi);
+    const refreshModels = providerConfig?.refreshModels?.bind(providerConfig);
+    expect(refreshModels).toBeTypeOf("function");
+
+    const startedAt = performance.now();
+    const models = await refreshModels!({
+      allowNetwork: true,
+      force: false,
+      signal: new AbortController().signal,
+      publish: async () => true,
+    } satisfies RefreshModelsContext);
+
+    expect(models.length).toBeGreaterThan(0);
+    expect(performance.now() - startedAt).toBeLessThan(250);
   });
 });

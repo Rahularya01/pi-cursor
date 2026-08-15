@@ -388,20 +388,24 @@ export function deriveConversationKeyFromSessionId(sessionId: string): string {
 
 export function deriveBridgeKey(messages: OpenAIMessage[], sessionId?: string): string {
   if (sessionId) return deriveBridgeKeyFromSessionId(sessionId);
+  const firstSystemMsg = messages.find((m) => m.role === "system");
   const firstUserMsg = messages.find((m) => m.role === "user");
+  const firstSystemText = firstSystemMsg ? textContent(firstSystemMsg.content) : "";
   const firstUserText = firstUserMsg ? textContent(firstUserMsg.content) : "";
   return createHash("sha256")
-    .update(`bridge:${firstUserText.slice(0, 200)}`)
+    .update(`bridge:${firstSystemText}\0${firstUserText}`)
     .digest("hex")
     .slice(0, 16);
 }
 
 export function deriveConversationKey(messages: OpenAIMessage[], sessionId?: string): string {
   if (sessionId) return deriveConversationKeyFromSessionId(sessionId);
+  const firstSystemMsg = messages.find((m) => m.role === "system");
   const firstUserMsg = messages.find((m) => m.role === "user");
+  const firstSystemText = firstSystemMsg ? textContent(firstSystemMsg.content) : "";
   const firstUserText = firstUserMsg ? textContent(firstUserMsg.content) : "";
   return createHash("sha256")
-    .update(`conv:${firstUserText.slice(0, 200)}`)
+    .update(`conv:${firstSystemText}\0${firstUserText}`)
     .digest("hex")
     .slice(0, 16);
 }

@@ -32,6 +32,9 @@ export const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
 
 /** Soft cap on retained blob bytes per conversation (images + turn blobs). */
 export const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
+export const MAX_ACTIVE_BLOB_BYTES = MAX_CONVERSATION_BLOB_BYTES;
+export const MAX_ACTIVE_BLOB_ENTRIES = 512;
+export const MAX_INDIVIDUAL_BLOB_BYTES = 32 * 1024 * 1024;
 
 export const DEFAULT_H2_CONNECT_TIMEOUT_MS = 30_000;
 

@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
 import {
   AgentServerMessageSchema,
+  ExecServerMessageSchema,
   HeartbeatUpdateSchema,
   InteractionUpdateSchema,
+  KvServerMessageSchema,
+  McpArgsSchema,
+  McpToolDefinitionSchema,
   PartialToolCallUpdateSchema,
+  SetBlobArgsSchema,
   ToolCallStartedUpdateSchema,
 } from "../src/proto/agent_pb.js";
 import { processServerMessage } from "../src/stream/server-messages.js";
@@ -19,12 +24,100 @@ import {
   resolveStreamIdleMaxRetries,
   resolveStreamIdleTimeoutMs,
 } from "../src/stream/native-core.js";
+import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
 
 afterEach(() => {
   __testInternals.conversationStates.clear();
 });
 
 describe("idle progress classification", () => {
+  it("rejects MCP executions for tools that were not advertised", () => {
+    const message = create(AgentServerMessageSchema, {
+      message: {
+        case: "execServerMessage",
+        value: create(ExecServerMessageSchema, {
+          id: 1,
+          execId: "exec-1",
+          message: {
+            case: "mcpArgs",
+            value: create(McpArgsSchema, {
+              toolCallId: "call-1",
+              toolName: "unadvertised_tool",
+            }),
+          },
+        }),
+      },
+    });
+    const advertised = [
+      create(McpToolDefinitionSchema, {
+        name: "allowed_tool",
+        toolName: "allowed_tool",
+      }),
+    ];
+    const frames: Uint8Array[] = [];
+    const executions: unknown[] = [];
+    const state: StreamState = {
+      toolCallIndex: 0,
+      pendingExecs: [],
+      outputTokens: 0,
+      totalTokens: 0,
+      turnEnded: false,
+    };
+
+    expect(
+      processServerMessage(
+        message,
+        new Map(),
+        advertised,
+        (frame) => frames.push(frame),
+        state,
+        () => {},
+        (execution) => executions.push(execution),
+      ),
+    ).toBe(true);
+    expect(frames).toHaveLength(1);
+    expect(executions).toHaveLength(0);
+  });
+
+  it("rejects active blob stores that exceed their entry bound", () => {
+    const store = new Map<string, Uint8Array>();
+    for (let i = 0; i < MAX_ACTIVE_BLOB_ENTRIES; i++) {
+      store.set(i.toString(16).padStart(4, "0"), new Uint8Array([1]));
+    }
+    const message = create(AgentServerMessageSchema, {
+      message: {
+        case: "kvServerMessage",
+        value: create(KvServerMessageSchema, {
+          message: {
+            case: "setBlobArgs",
+            value: create(SetBlobArgsSchema, {
+              blobId: new Uint8Array([0xff, 0xff]),
+              blobData: new Uint8Array([1]),
+            }),
+          },
+        }),
+      },
+    });
+    const state: StreamState = {
+      toolCallIndex: 0,
+      pendingExecs: [],
+      outputTokens: 0,
+      totalTokens: 0,
+      turnEnded: false,
+    };
+    expect(() =>
+      processServerMessage(
+        message,
+        store,
+        [],
+        () => {},
+        state,
+        () => {},
+        () => {},
+      ),
+    ).toThrow(/entry limit/);
+  });
+
   it("treats tokenDelta and toolCallCompleted as watchdog progress", () => {
     expect(interactionUpdateCountsAsProgress("tokenDelta")).toBe(true);
     expect(interactionUpdateCountsAsProgress("toolCallCompleted")).toBe(true);

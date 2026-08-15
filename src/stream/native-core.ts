@@ -1132,6 +1132,10 @@ function writeNativeStream(
     writer.error("Aborted", "aborted", state);
   };
   options?.signal?.addEventListener("abort", abort, { once: true });
+  if (options?.signal?.aborted) {
+    abort();
+    return;
+  }
   idleWatchdog.start();
 
   const emitText = (text: string, isThinking?: boolean) => {
@@ -1263,7 +1267,13 @@ function writeNativeStream(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         debugLog("native.stream.process_error", { requestId, message });
-        if (!writer.closed) writer.error(message, "error", state);
+        if (!cancelled) {
+          cancelled = true;
+          idleWatchdog.clear();
+          options?.signal?.removeEventListener("abort", abort);
+          cleanupBridge(bridge, heartbeatTimer, bridgeKey);
+          if (!writer.closed) writer.error(message, "error", state);
+        }
       }
     },
     (endStreamBytes) => {

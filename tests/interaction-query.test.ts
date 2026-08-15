@@ -53,4 +53,29 @@ describe("handleInteractionQuery", () => {
     expect(result.action).toBe("web_fetch_approved");
     expect(frames).toHaveLength(1);
   });
+
+  it("does not approve raw web-fetch when web access is disabled", () => {
+    const frames: Uint8Array[] = [];
+    const query = create(InteractionQuerySchema, { id: 12 });
+    (
+      query as unknown as { $unknown: Array<{ no: number; wireType: number; data: Uint8Array }> }
+    ).$unknown = [{ no: 9, wireType: 2, data: new Uint8Array([0x0a, 0x00]) }];
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
+      approveWeb: false,
+    });
+    expect(result.handled).toBe(false);
+    expect(result.action).toMatch(/rejected/);
+    expect(frames).toHaveLength(0);
+  });
+
+  it("fails closed for unknown future interaction fields", () => {
+    const frames: Uint8Array[] = [];
+    const query = create(InteractionQuerySchema, { id: 13 });
+    (
+      query as unknown as { $unknown: Array<{ no: number; wireType: number; data: Uint8Array }> }
+    ).$unknown = [{ no: 99, wireType: 2, data: new Uint8Array() }];
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame));
+    expect(result).toMatchObject({ handled: false, action: "unknown_field_99_rejected" });
+    expect(frames).toHaveLength(0);
+  });
 });

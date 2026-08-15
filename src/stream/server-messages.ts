@@ -35,6 +35,7 @@ import {
   LsRejectedSchema,
   LsResultSchema,
   McpResultSchema,
+  McpToolNotFoundSchema,
   ReadMcpResourceExecResultSchema,
   ReadMcpResourceRejectedSchema,
   ReadRejectedSchema,
@@ -64,7 +65,12 @@ import { debugLog, lifecycleLog } from "./debug-log.js";
 import { recordDriftSignal, recordUnknownFields } from "./drift.js";
 import { handleInteractionQuery } from "./interaction-query.js";
 import { decodeMcpArgsMap } from "./request-build.js";
-import { interactionUpdateCountsAsProgress } from "./tuning.js";
+import {
+  interactionUpdateCountsAsProgress,
+  MAX_ACTIVE_BLOB_BYTES,
+  MAX_ACTIVE_BLOB_ENTRIES,
+  MAX_INDIVIDUAL_BLOB_BYTES,
+} from "./tuning.js";
 import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 import type { PendingExec, StreamState } from "./types.js";
 
@@ -201,9 +207,13 @@ export function processServerMessage(
         ? `interaction_query:${result.action}`
         : `interaction_query_unhandled:${result.queryCase ?? "unknown"}`,
     );
-    if (!result.handled) recordDriftSignal("interaction_query", result.queryCase);
-    // Treated as progress either way if we answered — prevents stall detectors from firing.
-    return result.handled;
+    if (!result.handled) {
+      recordDriftSignal("interaction_query", result.queryCase);
+      throw new Error(
+        `Unsupported Cursor interaction query ${result.queryCase ?? "unknown"} was rejected`,
+      );
+    }
+    return true;
   }
   if (msgCase === "execServerControlMessage") {
     const control = msg.message.value as { message?: { case?: string } };
@@ -269,7 +279,22 @@ function handleKvMessage(
   }
   if (kvCase === "setBlobArgs") {
     const { blobId, blobData } = (kvMsg as any).message.value;
-    blobStore.set(Buffer.from(blobId).toString("hex"), blobData);
+    const blobIdKey = Buffer.from(blobId).toString("hex");
+    if (!(blobData instanceof Uint8Array)) throw new Error("Cursor sent invalid blob data");
+    if (blobData.byteLength > MAX_INDIVIDUAL_BLOB_BYTES) {
+      throw new Error(`Cursor blob exceeds the ${MAX_INDIVIDUAL_BLOB_BYTES} byte per-blob limit`);
+    }
+    if (!blobStore.has(blobIdKey) && blobStore.size >= MAX_ACTIVE_BLOB_ENTRIES) {
+      throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_ENTRIES} entry limit`);
+    }
+    let totalBytes = blobData.byteLength;
+    for (const [key, value] of blobStore) {
+      if (key !== blobIdKey) totalBytes += value.byteLength;
+      if (totalBytes > MAX_ACTIVE_BLOB_BYTES) {
+        throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_BYTES} byte limit`);
+      }
+    }
+    blobStore.set(blobIdKey, blobData);
     sendKvResponse(kvMsg, "setBlobResult", create(SetBlobResultSchema, {}), sendFrame);
     return true;
   }
@@ -322,12 +347,31 @@ function handleExecMessageInner(
 
   if (execCase === "mcpArgs") {
     const mcpArgs = (execMsg as any).message.value;
+    const toolName =
+      typeof mcpArgs.toolName === "string" && mcpArgs.toolName
+        ? mcpArgs.toolName
+        : typeof mcpArgs.name === "string"
+          ? mcpArgs.name
+          : "";
+    const availableTools = [
+      ...new Set(mcpTools.flatMap((tool) => [tool.toolName, tool.name])),
+    ].filter(Boolean);
+    if (!toolName || !availableTools.includes(toolName)) {
+      const notFound = create(McpResultSchema, {
+        result: {
+          case: "toolNotFound",
+          value: create(McpToolNotFoundSchema, { name: toolName, availableTools }),
+        },
+      });
+      sendExecResult(execMsg, "mcpResult", notFound, sendFrame);
+      return true;
+    }
     const decoded = decodeMcpArgsMap(mcpArgs.args ?? {});
     onMcpExec({
       execId: (execMsg as any).execId,
       execMsgId: (execMsg as any).id,
       toolCallId: mcpArgs.toolCallId || crypto.randomUUID(),
-      toolName: mcpArgs.toolName || mcpArgs.name,
+      toolName,
       decodedArgs: JSON.stringify(decoded),
     });
     return true;

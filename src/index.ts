@@ -21,9 +21,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";
-import { appendFileSync } from "node:fs";
+import { appendFile } from "node:fs";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import {
   generateCursorAuthParams,
@@ -84,7 +83,7 @@ function getExtensionDebugLogFilePath(): string {
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   extensionDebugLogFilePath = pathJoin(
-    tmpdir(),
+    getCacheDir() ?? process.cwd(),
     `pi-cursor-provider-extension-debug-${stamp}-${process.pid}.log`,
   );
   return extensionDebugLogFilePath;
@@ -275,14 +274,23 @@ export function extractToolResultImagePayloads(
 
 function debugExtensionLog(event: string, data?: Record<string, unknown>): void {
   if (!isExtensionDebugEnabled()) return;
-  const payload = JSON.stringify({
-    ts: new Date().toISOString(),
-    pid: process.pid,
-    scope: "extension",
-    event,
-    ...data,
-  });
-  appendFileSync(getExtensionDebugLogFilePath(), `${payload}\n`, "utf8");
+  try {
+    const payload = JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      scope: "extension",
+      event,
+      ...data,
+    });
+    appendFile(
+      getExtensionDebugLogFilePath(),
+      `${payload}\n`,
+      { encoding: "utf8", mode: 0o600 },
+      () => {},
+    );
+  } catch {
+    // Debug logging must never break extension hooks.
+  }
 }
 
 const MODEL_COST_TABLE: Record<string, ModelCost> = {
@@ -1041,6 +1049,8 @@ export const FALLBACK_MODELS: CursorModel[] = augmentCursorModels(
 // ── Extension ──
 
 const CURSOR_PROVIDER_ID = "cursor";
+const STARTUP_CATALOG_FRESH_MS = 6 * 60 * 60 * 1000;
+const BACKGROUND_CATALOG_REFRESH_TIMEOUT_MS = 20_000;
 
 async function getStoredCursorOAuthAccessToken(): Promise<
   { accessToken: string; source: CredentialSource } | undefined
@@ -1188,6 +1198,7 @@ export default async function (pi: ExtensionAPI) {
   let noReasoningEffortByModelId = new Map<string, string>();
   let rawModelByEffortByModelId = new Map<string, Record<string, CursorModelRouting>>();
   let lastRegisteredModels: ProcessedModel[] = [];
+  let catalogRefreshInFlight: Promise<void> | undefined;
 
   setSystemCredentialsPolicy(resolveSystemCredentialPolicy());
   setLastClientVersion(getCursorClientVersion());
@@ -1460,6 +1471,24 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
+  function scheduleCatalogRefresh(): void {
+    if (catalogRefreshInFlight || process.env.PI_OFFLINE) return;
+    const signal = AbortSignal.timeout(BACKGROUND_CATALOG_REFRESH_TIMEOUT_MS);
+    catalogRefreshInFlight = refreshCatalogFromNetwork({ signal })
+      .then((catalog) => {
+        if (!catalog) return;
+        register(pi, catalog.rawModels, catalog.parameterizedModels);
+      })
+      .catch((err) => {
+        debugExtensionLog("model_discovery.background.failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        catalogRefreshInFlight = undefined;
+      });
+  }
+
   /**
    * Process a catalog into pi model rows and refresh the routing lookups that
    * `streamSimple` reads. Split out of `register` so refreshModels can publish
@@ -1523,6 +1552,15 @@ export default async function (pi: ExtensionAPI) {
       // current rows for those calls keeps activation free of any network work.
       async refreshModels(context) {
         if (!context.allowNetwork || context.signal?.aborted) {
+          return lastRegisteredModels.map(modelConfig);
+        }
+        if (!context.force) {
+          const cached = readCachedCatalog();
+          if (!cached || Date.now() - cached.savedAt > STARTUP_CATALOG_FRESH_MS) {
+            // Stale-while-revalidate: model discovery can take several seconds,
+            // but Pi already has the cached/bundled catalog needed to start.
+            scheduleCatalogRefresh();
+          }
           return lastRegisteredModels.map(modelConfig);
         }
         const catalog = await refreshCatalogFromNetwork({ signal: context.signal });

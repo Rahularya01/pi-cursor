@@ -19,7 +19,11 @@ import {
   type CursorModelParameter,
   type CursorParameterizedModel,
 } from "../client/cursor-wire.js";
-import { callUnaryOverH2, supportsInProcessH2 } from "../client/h2-unary.js";
+import {
+  callUnaryOverH2,
+  MAX_UNARY_RESPONSE_BYTES,
+  supportsInProcessH2,
+} from "../client/h2-unary.js";
 import { getBridgeFactory } from "./bridge-session.js";
 import { getCursorAgentUrl } from "./config.js";
 import { writeCachedCatalog } from "./model-cache.js";
@@ -62,29 +66,63 @@ export async function callCursorUnaryRpc(options: {
   const chunks: Buffer[] = [];
   return new Promise((resolve) => {
     let timedOut = false;
+    let settled = false;
+    let responseBytes = 0;
+    const finish = (exitCode: number) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abort);
+      resolve({ body: Buffer.concat(chunks), exitCode, timedOut });
+    };
+    const stopBridge = () => {
+      try {
+        bridge.proc.kill();
+      } catch {
+        // The bridge may have exited between the event and this cleanup.
+      }
+    };
+    const abort = () => {
+      timedOut = true;
+      stopBridge();
+      finish(1);
+    };
     const timeoutMs = options.timeoutMs ?? 5_000;
     const timeout =
       timeoutMs > 0
         ? setTimeout(() => {
             timedOut = true;
-            try {
-              bridge.proc.kill();
-            } catch {
-              // Process may already have exited when the unary RPC times out.
-            }
+            stopBridge();
+            finish(1);
           }, timeoutMs)
         : undefined;
 
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abort, { once: true });
+
     bridge.onData((chunk) => {
+      responseBytes += chunk.byteLength;
+      if (responseBytes > MAX_UNARY_RESPONSE_BYTES) {
+        stopBridge();
+        finish(1);
+        return;
+      }
       chunks.push(Buffer.from(chunk));
     });
     bridge.onClose((exitCode) => {
-      if (timeout) clearTimeout(timeout);
-      resolve({ body: Buffer.concat(chunks), exitCode, timedOut });
+      finish(exitCode);
     });
 
-    bridge.write(options.requestBody);
-    bridge.end();
+    try {
+      bridge.write(options.requestBody);
+      bridge.end();
+    } catch {
+      stopBridge();
+      finish(1);
+    }
   });
 }
 

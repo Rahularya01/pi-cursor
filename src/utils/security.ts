@@ -16,18 +16,21 @@ export function assertSafeCursorBaseUrl(raw: string): string {
   } catch {
     throw new Error(`Invalid Cursor agent URL: ${raw}`);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error(`Cursor agent URL must use http(s) (got ${url.protocol})`);
-  }
   if (url.username || url.password) {
     throw new Error("Cursor agent URL must not include credentials");
   }
   const host = url.hostname.toLowerCase();
+  const loopback =
+    host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) {
+    throw new Error(
+      `Cursor agent URL must use HTTPS; HTTP is allowed only for loopback development endpoints (got ${url.protocol})`,
+    );
+  }
   const allowed =
     ALLOWED_HOSTS.has(host) ||
     ALLOWED_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix)) ||
-    host === "localhost" ||
-    host === "127.0.0.1";
+    loopback;
   if (!allowed) {
     throw new Error(
       `Cursor agent URL host "${host}" is not allowed. Use a *.cursor.sh / *.cursor.com endpoint.`,

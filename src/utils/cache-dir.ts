@@ -17,7 +17,7 @@ export function getCacheDir(): string | undefined {
     configured ||
     pathJoin(process.env.XDG_CACHE_HOME?.trim() || pathJoin(homedir(), ".cache"), "pi-cursor");
   try {
-    mkdirSync(base, { recursive: true });
+    mkdirSync(base, { recursive: true, mode: 0o700 });
     cachedDir = base;
     return base;
   } catch {

@@ -39,7 +39,7 @@ assert.equal(users[0]?.content, "implement dual auth for cursor cli + oauth");
 const systemMsg = normalized.find((m) => m.role === "system");
 const system = String(systemMsg?.content ?? "");
 assert.match(system, /provider_context source="context-mode"/);
-assert.match(system, /Prioritize the user's actual request/);
+assert.match(system, /latest user message is the only task/i);
 assert.match(system, /session_mode/);
 assert.match(system, /implement/);
 

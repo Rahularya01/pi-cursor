@@ -17,6 +17,35 @@ const POLL_MAX_ATTEMPTS = 150;
 const POLL_BASE_DELAY = 1000;
 const POLL_MAX_DELAY = 10_000;
 const POLL_BACKOFF_MULTIPLIER = 1.2;
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
+function authRequestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function parseTokenResponse(
+  value: unknown,
+  endpoint: string,
+): {
+  accessToken: string;
+  refreshToken?: string;
+} {
+  if (!value || typeof value !== "object") {
+    throw new Error(`${endpoint} returned an invalid token response`);
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.accessToken !== "string" || !record.accessToken.trim()) {
+    throw new Error(`${endpoint} returned no access token`);
+  }
+  if (record.refreshToken !== undefined && typeof record.refreshToken !== "string") {
+    throw new Error(`${endpoint} returned an invalid refresh token`);
+  }
+  return {
+    accessToken: record.accessToken,
+    ...(typeof record.refreshToken === "string" ? { refreshToken: record.refreshToken } : {}),
+  };
+}
 
 // ── PKCE ──
 
@@ -46,6 +75,7 @@ export interface CursorAuthClientDependencies {
   generatePkce?: () => Promise<{ verifier: string; challenge: string; uuid?: string }>;
   randomUUID?: () => string;
   sleep?: (ms: number) => Promise<void>;
+  requestTimeoutMs?: number;
 }
 
 export interface CursorAuthLoginCallbacks {
@@ -54,6 +84,7 @@ export interface CursorAuthLoginCallbacks {
 
 export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) {
   const fetchImpl = deps.fetch ?? fetch;
+  const requestTimeoutMs = deps.requestTimeoutMs ?? AUTH_REQUEST_TIMEOUT_MS;
   const sleepImpl =
     deps.sleep ??
     ((ms: number) =>
@@ -63,6 +94,25 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
   const generatePkceImpl: () => Promise<{ verifier: string; challenge: string; uuid?: string }> =
     deps.generatePkce ?? generatePKCE;
   const randomUUIDImpl = deps.randomUUID ?? (() => crypto.randomUUID());
+
+  async function sleepForPoll(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      await sleepImpl(ms);
+      return;
+    }
+    if (signal.aborted) throw new Error("Cursor authentication polling aborted");
+    let rejectAbort: ((reason: Error) => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const onAbort = () => rejectAbort?.(new Error("Cursor authentication polling aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      await Promise.race([sleepImpl(ms), aborted]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
 
   async function generateParams(): Promise<CursorAuthParams> {
     const { verifier, challenge, uuid: injectedUuid } = await generatePkceImpl();
@@ -82,15 +132,18 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
   async function poll(
     uuid: string,
     verifier: string,
+    options?: { signal?: AbortSignal },
   ): Promise<{ accessToken: string; refreshToken: string }> {
     let delay = POLL_BASE_DELAY;
     let consecutiveErrors = 0;
 
     for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-      await sleepImpl(delay);
+      await sleepForPoll(delay, options?.signal);
 
       try {
-        const response = await fetchImpl(`${CURSOR_POLL_URL}?uuid=${uuid}&verifier=${verifier}`);
+        const response = await fetchImpl(`${CURSOR_POLL_URL}?uuid=${uuid}&verifier=${verifier}`, {
+          signal: authRequestSignal(options?.signal, requestTimeoutMs),
+        });
 
         if (response.status === 404) {
           consecutiveErrors = 0;
@@ -99,10 +152,10 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
         }
 
         if (response.ok) {
-          const data = (await response.json()) as {
-            accessToken: string;
-            refreshToken: string;
-          };
+          const data = parseTokenResponse(await response.json(), "Cursor authentication polling");
+          if (!data.refreshToken) {
+            throw new Error("Cursor authentication polling returned no refresh token");
+          }
           return {
             accessToken: data.accessToken,
             refreshToken: data.refreshToken,
@@ -110,10 +163,15 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
         }
 
         throw new Error(`Poll failed: ${response.status}`);
-      } catch {
+      } catch (error) {
+        if (options?.signal?.aborted) {
+          throw new Error("Cursor authentication polling aborted", { cause: error });
+        }
         consecutiveErrors++;
         if (consecutiveErrors >= 3) {
-          throw new Error("Too many consecutive errors during Cursor auth polling");
+          throw new Error("Too many consecutive errors during Cursor auth polling", {
+            cause: error,
+          });
         }
       }
     }
@@ -121,7 +179,10 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
     throw new Error("Cursor authentication polling timeout");
   }
 
-  async function refreshToken(refreshToken: string): Promise<CursorCredentials> {
+  async function refreshToken(
+    refreshToken: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<CursorCredentials> {
     const response = await fetchImpl(CURSOR_REFRESH_URL, {
       method: "POST",
       headers: {
@@ -129,6 +190,7 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
         "Content-Type": "application/json",
       },
       body: "{}",
+      signal: authRequestSignal(options?.signal, requestTimeoutMs),
     });
 
     if (!response.ok) {
@@ -136,10 +198,7 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
       throw new Error(`Cursor token refresh failed: ${error}`);
     }
 
-    const data = (await response.json()) as {
-      accessToken: string;
-      refreshToken: string;
-    };
+    const data = parseTokenResponse(await response.json(), "Cursor token refresh");
 
     return {
       access: data.accessToken,
@@ -148,10 +207,13 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
     };
   }
 
-  async function login(callbacks: CursorAuthLoginCallbacks): Promise<CursorCredentials> {
+  async function login(
+    callbacks: CursorAuthLoginCallbacks,
+    options?: { signal?: AbortSignal },
+  ): Promise<CursorCredentials> {
     const { verifier, uuid, loginUrl } = await generateParams();
     await callbacks.onAuth({ url: loginUrl });
-    const { accessToken, refreshToken } = await poll(uuid, verifier);
+    const { accessToken, refreshToken } = await poll(uuid, verifier, options);
     return {
       access: accessToken,
       refresh: refreshToken,
@@ -176,8 +238,9 @@ export async function generateCursorAuthParams(): Promise<CursorAuthParams> {
 export async function pollCursorAuth(
   uuid: string,
   verifier: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{ accessToken: string; refreshToken: string }> {
-  return createCursorAuthClient().poll(uuid, verifier);
+  return createCursorAuthClient().poll(uuid, verifier, options);
 }
 
 // ── Token refresh ──
@@ -188,8 +251,11 @@ export interface CursorCredentials {
   expires: number;
 }
 
-export async function refreshCursorToken(refreshToken: string): Promise<CursorCredentials> {
-  return createCursorAuthClient().refreshToken(refreshToken);
+export async function refreshCursorToken(
+  refreshToken: string,
+  options?: { signal?: AbortSignal },
+): Promise<CursorCredentials> {
+  return createCursorAuthClient().refreshToken(refreshToken, options);
 }
 
 // ── JWT expiry extraction ──

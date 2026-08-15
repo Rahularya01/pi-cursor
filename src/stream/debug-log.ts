@@ -11,10 +11,10 @@
  * binary/image data, and redacts access tokens.
  */
 import { createHash } from "node:crypto";
-import { appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFile } from "node:fs";
 import { join as pathJoin } from "node:path";
 
+import { getCacheDir } from "../utils/cache-dir.js";
 import { normalizeImageMimeType } from "./images.js";
 import type { CursorRequestDebugSummary } from "./types.js";
 
@@ -140,47 +140,59 @@ export function getDebugLogFilePath(): string {
   if (configured) return configured;
   if (debugLogFilePath) return debugLogFilePath;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  debugLogFilePath = pathJoin(tmpdir(), `pi-cursor-provider-debug-${stamp}-${process.pid}.log`);
+  debugLogFilePath = pathJoin(
+    getCacheDir() ?? process.cwd(),
+    `pi-cursor-provider-debug-${stamp}-${process.pid}.log`,
+  );
   return debugLogFilePath;
 }
 
 export function debugLog(event: string, data?: Record<string, unknown>): void {
   if (!isStreamDebugEnabled()) return;
-  const line = JSON.stringify({
-    ts: new Date().toISOString(),
-    pid: process.pid,
-    event,
-    ...(data ? (sanitizeForDebug(data) as Record<string, unknown>) : {}),
-  });
-  const file = getDebugLogFilePath();
   try {
-    appendFileSync(file, `${line}\n`, "utf8");
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      event,
+      ...(data ? (sanitizeForDebug(data) as Record<string, unknown>) : {}),
+    });
+    const file = getDebugLogFilePath();
+    appendFile(file, `${line}\n`, { encoding: "utf8", mode: 0o600 }, (error) => {
+      if (error) console.error("[pi-cursor-provider] failed to write debug log", error);
+    });
   } catch (error) {
     console.error("[pi-cursor-provider] failed to write debug log", error);
-    console.error(`[pi-cursor-provider] ${line}`);
   }
 }
 
 /** Always-on compact lifecycle log for diagnosing multi-minute stalls. */
 let lifecycleLogPath: string | undefined;
+const MAX_LIFECYCLE_LOG_BYTES = 10 * 1024 * 1024;
+let lifecycleBytesWritten = 0;
 
 export function getLifecycleLogPath(): string {
   const configured = process.env.PI_CURSOR_LIFECYCLE_LOG?.trim();
   if (configured) return configured;
   if (lifecycleLogPath) return lifecycleLogPath;
-  lifecycleLogPath = pathJoin(tmpdir(), "pi-cursor-lifecycle.jsonl");
+  lifecycleLogPath = pathJoin(
+    getCacheDir() ?? process.cwd(),
+    `pi-cursor-lifecycle-${process.pid}.jsonl`,
+  );
   return lifecycleLogPath;
 }
 
 export function lifecycleLog(event: string, data?: Record<string, unknown>): void {
-  const line = JSON.stringify({
-    ts: new Date().toISOString(),
-    pid: process.pid,
-    event,
-    ...(data ? (sanitizeForDebug(data) as Record<string, unknown>) : {}),
-  });
   try {
-    appendFileSync(getLifecycleLogPath(), `${line}\n`, "utf8");
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      event,
+      ...(data ? (sanitizeForDebug(data) as Record<string, unknown>) : {}),
+    });
+    const encodedBytes = Buffer.byteLength(line) + 1;
+    if (lifecycleBytesWritten + encodedBytes > MAX_LIFECYCLE_LOG_BYTES) return;
+    lifecycleBytesWritten += encodedBytes;
+    appendFile(getLifecycleLogPath(), `${line}\n`, { encoding: "utf8", mode: 0o600 }, () => {});
   } catch {
     // Never throw from diagnostics.
   }

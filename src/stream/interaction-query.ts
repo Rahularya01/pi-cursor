@@ -312,6 +312,13 @@ export function handleInteractionQuery(
 
   // Unnamed WebFetch permission (proto field 9).
   if (hasUnknownInteractionField(query, CURSOR_WEB_FETCH_INTERACTION_FIELD)) {
+    if (!approveWeb) {
+      return {
+        handled: false,
+        action: "web_fetch_rejected_unsupported_wire_shape",
+        queryCase: queryCase ?? "unknown_field_9",
+      };
+    }
     sendFrame(frameConnectMessage(buildCursorWebFetchInteractionApprovalBytes(query.id)));
     return {
       handled: true,
@@ -359,22 +366,14 @@ export function handleInteractionQuery(
       skipSetupVm(query.id, sendFrame);
       return { handled: true, action: "setup_vm_acked", queryCase };
     default: {
-      // Last-resort: if Cursor added a new named field we don't know, try web-fetch-style
-      // empty approve on any unknown field so we never leave the stream parked.
+      // Protocol drift must fail closed. An empty result for an unknown field is
+      // indistinguishable from approval and could grant a future destructive capability.
       const unknown = (query as unknown as { $unknown?: Array<{ no: number }> }).$unknown ?? [];
       if (unknown.length > 0) {
         const fieldNo = unknown[0]!.no;
-        const emptyApproved = new Uint8Array([0x0a, 0x00]);
-        const interactionResponse = new Uint8Array([
-          0x08,
-          ...encodeVarint(query.id),
-          ...encodeLengthDelimitedField(fieldNo, emptyApproved),
-        ]);
-        const frame = new Uint8Array(encodeLengthDelimitedField(6, interactionResponse));
-        sendFrame(frameConnectMessage(frame));
         return {
-          handled: true,
-          action: `unknown_field_${fieldNo}_approved`,
+          handled: false,
+          action: `unknown_field_${fieldNo}_rejected`,
           queryCase: queryCase ?? "unknown",
         };
       }

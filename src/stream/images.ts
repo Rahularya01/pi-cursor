@@ -12,6 +12,7 @@ import type { ParsedImageContent } from "./types.js";
 // Cursor CLI's local-image path scales/compresses images to <= 5 MiB
 // and accepts only jpeg/png/gif/webp by magic bytes.
 export const CURSOR_CLI_MAX_IMAGE_BYTES = 5_242_880;
+const MAX_INLINE_IMAGE_BASE64_CHARS = Math.ceil((CURSOR_CLI_MAX_IMAGE_BYTES * 4) / 3) + 1024;
 
 export const CURSOR_SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -86,6 +87,13 @@ export function decodeBase64Image(
 ): ParsedImageContent | undefined {
   const normalizedMimeType = normalizeImageMimeType(mimeType);
   if (!normalizedMimeType.startsWith("image/")) return undefined;
+  if (options.enforceCursorCliLimits && data.length > MAX_INLINE_IMAGE_BASE64_CHARS) {
+    const error = new Error(
+      `Inline image exceeds Cursor CLI's ${MAX_INLINE_IMAGE_BASE64_CHARS} character encoded limit.`,
+    );
+    if (!options.dropInvalid) throw error;
+    return undefined;
+  }
   const base64 = data.replace(/\s/g, "");
   if (!base64) return undefined;
   const bytes = new Uint8Array(Buffer.from(base64, "base64"));

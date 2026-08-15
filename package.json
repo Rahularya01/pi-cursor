@@ -1,6 +1,6 @@
 {
   "name": "@rahularya01/pi-cursor",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "Native Cursor provider for Pi Coding Agent (OAuth + Connect/protobuf streamSimple)",
   "author": "Rahul Arya",
   "license": "MIT",
@@ -14,6 +14,9 @@
   },
   "type": "module",
   "main": "./dist/index.js",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -41,13 +44,14 @@
     "proto:sync": "tsx scripts/proto-sync.ts",
     "proto:check": "tsx scripts/proto-check.ts",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:legacy": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
     "smoke:auth": "node --import tsx scripts/smoke-auth.mjs",
     "smoke:models": "node --import tsx scripts/smoke-models.mjs",
     "smoke:stream": "node --import tsx scripts/smoke-stream.mjs",
     "smoke:wire": "node --import tsx scripts/smoke-wire.mjs",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run security-check && npm run proto:check && npm test"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run security-check && npm run proto:check && npm test && npm run test:legacy"
   },
   "pi": {
     "extensions": [
@@ -74,6 +78,7 @@
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.64.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "vitest": "^3.2.4"
   }
 }

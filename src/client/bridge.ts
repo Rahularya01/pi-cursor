@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const CURSOR_API_URL = "https://api2.cursor.sh";
 const CONNECT_END_STREAM_FLAG = 0b00000010;
+export const MAX_BRIDGE_MESSAGE_BYTES = 64 * 1024 * 1024;
+export const MAX_CONNECT_MESSAGE_BYTES = 64 * 1024 * 1024;
 const BRIDGE_PATH = pathResolve(dirname(fileURLToPath(import.meta.url)), "h2-bridge.mjs");
 
 export interface SpawnBridgeOptions {
@@ -41,6 +43,9 @@ type BridgeChildProcess = Pick<ChildProcess, "kill"> & {
 };
 
 export function lpEncode(data: Uint8Array): Buffer {
+  if (data.byteLength > MAX_BRIDGE_MESSAGE_BYTES) {
+    throw new Error(`Bridge message exceeds ${MAX_BRIDGE_MESSAGE_BYTES} bytes`);
+  }
   const buf = Buffer.alloc(4 + data.length);
   buf.writeUInt32BE(data.length, 0);
   buf.set(data, 4);
@@ -48,6 +53,9 @@ export function lpEncode(data: Uint8Array): Buffer {
 }
 
 export function frameConnectMessage(data: Uint8Array, flags = 0): Buffer {
+  if (data.byteLength > MAX_CONNECT_MESSAGE_BYTES) {
+    throw new Error(`Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes`);
+  }
   const frame = Buffer.alloc(5 + data.length);
   frame[0] = flags;
   frame.writeUInt32BE(data.length, 1);
@@ -88,8 +96,11 @@ function createBridgeHandleForChild(
   };
 
   let stderrBuf = "";
+  let stderrTail = "";
   stderr?.on?.("data", (chunk: Buffer) => {
-    stderrBuf += chunk.toString("utf8");
+    const text = chunk.toString("utf8");
+    stderrTail = `${stderrTail}${text}`.slice(-8_000);
+    stderrBuf += text;
     if (stderrBuf.length > 8_000) stderrBuf = stderrBuf.slice(-8_000);
     const lines = stderrBuf.split("\n");
     // Keep incomplete trailing line in the buffer.
@@ -122,7 +133,15 @@ function createBridgeHandleForChild(
   const safeWrite = (data: Uint8Array): void => {
     if (!stdin || stdinClosed) return;
     try {
-      stdin.write(lpEncode(data));
+      const framed = lpEncode(data);
+      const queuedBytes = (stdin as NodeJS.WritableStream & { writableLength?: number })
+        .writableLength;
+      if ((queuedBytes ?? 0) + framed.byteLength > MAX_BRIDGE_MESSAGE_BYTES) {
+        markStdinClosed(new Error("Bridge stdin backpressure limit exceeded"));
+        proc.kill();
+        return;
+      }
+      stdin.write(framed);
     } catch (err) {
       markStdinClosed(err);
     }
@@ -153,6 +172,11 @@ function createBridgeHandleForChild(
     pending = Buffer.concat([pending, chunk]);
     while (pending.length >= 4) {
       const len = pending.readUInt32BE(0);
+      if (len > MAX_BRIDGE_MESSAGE_BYTES) {
+        pending = Buffer.alloc(0);
+        proc.kill();
+        return;
+      }
       if (pending.length < 4 + len) break;
       const payload = pending.subarray(4, 4 + len);
       pending = pending.subarray(4 + len);
@@ -173,7 +197,7 @@ function createBridgeHandleForChild(
       return !exited;
     },
     lastStderr() {
-      return stderrBuf.trim();
+      return stderrTail.trim();
     },
     write(data: Uint8Array) {
       safeWrite(data);
@@ -209,6 +233,10 @@ export function createConnectFrameParser(
     while (pending.length >= 5) {
       const flags = pending[0]!;
       const msgLen = pending.readUInt32BE(1);
+      if (msgLen > MAX_CONNECT_MESSAGE_BYTES) {
+        pending = Buffer.alloc(0);
+        throw new Error(`Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes`);
+      }
       if (pending.length < 5 + msgLen) break;
       const messageBytes = pending.subarray(5, 5 + msgLen);
       pending = pending.subarray(5 + msgLen);
