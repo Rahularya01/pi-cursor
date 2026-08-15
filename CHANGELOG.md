@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.13] - 2026-08-15
+
+### Fixed
+
+- **Whole-project reviews failing with `Connect message exceeds 67108864 bytes`.** Individual tool text results are now capped at 512 KiB, with an explicit truncation notice that tells the agent to retry with a narrower command or range.
+- Tool images are bounded to a 16 MiB per-result budget, preventing a single oversized result from exhausting the bridge while retaining smaller images that fit.
+- Oversized tool payloads are normalized before journaling and are no longer copied into debug logs, reducing memory, disk, and follow-up token usage.
+
 ## [1.4.12] - 2026-08-15
 
 ### Fixed

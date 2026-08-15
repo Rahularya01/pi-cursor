@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_MCP_TOOL_RESULT_BYTES,
+  MAX_MCP_TOOL_TEXT_BYTES,
   buildMcpToolDefinitions,
   isSlimToolsEnabled,
   isTrivialConversationalTurn,
+  normalizeToolResultForTransport,
   slimOpenAIToolsForCursor,
   summarizeRequestSize,
 } from "../src/stream/request-build.js";
@@ -28,6 +31,36 @@ function fatTools(count: number): OpenAIToolDef[] {
     },
   }));
 }
+
+describe("tool result transport bounds", () => {
+  it("truncates huge UTF-8 text without splitting a code point", () => {
+    const normalized = normalizeToolResultForTransport({
+      content: "🙂".repeat(MAX_MCP_TOOL_TEXT_BYTES),
+      isError: false,
+    });
+
+    expect(Buffer.byteLength(normalized.content, "utf8")).toBeLessThanOrEqual(
+      MAX_MCP_TOOL_TEXT_BYTES,
+    );
+    expect(normalized.content).toContain("pi-cursor truncated this tool result");
+    expect(normalized.content).not.toContain("�");
+  });
+
+  it("omits images that would make one tool result unsafe", () => {
+    const normalized = normalizeToolResultForTransport({
+      content: "screenshot",
+      isError: false,
+      images: [
+        { data: new Uint8Array(MAX_MCP_TOOL_RESULT_BYTES), mimeType: "image/png" },
+        { data: new Uint8Array([1, 2, 3]), mimeType: "image/png" },
+      ],
+    });
+
+    expect(normalized.images).toHaveLength(1);
+    expect(normalized.images?.[0]?.data).toEqual(new Uint8Array([1, 2, 3]));
+    expect(normalized.content).toContain("omitted 1 oversized tool image");
+  });
+});
 
 describe("trivial conversational turns", () => {
   it.each([

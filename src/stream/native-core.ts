@@ -85,6 +85,7 @@ import {
   buildMcpSuccessContent,
   buildMcpToolDefinitions,
   isTrivialConversationalTurn,
+  normalizeToolResultForTransport,
   summarizeRequestSize,
 } from "./request-build.js";
 export {
@@ -1568,16 +1569,26 @@ function handleNativeToolResultResume(
   const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
     process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
   );
+  const transportResults = toolResults.map((result) => ({
+    ...result,
+    ...normalizeToolResultForTransport(result),
+  }));
   debugLog("native.tool_resume.start", {
     requestId,
     bridgeKey,
     convKey,
-    toolResults,
+    toolResults: transportResults.map((result) => ({
+      toolCallId: result.toolCallId,
+      contentBytes: Buffer.byteLength(result.content, "utf8"),
+      imageCount: result.images?.length ?? 0,
+      imageBytes: result.images?.reduce((sum, image) => sum + image.data.byteLength, 0) ?? 0,
+      isError: result.isError === true,
+    })),
     pendingExecs,
     currentTurn,
   });
 
-  for (const result of toolResults) {
+  for (const result of transportResults) {
     const turnToolStep = currentTurn.steps.find(
       (step): step is ParsedToolCallStep =>
         step.kind === "toolCall" && step.toolCallId === result.toolCallId,
@@ -1651,7 +1662,12 @@ function handleNativeToolResultResume(
       message: { case: "execClientMessage", value: execClientMessage },
     });
     bridge.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
-    debugLog("native.tool_resume.sent_result", { requestId, exec, result });
+    debugLog("native.tool_resume.sent_result", {
+      requestId,
+      exec,
+      contentBytes: Buffer.byteLength(result.content, "utf8"),
+      imageCount: result.images?.length ?? 0,
+    });
   }
 
   const idleRetry: StreamIdleRetryController = {
