@@ -2,43 +2,83 @@
 
 [![npm version](https://img.shields.io/npm/v/@rahularya01/pi-cursor?logo=npm)](https://www.npmjs.com/package/@rahularya01/pi-cursor)
 [![license](https://img.shields.io/npm/l/@rahularya01/pi-cursor)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github)](https://github.com/sponsors/Rahularya01)
 
-A Pi Coding Agent provider for **Cursor** models. It adds provider `cursor`, multi-source authentication resolution (macOS Keychain, Cursor IDE, WSL host, environment variables, or PKCE browser OAuth), native Connect/protobuf streaming over HTTP/2, model discovery, thinking effort routing, and visual TUI usage diagnostics—without invoking the Cursor CLI for day-to-day chat.
+Use your **Cursor** subscription's models — Composer, Claude, GPT, Grok — inside the **Pi Coding Agent**.
+`pi-cursor` plugs in a `cursor` model provider that talks to Cursor's own backend directly (native
+Connect/protobuf streaming over HTTP/2), so there's no separate API key to buy and no Cursor CLI
+process running in the background for every chat turn. If you're already logged into Cursor's app
+or CLI, it just works — no setup beyond installing the package.
 
-> **Unofficial integration.** This project is not affiliated with or endorsed by Cursor / Anysphere. It uses reverse-engineered Wire protocol details shared by community clients (see attributions). Use it only with an account you are authorized to access, and review its source before granting OAuth permissions. Cursor may change wire protocol endpoints or formats at any time.
+> **Unofficial integration.** This project is not affiliated with or endorsed by Cursor / Anysphere. It uses reverse-engineered wire protocol details shared by community clients (see [Attributions](#attributions)). Use it only with an account you are authorized to access, and review its source before granting OAuth permissions. Cursor may change wire protocol endpoints or formats at any time.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Authentication](#authentication-and-resolution-cascade)
+- [Commands](#commands)
+- [Models & reasoning effort](#models-and-reasoning-effort-routing)
+- [Usage dashboard](#usage-quota-and-visual-tui-dashboard)
+- [Troubleshooting](#troubleshooting)
+- [Configuration (advanced)](#configuration)
+- [Architecture (advanced)](#architecture--wire-protocol)
+- [Development](#development)
 
 ## Requirements
 
-- Pi Coding Agent and Pi AI version **0.80.0 or later**
-- A Cursor account with model access (or Cursor CLI / Cursor IDE logged in on your machine)
-- Node.js version **22.0.0 or later** (for native HTTP/2 Connect streaming and SQLite credential resolution)
+|                             |                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| **Pi Coding Agent / Pi AI** | version `0.80.0` or later                                                            |
+| **Node.js**                 | version `22.0.0` or later (needed for native HTTP/2 streaming and credential lookup) |
+| **A Cursor account**        | with model access — signed in via the Cursor app, Cursor CLI, or browser login below |
 
 ## Install
-
-Install from npm:
 
 ```bash
 pi install npm:@rahularya01/pi-cursor
 ```
 
-Or install the latest repository version:
+Then **restart Pi** (or run `/reload`) so the new provider is picked up.
+
+<details>
+<summary>Other install options</summary>
+
+Install the latest code straight from GitHub instead of npm:
 
 ```bash
 pi install git:github.com/Rahularya01/pi-cursor
 ```
 
-Restart Pi (or run `/reload`) after installation. To update the package later, run `pi update npm:@rahularya01/pi-cursor`.
+To update later:
+
+```bash
+pi update npm:@rahularya01/pi-cursor
+```
+
+</details>
 
 ## Quick start
 
-1. If you are already logged in to Cursor CLI or the Cursor app on your machine, `pi-cursor` auto-detects your credentials. Otherwise, start Pi and run `/login cursor` to sign in via browser.
-2. Select a model, for example:
+1. **Sign in.** If Cursor's desktop app or CLI (`cursor` / `agent`) is already logged in on this
+   machine, `pi-cursor` detects it automatically — skip to step 2. Otherwise, run:
+
+   ```text
+   /login cursor
+   ```
+
+   This opens a browser tab to sign in with your Cursor account.
+
+2. **Pick a model:**
 
    ```text
    /model cursor/composer-2
    ```
 
-3. Start working. Use `/cursor.doctor` to verify diagnostics and active authentication source.
+3. **Start chatting.** If anything looks off, run `/cursor.doctor` — it prints which credential
+   source is active, the current endpoint, and the last error, and is the first thing to check
+   before filing an issue.
 
 ## Authentication and resolution cascade
 
@@ -128,6 +168,9 @@ Usage statistics are fetched directly from Cursor's native Connect period usage 
 
 ## Architecture & Wire Protocol
 
+> The rest of this README is reference material for troubleshooting, tuning, and contributing —
+> nothing here is required for day-to-day use.
+
 ```text
 Pi Coding Agent  →  streamSimple (cursor-native)
                       → h2-bridge.mjs (Node.js HTTP/2 child process)
@@ -140,6 +183,12 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 - **Cross-Platform:** Tested and fully compatible with macOS, Linux, Windows, and WSL.
 
 ## Configuration
+
+Everything below is optional — `pi-cursor` works out of the box. These environment variables exist
+for tuning timeouts, debugging, and edge-case overrides.
+
+<details>
+<summary><strong>Full environment variable reference</strong></summary>
 
 | Variable                                   | Purpose                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -163,7 +212,12 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 | `PI_CURSOR_SLIM_TOOLS`                     | Compact Cursor MCP tool definitions: concise function purpose, no annotation-only parameter prose, full callable schema constraints preserved. **Default on**; set `0`/`false` for verbatim schemas.                                                                                                         |
 | `PI_CURSOR_MIDPAUSE_REBUILD_MAX_AGE_MS`    | Max age of mid-pause metadata used for full-history rebuild (default: 15 min).                                                                                                                                                                                                                               |
 
+</details>
+
 ## Architecture notes
+
+<details>
+<summary><strong>Module layout (<code>src/stream/</code>)</strong></summary>
 
 Stream modules are split under `src/stream/`:
 
@@ -209,6 +263,8 @@ unusable, and remains the automatic fallback if the in-process client fails.
 layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
 [`proto/README.md`](proto/README.md)) when Cursor changes the agent schema.
 
+</details>
+
 ## Troubleshooting
 
 - **`No API provider registered for api: cursor-native`:** Update to the latest `pi-cursor` (`pi update npm:@rahularya01/pi-cursor`) and restart Pi (or `/reload`). This means the Agent tried to stream via Pi's global `streamSimple` dispatcher before the Cursor transport was registered there. Current builds register `cursor-native` on that registry during extension load.
@@ -244,6 +300,10 @@ Wire protocol and authentication patterns adapted from MIT community client line
 - [@pi-stef/cursor](https://www.npmjs.com/package/@pi-stef/cursor)
 
 Package structure mirrors [pi-antigravity](https://github.com/Rahularya01/pi-antigravity).
+
+## Support the project
+
+If `pi-cursor` is useful to you, consider [sponsoring the project on GitHub](https://github.com/sponsors/Rahularya01).
 
 ## License
 
