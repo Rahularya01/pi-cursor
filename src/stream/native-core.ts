@@ -1315,7 +1315,20 @@ function writeNativeStream(
     // Watchdog reset moved into the framed-message handler above so non-progress chunks
     // (notably `interactionUpdate{tokenDelta}`-only frames) cannot keep the stream alive
     // forever.
-    processChunk(chunk);
+    try {
+      processChunk(chunk);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      debugLog("native.stream.frame_error", { requestId, message });
+      if (!cancelled) {
+        cancelled = true;
+        idleWatchdog.clear();
+        options?.signal?.removeEventListener("abort", abort);
+        cleanupBridge(bridge, heartbeatTimer, bridgeKey);
+        if (!writer.closed) writer.error(message, "error", state);
+      }
+      return;
+    }
     // Closing the response is deferred to here so that every exec framed in this chunk reaches
     // the client, not just the first. Parallel tool calls arrive as sibling frames.
     if (pauseRequested) {

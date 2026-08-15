@@ -94,6 +94,8 @@ function createBridgeHandleForChild(
     data: null as ((chunk: Buffer) => void) | null,
     close: null as ((code: number) => void) | null,
   };
+  const queuedData: Buffer[] = [];
+  let queuedDataBytes = 0;
 
   let stderrBuf = "";
   let stderrTail = "";
@@ -129,6 +131,84 @@ function createBridgeHandleForChild(
   stdin?.on?.("error", markStdinClosed);
   stdin?.on?.("close", () => markStdinClosed());
   stdin?.on?.("finish", () => markStdinClosed());
+
+  const invokeClose = (): void => {
+    try {
+      cbs.close?.(exitCode);
+    } catch (error) {
+      debugLog("bridge.close_callback_error", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const finalizeExit = (code: number): void => {
+    if (exited) return;
+    exited = true;
+    exitCode = code;
+    invokeClose();
+  };
+  const deliverData = (payload: Buffer): boolean => {
+    if (!cbs.data) {
+      queuedDataBytes += payload.byteLength;
+      if (queuedDataBytes > MAX_BRIDGE_MESSAGE_BYTES) {
+        debugLog("bridge.prelistener_buffer_limit", { queuedDataBytes });
+        try {
+          proc.kill();
+        } catch {
+          // The process may already have exited.
+        }
+        finalizeExit(1);
+        return false;
+      }
+      queuedData.push(payload);
+      return true;
+    }
+    try {
+      cbs.data(payload);
+      return true;
+    } catch (error) {
+      debugLog("bridge.data_callback_error", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      try {
+        proc.kill();
+      } catch {
+        // The process may already have exited.
+      }
+      finalizeExit(1);
+      return false;
+    }
+  };
+
+  proc.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    stderrTail = `${stderrTail}\n[bridge process error] ${message}`.slice(-8_000);
+    markStdinClosed(error);
+    debugLog("bridge.process_error", {
+      code:
+        typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : undefined,
+      message,
+    });
+    finalizeExit(1);
+  });
+  stdout?.on?.("error", (error) => {
+    debugLog("bridge.stdout_error", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    try {
+      proc.kill();
+    } catch {
+      // The process may already have exited.
+    }
+    finalizeExit(1);
+  });
+  stderr?.on?.("error", (error) => {
+    debugLog("bridge.stderr_error", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   const safeWrite = (data: Uint8Array): void => {
     if (!stdin || stdinClosed) return;
@@ -180,15 +260,14 @@ function createBridgeHandleForChild(
       if (pending.length < 4 + len) break;
       const payload = pending.subarray(4, 4 + len);
       pending = pending.subarray(4 + len);
-      cbs.data?.(Buffer.from(payload));
+      if (!deliverData(Buffer.from(payload))) return;
     }
   });
 
   proc.on("exit", (code) => {
-    exited = true;
-    exitCode = code ?? 1;
-    debugLog("bridge.exit", { rpcPath: options.rpcPath, exitCode });
-    cbs.close?.(exitCode);
+    const resolvedCode = code ?? 1;
+    debugLog("bridge.exit", { rpcPath: options.rpcPath, exitCode: resolvedCode });
+    finalizeExit(resolvedCode);
   });
 
   return {
@@ -208,10 +287,23 @@ function createBridgeHandleForChild(
     },
     onData(cb: (chunk: Buffer) => void) {
       cbs.data = cb;
+      while (queuedData.length > 0 && !exited) {
+        const payload = queuedData.shift()!;
+        queuedDataBytes -= payload.byteLength;
+        if (!deliverData(payload)) break;
+      }
     },
     onClose(cb: (code: number) => void) {
       if (exited) {
-        queueMicrotask(() => cb(exitCode));
+        queueMicrotask(() => {
+          try {
+            cb(exitCode);
+          } catch (error) {
+            debugLog("bridge.close_callback_error", {
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
       } else {
         cbs.close = cb;
       }

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.12] - 2026-08-15
+
+### Fixed
+
+- **Pi host process exits during rapid tool chains.** Child-process spawn errors, pipe errors, malformed frames, and exceptions from bridge data/close consumers are now contained as request-level bridge failures instead of escaping Node event callbacks and terminating Pi.
+- Bridge output that arrives before the stream consumer is registered is buffered with a hard size limit instead of being silently dropped.
+- Added regression coverage for `EAGAIN`-style spawn failures, callback exceptions, oversized frames, and early bridge output.
+
 ## [1.4.11] - 2026-08-15
 
 ### Fixed

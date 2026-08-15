@@ -11,7 +11,7 @@ import {
   TurnEndedUpdateSchema,
   type InteractionUpdate,
 } from "../src/proto/agent_pb.js";
-import { frameConnectMessage } from "../src/client/bridge.js";
+import { frameConnectMessage, MAX_CONNECT_MESSAGE_BYTES } from "../src/client/bridge.js";
 import { __testInternals } from "../src/stream/native-core.js";
 import {
   canBlindIdleRestart,
@@ -262,6 +262,17 @@ describe("native stream terminal cleanup", () => {
     const harness = setup();
     const malformed = Buffer.from([0, 0, 0, 0, 1, 0xff]);
     harness.onData(malformed);
+    clearInterval(harness.heartbeatTimer);
+    expect(harness.calls[0]).toMatch(/^error:/);
+    expect(harness.endCalls).toBe(1);
+  });
+
+  it("contains an oversized frame declaration without terminating the host process", () => {
+    const harness = setup();
+    const oversized = Buffer.alloc(5);
+    oversized.writeUInt32BE(MAX_CONNECT_MESSAGE_BYTES + 1, 1);
+
+    expect(() => harness.onData(oversized)).not.toThrow();
     clearInterval(harness.heartbeatTimer);
     expect(harness.calls[0]).toMatch(/^error:/);
     expect(harness.endCalls).toBe(1);
