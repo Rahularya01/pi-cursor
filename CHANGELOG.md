@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.15] - 2026-08-15
+
+### Documentation
+
+- **README Onboarding & Scannability:** Restructured README to prioritize quick setup and clear usage steps, added a table of contents, and moved detailed environment variable and architectural reference material into collapsible `<details>` blocks.
+
+### Refactored
+
+- **Credential Handling & Import Cleanup:** Consolidated credential source definitions into a dedicated `CredentialSource` enum for improved type safety and consistency across auth modules. Streamlined imports, refined system credential policy helpers, and removed unused legacy code.
+
 ## [1.4.14] - 2026-08-15
 
 ### Fixed
