@@ -2,8 +2,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { resolve as pathResolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ConnectFlag } from "../types/enums.js";
+
 const CURSOR_API_URL = "https://api2.cursor.sh";
-const CONNECT_END_STREAM_FLAG = 0b00000010;
+const CONNECT_END_STREAM_FLAG = ConnectFlag.EndStream;
 export const MAX_BRIDGE_MESSAGE_BYTES = 64 * 1024 * 1024;
 export const MAX_CONNECT_MESSAGE_BYTES = 64 * 1024 * 1024;
 const BRIDGE_PATH = pathResolve(dirname(fileURLToPath(import.meta.url)), "h2-bridge.mjs");

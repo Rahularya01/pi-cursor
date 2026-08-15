@@ -5,23 +5,21 @@
  * Opt out with PI_CURSOR_SYSTEM_CREDENTIALS=0|false|off|deny.
  * Force-enable with PI_CURSOR_SYSTEM_CREDENTIALS=1|true|on|allow.
  */
-export type SystemCredentialPolicy = "allow" | "deny";
+import { SystemCredentialPolicy } from "../types/enums.js";
+import { isFalsyEnv, isTruthyEnv } from "../utils/util.js";
+
+export { SystemCredentialPolicy, type SystemCredentialPolicyType } from "../types/enums.js";
 
 export function resolveSystemCredentialPolicy(
   envValue: string | undefined = process.env.PI_CURSOR_SYSTEM_CREDENTIALS,
 ): SystemCredentialPolicy {
-  const raw = envValue?.trim().toLowerCase();
-  if (!raw) return "allow";
-  if (raw === "0" || raw === "false" || raw === "off" || raw === "deny" || raw === "no") {
-    return "deny";
-  }
-  if (raw === "1" || raw === "true" || raw === "on" || raw === "allow" || raw === "yes") {
-    return "allow";
-  }
+  if (!envValue?.trim()) return SystemCredentialPolicy.Allow;
+  if (isFalsyEnv(envValue)) return SystemCredentialPolicy.Deny;
+  if (isTruthyEnv(envValue)) return SystemCredentialPolicy.Allow;
   // Unknown values fail closed so misconfiguration never silently scrapes credentials.
-  return "deny";
+  return SystemCredentialPolicy.Deny;
 }
 
 export function systemCredentialsAllowed(envValue?: string): boolean {
-  return resolveSystemCredentialPolicy(envValue) === "allow";
+  return resolveSystemCredentialPolicy(envValue) === SystemCredentialPolicy.Allow;
 }

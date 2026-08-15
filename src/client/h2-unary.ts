@@ -14,7 +14,7 @@
 import http2 from "node:http2";
 import { randomUUID } from "node:crypto";
 
-import { getCursorClientVersion } from "../stream/config.js";
+import { getCursorClientVersion } from "../config/index.js";
 
 const CURSOR_API_URL = "https://api2.cursor.sh";
 export const MAX_UNARY_RESPONSE_BYTES = 16 * 1024 * 1024;

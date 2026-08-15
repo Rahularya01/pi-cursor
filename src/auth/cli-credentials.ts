@@ -8,15 +8,9 @@ const execFileAsync = promisify(execFile);
 import { systemCredentialsAllowed } from "./consent.js";
 import { getCursorAccessTokenFromEnv, getTokenExpiry, refreshCursorToken } from "./oauth.js";
 import { isRefreshKnownBad, markRefreshFailed, markRefreshSucceeded } from "./refresh-guard.js";
+import { CredentialSource } from "../types/enums.js";
 
-export type CredentialSource =
-  | "env"
-  | "cli_keychain"
-  | "cli_keychain_refresh"
-  | "ide_vscdb"
-  | "ide_vscdb_refresh"
-  | "pi_oauth"
-  | "pi_oauth_refresh";
+export { CredentialSource };
 
 export interface CursorTokenResult {
   accessToken: string;
@@ -92,9 +86,11 @@ async function readKeychainTokens(): Promise<StoredTokens> {
  */
 export async function getCursorKeychainToken(): Promise<CursorTokenResult | undefined> {
   const { accessToken, refreshToken } = await readKeychainTokens();
-  if (isUsable(accessToken)) return { accessToken, source: "cli_keychain" };
+  if (isUsable(accessToken)) return { accessToken, source: CredentialSource.CliKeychain };
   const refreshed = await tryRefresh(refreshToken);
-  return refreshed ? { accessToken: refreshed, source: "cli_keychain_refresh" } : undefined;
+  return refreshed
+    ? { accessToken: refreshed, source: CredentialSource.CliKeychainRefresh }
+    : undefined;
 }
 
 // Cache the DatabaseSync constructor at module level so repeated vscdb lookups
@@ -193,9 +189,11 @@ async function readVscdbTokens(): Promise<StoredTokens> {
  */
 export async function getCursorVscdbToken(): Promise<CursorTokenResult | undefined> {
   const { accessToken, refreshToken } = await readVscdbTokens();
-  if (isUsable(accessToken)) return { accessToken, source: "ide_vscdb" };
+  if (isUsable(accessToken)) return { accessToken, source: CredentialSource.IdeVscdb };
   const refreshed = await tryRefresh(refreshToken);
-  return refreshed ? { accessToken: refreshed, source: "ide_vscdb_refresh" } : undefined;
+  return refreshed
+    ? { accessToken: refreshed, source: CredentialSource.IdeVscdbRefresh }
+    : undefined;
 }
 
 /**
@@ -218,7 +216,7 @@ export async function resolveSystemCursorAccessToken(options?: {
   if (envToken) {
     // Env tokens cannot be refreshed here; still prefer them when present.
     if (!options?.forceRefresh || isUsable(envToken)) {
-      return { accessToken: envToken, source: "env" };
+      return { accessToken: envToken, source: CredentialSource.Env };
     }
   }
 
@@ -229,9 +227,9 @@ export async function resolveSystemCursorAccessToken(options?: {
   const [keychain, vscdb] = await Promise.all([readKeychainTokens(), readVscdbTokens()]);
 
   const cached: CursorTokenResult | undefined = isUsable(keychain.accessToken)
-    ? { accessToken: keychain.accessToken, source: "cli_keychain" }
+    ? { accessToken: keychain.accessToken, source: CredentialSource.CliKeychain }
     : isUsable(vscdb.accessToken)
-      ? { accessToken: vscdb.accessToken, source: "ide_vscdb" }
+      ? { accessToken: vscdb.accessToken, source: CredentialSource.IdeVscdb }
       : undefined;
 
   // Fast path: a locally stored token is still valid, so no network at all.
@@ -239,13 +237,14 @@ export async function resolveSystemCursorAccessToken(options?: {
 
   const keychainRefreshed = await tryRefresh(keychain.refreshToken);
   if (keychainRefreshed) {
-    return { accessToken: keychainRefreshed, source: "cli_keychain_refresh" };
+    return { accessToken: keychainRefreshed, source: CredentialSource.CliKeychainRefresh };
   }
 
   // Skip a second identical exchange when the CLI mirrored its token into the IDE.
   if (vscdb.refreshToken && vscdb.refreshToken !== keychain.refreshToken) {
     const vscdbRefreshed = await tryRefresh(vscdb.refreshToken);
-    if (vscdbRefreshed) return { accessToken: vscdbRefreshed, source: "ide_vscdb_refresh" };
+    if (vscdbRefreshed)
+      return { accessToken: vscdbRefreshed, source: CredentialSource.IdeVscdbRefresh };
   }
 
   // forceRefresh could not improve on what we already had — keep it rather than

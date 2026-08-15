@@ -18,27 +18,16 @@
  */
 import { lifecycleLog } from "./debug-log.js";
 import { setLastDriftSignal } from "../diagnostics/diagnostics.js";
+import { DriftKind, type DriftKindType } from "../types/enums.js";
 
-export type DriftKind =
-  /** A top-level `AgentServerMessage.message` case we do not handle. */
-  | "server_message"
-  /** An `interactionUpdate` sub-case we do not handle. */
-  | "interaction_update"
-  /** A `kvServerMessage` sub-case we do not handle. */
-  | "kv_message"
-  /** An `interactionQuery` we could not answer. */
-  | "interaction_query"
-  /** An `execServerMessage` we could not answer — the stream may park. */
-  | "exec_message"
-  /** Fields present on the wire that our generated schema does not know. */
-  | "unknown_fields";
+export { DriftKind, type DriftKindType } from "../types/enums.js";
 
 /** Cases that can strand a turn, as opposed to being merely informational. */
 const STRANDING_KINDS = new Set<DriftKind>([
-  "server_message",
-  "exec_message",
-  "interaction_query",
-  "kv_message",
+  DriftKind.ServerMessage,
+  DriftKind.ExecMessage,
+  DriftKind.InteractionQuery,
+  DriftKind.KvMessage,
 ]);
 
 export interface DriftSignal {
@@ -54,7 +43,7 @@ const signals = new Map<string, DriftSignal>();
 /** Bounded so a pathological stream cannot grow this map without limit. */
 const MAX_TRACKED_SIGNALS = 64;
 
-function signalKey(kind: DriftKind, detail: string): string {
+function signalKey(kind: DriftKind | DriftKindType, detail: string): string {
   return `${kind}:${detail}`;
 }
 
@@ -62,7 +51,10 @@ function signalKey(kind: DriftKind, detail: string): string {
  * Records one drift observation. Safe to call on a hot path: repeat observations
  * only bump a counter, and only the first of each kind+detail is logged.
  */
-export function recordDriftSignal(kind: DriftKind, detail: string | undefined): void {
+export function recordDriftSignal(
+  kind: DriftKind | DriftKindType,
+  detail: string | undefined,
+): void {
   const normalized = (detail ?? "unknown").slice(0, 80);
   const key = signalKey(kind, normalized);
   const now = new Date().toISOString();
@@ -76,7 +68,7 @@ export function recordDriftSignal(kind: DriftKind, detail: string | undefined): 
 
   if (signals.size >= MAX_TRACKED_SIGNALS) return;
   signals.set(key, {
-    kind,
+    kind: kind as DriftKind,
     detail: normalized,
     count: 1,
     firstSeenIso: now,
@@ -84,7 +76,11 @@ export function recordDriftSignal(kind: DriftKind, detail: string | undefined): 
   });
 
   // Log only on first sighting — a drifted stream would otherwise spam the log.
-  lifecycleLog("wire_drift", { kind, detail: normalized, stranding: STRANDING_KINDS.has(kind) });
+  lifecycleLog("wire_drift", {
+    kind,
+    detail: normalized,
+    stranding: STRANDING_KINDS.has(kind as DriftKind),
+  });
   setLastDriftSignal(`${kind}:${normalized}`);
 }
 
@@ -97,7 +93,7 @@ export function recordUnknownFields(context: string, message: unknown): void {
   const unknown = (message as { $unknown?: readonly { no: number }[] } | null)?.$unknown;
   if (!unknown || unknown.length === 0) return;
   const fields = [...new Set(unknown.map((f) => f.no))].sort((a, b) => a - b).join(",");
-  recordDriftSignal("unknown_fields", `${context}#${fields}`);
+  recordDriftSignal(DriftKind.UnknownFields, `${context}#${fields}`);
 }
 
 export function getDriftSignals(): DriftSignal[] {

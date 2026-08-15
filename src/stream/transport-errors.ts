@@ -5,18 +5,9 @@
  * recover from (new generation + checkpoint/history) versus permanent.
  */
 
-export type TransportFailureKind =
-  | "connect_timeout"
-  | "socket_timeout"
-  | "connection_reset"
-  | "goaway"
-  | "bridge_crash"
-  | "upstream_silence"
-  | "authentication"
-  | "rate_limit"
-  | "protocol_drift"
-  | "invalid_request"
-  | "unknown";
+import { TransportFailureKind } from "../types/enums.js";
+
+export { TransportFailureKind };
 
 export interface TransportFailure {
   kind: TransportFailureKind;
@@ -51,7 +42,7 @@ export function classifyBridgeExit(input: {
 
   if (input.exitCode === 2 || GOAWAY_RE.test(combined)) {
     return {
-      kind: "goaway",
+      kind: TransportFailureKind.Goaway,
       retryable: true,
       refreshAuth: false,
       message: combined
@@ -64,7 +55,7 @@ export function classifyBridgeExit(input: {
 
   if (AUTH_RE.test(combined)) {
     return {
-      kind: "authentication",
+      kind: TransportFailureKind.Authentication,
       retryable: true,
       refreshAuth: true,
       message: combined || "Cursor authentication failed.",
@@ -75,7 +66,7 @@ export function classifyBridgeExit(input: {
 
   if (RATE_RE.test(combined)) {
     return {
-      kind: "rate_limit",
+      kind: TransportFailureKind.RateLimit,
       retryable: true,
       refreshAuth: false,
       message: combined || "Cursor rate limited the request.",
@@ -86,7 +77,7 @@ export function classifyBridgeExit(input: {
 
   if (TIMEOUT_RE.test(combined)) {
     return {
-      kind: "socket_timeout",
+      kind: TransportFailureKind.SocketTimeout,
       retryable: true,
       refreshAuth: false,
       message: combined || "Cursor transport timed out.",
@@ -97,7 +88,7 @@ export function classifyBridgeExit(input: {
 
   if (RESET_RE.test(combined)) {
     return {
-      kind: "connection_reset",
+      kind: TransportFailureKind.ConnectionReset,
       retryable: true,
       refreshAuth: false,
       message: combined || "Cursor connection was reset.",
@@ -108,7 +99,7 @@ export function classifyBridgeExit(input: {
 
   if (PROTOCOL_RE.test(combined)) {
     return {
-      kind: "protocol_drift",
+      kind: TransportFailureKind.ProtocolDrift,
       retryable: false,
       refreshAuth: false,
       message: combined || "Cursor protocol mismatch.",
@@ -119,7 +110,7 @@ export function classifyBridgeExit(input: {
 
   if (input.exitCode !== 0) {
     return {
-      kind: "bridge_crash",
+      kind: TransportFailureKind.BridgeCrash,
       retryable: true,
       refreshAuth: false,
       message: combined
@@ -131,7 +122,7 @@ export function classifyBridgeExit(input: {
   }
 
   return {
-    kind: "unknown",
+    kind: TransportFailureKind.Unknown,
     retryable: false,
     refreshAuth: false,
     message: combined || "Bridge closed cleanly.",
@@ -148,7 +139,7 @@ export function formatTransportFailure(failure: TransportFailure): string {
   if (failure.refreshAuth) {
     hints.push("Token may need refresh — run /login cursor or check /cursor.doctor tokenSource.");
   }
-  if (failure.kind === "protocol_drift") {
+  if (failure.kind === TransportFailureKind.ProtocolDrift) {
     hints.push("Pin PI_CURSOR_CLIENT_VERSION or regenerate proto if wire drift persists.");
   }
   return hints.length ? `${failure.message} ${hints.join(" ")}` : failure.message;
