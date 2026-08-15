@@ -82,6 +82,20 @@ describe("checkpoint durability", () => {
     expect(stored.checkpoint).toBeNull();
   });
 
+  it("discards a checkpoint that has grown past the transport frame limit", () => {
+    // Regression: an unbounded checkpoint that outgrows the Connect transport's 64 MiB frame
+    // cap used to fail every future turn permanently (frameConnectMessage throws before send).
+    const stored = storedConversation({
+      checkpoint: new Uint8Array(49 * 1024 * 1024),
+      checkpointTurnCount: 0,
+      checkpointHistoryFingerprint: "whatever",
+    });
+
+    discardStaleCheckpointIfNeeded(stored, [], "r1", "c1");
+
+    expect(stored.checkpoint).toBeNull();
+  });
+
   it("preserves a valid checkpoint when mid-pause metadata covers the tool-continuation off-by-one", () => {
     // Reproduces the stale_checkpoint error. A turn completes and commitStoredCheckpoint
     // writes checkpointTurnCount = completedTurns.length + 1 (it includes currentTurn).

@@ -68,9 +68,10 @@ src/
 │   ├── oauth.ts            # PKCE browser login flow & token refresh
 │   └── consent.ts          # System credentials privacy consent policy
 ├── client/                 # Low-level RPC & HTTP/2 transport
-│   ├── h2-bridge.mjs       # Node.js HTTP/2 child process for Connect RPC
+│   ├── h2-bridge.mjs       # Node.js HTTP/2 child process for Connect RPC (streaming)
+│   ├── h2-unary.ts         # In-process HTTP/2 client for unary RPCs (model discovery, usage)
 │   ├── cursor-wire.ts      # Binary framing & Protobuf message encoders/decoders
-│   └── bridge.ts           # IPC bridge manager
+│   └── bridge.ts           # Bridge process spawn/IPC manager
 ├── stream/                 # Stream Simple adapter & session handling
 │   ├── native-core.ts      # Core stream Simple interface for Pi AI
 │   ├── context-normalize.ts# Folds side-channel injections into system prompt
@@ -115,7 +116,13 @@ src/
 - Side-channel user messages (such as `<session_state>` blocks or context-mode injections) must be normalized into the system prompt via `normalizeMessagesForCursor()` in `src/stream/context-normalize.ts`.
 - This ensures Cursor's message parser does not misidentify side-channel metadata as the active user prompt turn.
 
-### 5. Reasoning Effort & Thinking Mapping
+### 5. Transport Choice: In-Process vs. Bridge Subprocess
+
+- Streaming RPCs always go through the `h2-bridge.mjs` child process — Node's `node:http2` bidirectional streaming has known issues under some runtimes, which is why the bridge exists.
+- Unary RPCs (model discovery, usage) use the in-process HTTP/2 client in `h2-unary.ts` instead, to avoid paying a process-spawn + fresh TLS/H2 handshake cost for a single request/response round trip.
+- `fetch`/`undici` cannot be used for either path: Cursor's hosts speak HTTP/2 only and undici rejects the h2 preface.
+
+### 6. Reasoning Effort & Thinking Mapping
 
 - Pi reasoning effort levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) map directly to Cursor's model parameter variants.
 - Do not bypass model collapse or effort mapping unless `PI_CURSOR_RAW_MODELS=1` is explicitly set.

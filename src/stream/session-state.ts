@@ -29,7 +29,11 @@ import {
   readConversationJournal,
   writeConversationJournal,
 } from "./run-journal.js";
-import { CONVERSATION_TTL_MS, MAX_CONVERSATION_BLOB_BYTES } from "./tuning.js";
+import {
+  CONVERSATION_TTL_MS,
+  MAX_CHECKPOINT_BYTES,
+  MAX_CONVERSATION_BLOB_BYTES,
+} from "./tuning.js";
 import type {
   ChatCompletionRequest,
   OpenAIMessage,
@@ -139,15 +143,19 @@ export function discardStaleCheckpointIfNeeded(
   const checkpointIsForNextTurnCount = storedCheckpointTurnCount === currentTurnCount + 1;
   const skipTurnCountCheck = hasMidPauseForThisTurn && checkpointIsForNextTurnCount;
 
-  const reason = !checkpointDecodes(stored.checkpoint)
-    ? "checkpoint_undecodable"
-    : storedCheckpointTurnCount === undefined || !storedCheckpointHistoryFingerprint
-      ? "missing_checkpoint_metadata"
-      : !skipTurnCountCheck && storedCheckpointTurnCount !== currentTurnCount
-        ? "completed_turn_count_mismatch"
-        : !skipTurnCountCheck && storedCheckpointHistoryFingerprint !== currentHistoryFingerprint
-          ? "completed_history_fingerprint_mismatch"
-          : undefined;
+  const reason =
+    stored.checkpoint.byteLength > MAX_CHECKPOINT_BYTES
+      ? "checkpoint_oversized"
+      : !checkpointDecodes(stored.checkpoint)
+        ? "checkpoint_undecodable"
+        : storedCheckpointTurnCount === undefined || !storedCheckpointHistoryFingerprint
+          ? "missing_checkpoint_metadata"
+          : !skipTurnCountCheck && storedCheckpointTurnCount !== currentTurnCount
+            ? "completed_turn_count_mismatch"
+            : !skipTurnCountCheck &&
+                storedCheckpointHistoryFingerprint !== currentHistoryFingerprint
+              ? "completed_history_fingerprint_mismatch"
+              : undefined;
 
   if (!reason) return;
 
@@ -155,6 +163,7 @@ export function discardStaleCheckpointIfNeeded(
     requestId,
     convKey,
     reason,
+    checkpointBytes: stored.checkpoint.byteLength,
     storedCheckpointTurnCount,
     currentTurnCount,
     hasMidPauseForThisTurn,

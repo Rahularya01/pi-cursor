@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.14] - 2026-08-15
+
+### Fixed
+
+- **`Connect message exceeds 67108864 bytes` recurring on every turn of a long-running conversation.** The upstream checkpoint Cursor hands back each turn was replayed into every request with no size cap, unlike the rest of the pipeline (tool results, blobs). Once it grew past the transport's 64 MiB frame limit, every later turn failed permanently. It is now discarded and rebuilt from the (already-bounded) blob store once it exceeds 48 MiB.
+- Both the outgoing and incoming Connect-frame size errors now report the actual byte count, direction, and where to look (`/cursor.doctor`'s `lastRequestSize`, or `PI_CURSOR_PROVIDER_DEBUG=1`) instead of a bare byte limit.
+- `sanitizeText()` no longer mangles valid Unicode surrogate pairs (emoji, astral-plane characters) — it now strips only lone/unpaired surrogates.
+- `buildSelectedContextBlob()` now varint-encodes field lengths instead of writing a single raw length byte, preventing silent wire corruption if a future caller passes a value >=128 bytes.
+- `/cursor.usage` no longer throws on a non-numeric billing-cycle timestamp from Cursor's usage endpoint.
+
 ## [1.4.13] - 2026-08-15
 
 ### Fixed

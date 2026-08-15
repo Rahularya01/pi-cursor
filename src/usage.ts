@@ -15,6 +15,12 @@ export interface CursorUsageSummary {
   };
 }
 
+function toIsoStringOrUndefined(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const ms = Number(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
+
 interface UsageBucket {
   enabled?: boolean;
   used?: number | null;
@@ -86,14 +92,8 @@ export function parseConnectPeriodUsage(value: unknown): CursorUsageSummary {
   if (!isRecord(value))
     throw new Error("Cursor period usage endpoint returned an invalid response");
 
-  const billingCycleStart =
-    typeof value.billingCycleStart === "string"
-      ? new Date(Number(value.billingCycleStart)).toISOString()
-      : undefined;
-  const billingCycleEnd =
-    typeof value.billingCycleEnd === "string"
-      ? new Date(Number(value.billingCycleEnd)).toISOString()
-      : undefined;
+  const billingCycleStart = toIsoStringOrUndefined(value.billingCycleStart);
+  const billingCycleEnd = toIsoStringOrUndefined(value.billingCycleEnd);
 
   const planUsage = isRecord(value.planUsage) ? value.planUsage : undefined;
   const spendLimitUsage = isRecord(value.spendLimitUsage) ? value.spendLimitUsage : undefined;

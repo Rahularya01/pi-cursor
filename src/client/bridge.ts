@@ -54,7 +54,11 @@ export function lpEncode(data: Uint8Array): Buffer {
 
 export function frameConnectMessage(data: Uint8Array, flags = 0): Buffer {
   if (data.byteLength > MAX_CONNECT_MESSAGE_BYTES) {
-    throw new Error(`Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes`);
+    throw new Error(
+      `Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes (outgoing, ${data.byteLength} bytes). ` +
+        `Run /cursor.doctor and check lastRequestSize — this conversation's checkpoint or blob store has likely ` +
+        `grown too large; starting a new session usually clears it.`,
+    );
   }
   const frame = Buffer.alloc(5 + data.length);
   frame[0] = flags;
@@ -327,7 +331,10 @@ export function createConnectFrameParser(
       const msgLen = pending.readUInt32BE(1);
       if (msgLen > MAX_CONNECT_MESSAGE_BYTES) {
         pending = Buffer.alloc(0);
-        throw new Error(`Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes`);
+        throw new Error(
+          `Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes (incoming, declared length ${msgLen}). ` +
+            `Enable PI_CURSOR_PROVIDER_DEBUG=1 and check the lifecycle log for the frame preceding this error.`,
+        );
       }
       if (pending.length < 5 + msgLen) break;
       const messageBytes = pending.subarray(5, 5 + msgLen);

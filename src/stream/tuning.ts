@@ -36,6 +36,17 @@ export const MAX_ACTIVE_BLOB_BYTES = MAX_CONVERSATION_BLOB_BYTES;
 export const MAX_ACTIVE_BLOB_ENTRIES = 512;
 export const MAX_INDIVIDUAL_BLOB_BYTES = 32 * 1024 * 1024;
 
+/**
+ * Hard cap on a stored upstream checkpoint's byte size. Unlike blobs and tool
+ * results, the checkpoint Cursor hands back is opaque and unbounded — over a
+ * long-running conversation it can grow past the transport's 64 MiB Connect
+ * frame limit, at which point the checkpoint would fail every future turn
+ * (frameConnectMessage throws before anything is sent). Discarding it above
+ * this cap forces a rebuild from the (bounded) blob store instead, leaving
+ * plenty of headroom under the transport limit for mcpTools/model metadata.
+ */
+export const MAX_CHECKPOINT_BYTES = 48 * 1024 * 1024;
+
 export const DEFAULT_H2_CONNECT_TIMEOUT_MS = 30_000;
 
 /**
