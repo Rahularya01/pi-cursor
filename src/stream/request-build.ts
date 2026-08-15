@@ -93,6 +93,11 @@ const TRIVIAL_CONVERSATIONAL_TURNS = new Set([
   "great",
   "nice",
   "ping",
+  "what can you do",
+  "what can you do for me",
+  "what can you help me with",
+  "who are you",
+  "tell me about yourself",
 ]);
 
 /**

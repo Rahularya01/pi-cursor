@@ -30,10 +30,15 @@ function fatTools(count: number): OpenAIToolDef[] {
 }
 
 describe("trivial conversational turns", () => {
-  it.each(["hi", "Hello!", "thank you", "PING", "sounds good."])(
-    "identifies %j as tool-free",
-    (text) => expect(isTrivialConversationalTurn(text)).toBe(true),
-  );
+  it.each([
+    "hi",
+    "Hello!",
+    "thank you",
+    "PING",
+    "sounds good.",
+    "what can you do for me?",
+    "who are you?",
+  ])("identifies %j as tool-free", (text) => expect(isTrivialConversationalTurn(text)).toBe(true));
 
   it.each([
     "hi, inspect src",

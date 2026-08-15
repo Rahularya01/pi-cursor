@@ -586,6 +586,10 @@ async function handleCursorNativeRequest(
     userImages.length === 0 &&
     isTrivialConversationalTurn(userText);
   const selectedTools = omitToolsForTrivialTurn ? [] : toolResolution.tools;
+  // Greetings and capability questions do not need Pi's large agent prompt:
+  // sending it can cost tens of thousands of input tokens before the user text
+  // is even considered. Keep the full prompt for anything actionable.
+  const effectiveSystemPrompt = omitToolsForTrivialTurn ? "" : systemPrompt;
   if (omitToolsForTrivialTurn) {
     setLastStreamEvent("tools_omitted_trivial_turn");
     lifecycleLog("tools_omitted", {
@@ -861,7 +865,7 @@ async function handleCursorNativeRequest(
   const effectiveUserImages = userText || userImages.length > 0 ? userImages : [];
   const payload = buildCursorRequest(
     modelId,
-    systemPrompt,
+    effectiveSystemPrompt,
     effectiveUserText,
     turns,
     stored.conversationId,
@@ -881,7 +885,7 @@ async function handleCursorNativeRequest(
   };
 
   const size = summarizeRequestSize({
-    systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     userText: effectiveUserText,
     tools: selectedTools,
     mcpTools,
@@ -928,7 +932,7 @@ async function handleCursorNativeRequest(
     requestId,
     getAccessToken,
     recoverBeforeRetry: true,
-    systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     conversationId: stored.conversationId,
     maxMode,
     cursorModelParameters: body.cursor_model_parameters ?? [],

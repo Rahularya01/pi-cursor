@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.11] - 2026-08-15
+
+### Fixed
+
+- **Excessive token usage on conversational prompts.** Trivial greetings and capability questions now omit both MCP tools and the large agent system prompt, while actionable requests retain the full context.
+- `/cursor.doctor` now reports the actual lifecycle log path.
+
 ## [1.4.10] - 2026-08-15
 
 ### Fixed

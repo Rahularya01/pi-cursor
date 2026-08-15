@@ -45,6 +45,7 @@ import { supportsInProcessH2 } from "./client/h2-unary.js";
 import { formatCursorUsage, getCursorUsageSummary } from "./usage.js";
 import { getCursorClientVersion } from "./stream/config.js";
 import { formatDriftSummary, getDriftSignals, hasStrandingDrift } from "./stream/drift.js";
+import { getLifecycleLogPath } from "./stream/debug-log.js";
 import {
   cleanupSessionState,
   createCursorNativeStream,
@@ -1374,7 +1375,7 @@ export default async function (pi: ExtensionAPI) {
         `resumeIdleTimeoutMs=${process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS || "0(disabled)"}`,
         `streamIdleMaxRetries=${process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES || "0(disabled)"}`,
         `h2IdleTimeoutMs=${process.env.PI_CURSOR_H2_IDLE_TIMEOUT_MS || "0(disabled)"}`,
-        `lifecycleLog=${process.env.PI_CURSOR_LIFECYCLE_LOG || "$TMPDIR/pi-cursor-lifecycle.jsonl"}`,
+        `lifecycleLog=${getLifecycleLogPath()}`,
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
         `unaryTransport=${supportsInProcessH2() ? "in-process-h2" : "bridge-subprocess"}`,
