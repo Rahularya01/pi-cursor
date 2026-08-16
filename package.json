@@ -1,6 +1,6 @@
 {
   "name": "@rahularya01/pi-cursor",
-  "version": "1.4.17",
+  "version": "1.4.18",
   "description": "Native Cursor provider for Pi Coding Agent (OAuth + Connect/protobuf streamSimple)",
   "author": "Rahul Arya",
   "license": "MIT",

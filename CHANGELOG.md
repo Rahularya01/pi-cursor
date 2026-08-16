@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.18] - 2026-08-16
+
+### Added
+
+- **Forensic diagnostics for a desynced Connect frame boundary.** If a `Connect message exceeds N bytes` desync recurs, `PI_CURSOR_PROVIDER_DEBUG=1`'s lifecycle log now captures the bytes consumed and frames parsed before the desync, the raw frame header, and up to 32 trailing context bytes — enough to tell a real corrupted stream apart from a parser bug without needing a live repro. No cost when debug logging is off.
+
 ## [1.4.17] - 2026-08-16
 
 ### Fixed
