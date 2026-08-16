@@ -851,6 +851,7 @@ function writeNativeStream(
   const tagFilter = createThinkingTagFilter();
   let mcpExecReceived = false;
   let cancelled = false;
+  let frameParseFailed = false;
   let streamError: Error | null = null;
   let emittedUserVisibleContent = false;
   // Only execs the client was actually told about may be recorded as pending: recovery matches the
@@ -1188,12 +1189,19 @@ function writeNativeStream(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       debugLog("native.stream.frame_error", { requestId, message });
-      if (!cancelled) {
-        cancelled = true;
-        idleWatchdog.clear();
-        options?.signal?.removeEventListener("abort", abort);
-        cleanupBridge(bridge, heartbeatTimer, bridgeKey);
-        if (!writer.closed) writer.error(message, "error", state);
+      // A corrupted/misaligned Connect frame boundary can't be recovered within this
+      // connection, but the desync is local per-connection state, not a permanent condition —
+      // killing the bridge (rather than failing the stream outright) routes this through the
+      // same bridge.onClose retry path as any other transport loss (GOAWAY, ECONNRESET, ...),
+      // so a fresh connection + checkpoint/history recovery can continue the turn instead of
+      // the whole turn failing on what may be a one-off glitch.
+      if (!cancelled && !frameParseFailed) {
+        frameParseFailed = true;
+        try {
+          bridge.proc.kill();
+        } catch {
+          // Process may already be exiting.
+        }
       }
       return;
     }

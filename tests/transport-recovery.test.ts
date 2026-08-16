@@ -191,9 +191,16 @@ describe("native stream terminal cleanup", () => {
   function setup(signal?: AbortSignal) {
     const calls: string[] = [];
     let endCalls = 0;
+    let killCalls = 0;
     let onData: (chunk: Buffer) => void = () => {};
+    let onClose: (code: number) => void = () => {};
     const bridge = {
-      proc: { kill: () => true },
+      proc: {
+        kill: () => {
+          killCalls++;
+          return true;
+        },
+      },
       alive: true,
       lastStderr: () => "",
       write: () => {},
@@ -203,7 +210,9 @@ describe("native stream terminal cleanup", () => {
       onData: (cb: (chunk: Buffer) => void) => {
         onData = cb;
       },
-      onClose: () => {},
+      onClose: (cb: (code: number) => void) => {
+        onClose = cb;
+      },
     };
     const writer = {
       output: {} as never,
@@ -244,7 +253,11 @@ describe("native stream terminal cleanup", () => {
       get endCalls() {
         return endCalls;
       },
+      get killCalls() {
+        return killCalls;
+      },
       onData,
+      onClose,
       heartbeatTimer,
     };
   }
@@ -272,10 +285,19 @@ describe("native stream terminal cleanup", () => {
     const oversized = Buffer.alloc(5);
     oversized.writeUInt32BE(MAX_CONNECT_MESSAGE_BYTES + 1, 1);
 
+    // A corrupted/misaligned frame boundary is local per-connection state, not a permanent
+    // failure — it must not crash the host process, and it must not fail the turn outright
+    // either. Killing the bridge routes it through the same retry path as any other transport
+    // loss (GOAWAY, ECONNRESET, ...), so a fresh connection can continue the turn.
     expect(() => harness.onData(oversized)).not.toThrow();
+    expect(harness.killCalls).toBe(1);
+    expect(harness.calls).toEqual([]);
+
+    // Simulate the process actually exiting after the kill, as a real bridge would.
+    harness.onClose(1);
     clearInterval(harness.heartbeatTimer);
     expect(harness.calls[0]).toMatch(/^error:/);
-    expect(harness.endCalls).toBe(1);
+    expect(harness.endCalls).toBe(0);
   });
 });
 

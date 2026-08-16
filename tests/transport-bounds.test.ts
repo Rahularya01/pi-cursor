@@ -81,4 +81,53 @@ describe("transport input bounds", () => {
       decodeBase64Image(oversized, "image/png", { enforceCursorCliLimits: true }),
     ).toThrow(/encoded limit/);
   });
+
+  it("reassembles Connect frames correctly regardless of how the byte stream is chunked", () => {
+    // Regression test for the internal chunk-accumulator: frame reassembly must be independent of
+    // how the underlying transport happens to fragment the byte stream, including the pathological
+    // case of a large frame arriving split across many tiny reads.
+    function randInt(max: number): number {
+      return Math.floor(Math.random() * max);
+    }
+
+    for (let trial = 0; trial < 50; trial++) {
+      const frameCount = 1 + randInt(6);
+      const expected: Buffer[] = [];
+      const wire: Buffer[] = [];
+      for (let i = 0; i < frameCount; i++) {
+        // Occasionally a large frame, mostly small — mirrors real traffic (text deltas vs.
+        // checkpoints/tool results).
+        const len = randInt(20) === 0 ? randInt(150_000) : randInt(2_000);
+        const payload = Buffer.alloc(len);
+        for (let j = 0; j < len; j += 97) payload[j] = randInt(256);
+        expected.push(payload);
+        const framed = Buffer.alloc(5 + len);
+        framed.writeUInt32BE(len, 1);
+        payload.copy(framed, 5);
+        wire.push(framed);
+      }
+      const all = Buffer.concat(wire);
+
+      const received: Buffer[] = [];
+      const parser = createConnectFrameParser(
+        (bytes) => received.push(Buffer.from(bytes)),
+        (bytes) => received.push(Buffer.from(bytes)),
+      );
+
+      let offset = 0;
+      while (offset < all.length) {
+        // Heavily favor tiny chunks to stress the merge path that reassembles a frame spanning
+        // many reads.
+        const size = randInt(4) === 0 ? 1 + randInt(4_000) : 1 + randInt(8);
+        const end = Math.min(offset + size, all.length);
+        parser(all.subarray(offset, end));
+        offset = end;
+      }
+
+      expect(received.length).toBe(expected.length);
+      for (let i = 0; i < expected.length; i++) {
+        expect(received[i]!.equals(expected[i]!)).toBe(true);
+      }
+    }
+  });
 });
