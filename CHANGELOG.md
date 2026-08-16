@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.17] - 2026-08-16
+
+### Fixed
+
+- **A corrupted/misaligned incoming Connect frame (`Connect message exceeds 67108864 bytes`) no longer fails the turn outright.** This case bypassed the existing transport-loss retry machinery used for every other bridge failure (GOAWAY, connection reset, auth, ...). It's now treated the same way: the bridge is killed and, since the desync is local per-connection state rather than a permanent condition, the turn resumes over a fresh connection via checkpoint/history recovery when possible, falling back to the same error as before only when a retry isn't safe or attempts are exhausted.
+- Added a randomized differential test for the Connect frame reassembly logic (chunk-boundary fragmentation, large frames split across many tiny reads), which also caught and fixed a correctness bug in the chunk accumulator introduced in 1.4.16 — verified byte-for-byte against a reference implementation across many trials.
+
 ## [1.4.16] - 2026-08-16
 
 ### Performance
