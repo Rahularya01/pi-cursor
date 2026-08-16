@@ -317,6 +317,20 @@ function handleExecMessage(
   return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec);
 }
 
+// mcpTools is fixed for the life of a stream but `mcpArgs` exec messages can arrive many times
+// per turn; cache the derived name list by array identity instead of rebuilding it every call.
+const availableToolNamesCache = new WeakMap<McpToolDefinition[], string[]>();
+
+function availableToolNamesFor(mcpTools: McpToolDefinition[]): string[] {
+  const cached = availableToolNamesCache.get(mcpTools);
+  if (cached) return cached;
+  const names = [...new Set(mcpTools.flatMap((tool) => [tool.toolName, tool.name]))].filter(
+    Boolean,
+  ) as string[];
+  availableToolNamesCache.set(mcpTools, names);
+  return names;
+}
+
 function handleExecMessageInner(
   execMsg: ExecServerMessage,
   mcpTools: McpToolDefinition[],
@@ -353,9 +367,7 @@ function handleExecMessageInner(
         : typeof mcpArgs.name === "string"
           ? mcpArgs.name
           : "";
-    const availableTools = [
-      ...new Set(mcpTools.flatMap((tool) => [tool.toolName, tool.name])),
-    ].filter(Boolean);
+    const availableTools = availableToolNamesFor(mcpTools);
     if (!toolName || !availableTools.includes(toolName)) {
       const notFound = create(McpResultSchema, {
         result: {

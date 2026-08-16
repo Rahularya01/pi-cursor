@@ -54,6 +54,70 @@ export function lpEncode(data: Uint8Array): Buffer {
   return buf;
 }
 
+/**
+ * Accumulates incoming chunks for length-prefixed frame parsing without re-concatenating the
+ * whole backlog on every chunk. Naively doing `pending = Buffer.concat([pending, chunk])` on
+ * every `data` event is O(n^2) in the frame's total size when a single large frame arrives
+ * split across many small reads — each partial chunk re-copies everything buffered so far.
+ * Buffering chunks in an array and only concatenating once a full frame is available keeps
+ * total work O(n).
+ */
+class FrameAccumulator {
+  private chunks: Buffer[] = [];
+  private totalLength = 0;
+
+  push(chunk: Buffer): void {
+    this.chunks.push(chunk);
+    this.totalLength += chunk.length;
+  }
+
+  get length(): number {
+    return this.totalLength;
+  }
+
+  reset(): void {
+    this.chunks = [];
+    this.totalLength = 0;
+  }
+
+  /**
+   * Merge only as many leading chunks as needed to cover the first `n` bytes (all `n` bytes
+   * must already be buffered), then fold that merge back into `chunks[0]` so a later call for
+   * the same or a smaller `n` is O(1) instead of re-merging. Chunks after the ones needed for
+   * `n` are left untouched — critical while still waiting on the rest of a large in-progress
+   * frame, so a header peek doesn't re-copy the whole backlog on every incoming chunk.
+   */
+  private frontBytes(n: number): Buffer {
+    const first = this.chunks[0];
+    if (!first || first.length >= n) return (first ?? Buffer.alloc(0)).subarray(0, n);
+    let covered = 0;
+    let count = 0;
+    while (covered < n && count < this.chunks.length) {
+      covered += this.chunks[count]!.length;
+      count += 1;
+    }
+    const merged = Buffer.concat(this.chunks.slice(0, count), covered);
+    this.chunks.splice(0, count, merged);
+    return merged.subarray(0, n);
+  }
+
+  /** Read `n` bytes from the front without consuming them (all `n` bytes must already be buffered). */
+  peek(n: number): Buffer {
+    return this.frontBytes(n);
+  }
+
+  /** Consume and return the first `n` bytes (all `n` bytes must already be buffered). */
+  consume(n: number): Buffer {
+    if (n === 0) return Buffer.alloc(0);
+    const result = this.frontBytes(n);
+    const first = this.chunks[0]!;
+    if (first.length === n) this.chunks.shift();
+    else this.chunks[0] = first.subarray(n);
+    this.totalLength -= n;
+    return result;
+  }
+}
+
 export function frameConnectMessage(data: Uint8Array, flags = 0): Buffer {
   if (data.byteLength > MAX_CONNECT_MESSAGE_BYTES) {
     throw new Error(
@@ -253,19 +317,19 @@ function createBridgeHandleForChild(
   });
   safeWrite(new TextEncoder().encode(config));
 
-  let pending = Buffer.alloc(0);
+  const pending = new FrameAccumulator();
   stdout?.on("data", (chunk: Buffer) => {
-    pending = Buffer.concat([pending, chunk]);
+    pending.push(chunk);
     while (pending.length >= 4) {
-      const len = pending.readUInt32BE(0);
+      const len = pending.peek(4).readUInt32BE(0);
       if (len > MAX_BRIDGE_MESSAGE_BYTES) {
-        pending = Buffer.alloc(0);
+        pending.reset();
         proc.kill();
         return;
       }
       if (pending.length < 4 + len) break;
-      const payload = pending.subarray(4, 4 + len);
-      pending = pending.subarray(4 + len);
+      pending.consume(4);
+      const payload = pending.consume(len);
       if (!deliverData(Buffer.from(payload))) return;
     }
   });
@@ -325,22 +389,23 @@ export function createConnectFrameParser(
   onMessage: (bytes: Uint8Array) => void,
   onEndStream: (bytes: Uint8Array) => void,
 ): (incoming: Buffer) => void {
-  let pending = Buffer.alloc(0);
+  const pending = new FrameAccumulator();
   return (incoming: Buffer) => {
-    pending = Buffer.concat([pending, incoming]);
+    pending.push(incoming);
     while (pending.length >= 5) {
-      const flags = pending[0]!;
-      const msgLen = pending.readUInt32BE(1);
+      const header = pending.peek(5);
+      const flags = header[0]!;
+      const msgLen = header.readUInt32BE(1);
       if (msgLen > MAX_CONNECT_MESSAGE_BYTES) {
-        pending = Buffer.alloc(0);
+        pending.reset();
         throw new Error(
           `Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes (incoming, declared length ${msgLen}). ` +
             `Enable PI_CURSOR_PROVIDER_DEBUG=1 and check the lifecycle log for the frame preceding this error.`,
         );
       }
       if (pending.length < 5 + msgLen) break;
-      const messageBytes = pending.subarray(5, 5 + msgLen);
-      pending = pending.subarray(5 + msgLen);
+      pending.consume(5);
+      const messageBytes = pending.consume(msgLen);
       if (flags & CONNECT_END_STREAM_FLAG) onEndStream(messageBytes);
       else onMessage(messageBytes);
     }

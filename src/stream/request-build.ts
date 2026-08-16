@@ -234,9 +234,20 @@ export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[
   });
 }
 
+// Pi typically hands the provider the same `tools` array reference turn after turn within a
+// session. Slimming (recursive schema walk + description regex) and protobuf-encoding every
+// tool's schema is pure work over that array, so cache the result by array identity to skip it
+// when the tool set has not changed since the last call. Keyed on isSlimToolsEnabled() too since
+// that env-driven toggle can change between calls (e.g. tests, debug tooling).
+const mcpToolDefinitionsCache = new WeakMap<OpenAIToolDef[], Map<boolean, McpToolDefinition[]>>();
+
 export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefinition[] {
+  const slimEnabled = isSlimToolsEnabled();
+  const byMode = mcpToolDefinitionsCache.get(tools);
+  const cached = byMode?.get(slimEnabled);
+  if (cached) return cached;
   const prepared = slimOpenAIToolsForCursor(tools);
-  return prepared.map((t) => {
+  const result = prepared.map((t) => {
     const fn = t.function;
     const jsonSchema: JsonValue =
       fn.parameters && typeof fn.parameters === "object"
@@ -256,6 +267,10 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
       inputSchema,
     });
   });
+  const modes = byMode ?? new Map<boolean, McpToolDefinition[]>();
+  modes.set(slimEnabled, result);
+  mcpToolDefinitionsCache.set(tools, modes);
+  return result;
 }
 
 export function summarizeRequestSize(input: {

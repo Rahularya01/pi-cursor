@@ -48,14 +48,21 @@ function connectEndStreamError(code, message) {
 }
 
 // --- Buffered stdin reader ---
+//
+// Chunks are queued in an array and only concatenated once enough bytes have arrived to satisfy
+// a `readExact` call. Concatenating on every `data` event instead (`stdinBuf = Buffer.concat([
+// stdinBuf, chunk])`) is O(n^2) in the message size when a large message arrives split across
+// many small pipe reads, since every partial chunk re-copies everything buffered so far.
 
-let stdinBuf = Buffer.alloc(0);
+let stdinChunks = [];
+let stdinLength = 0;
 let stdinResolve = null;
 let stdinEnded = false;
 
 process.stdin.on("data", (chunk) => {
-  stdinBuf = Buffer.concat([stdinBuf, chunk]);
-  if (stdinBuf.length > MAX_BRIDGE_MESSAGE_BYTES + 4) {
+  stdinChunks.push(chunk);
+  stdinLength += chunk.length;
+  if (stdinLength > MAX_BRIDGE_MESSAGE_BYTES + 4) {
     process.stderr.write("[h2-bridge] stdin buffer limit exceeded\n");
     process.exit(1);
   }
@@ -82,12 +89,16 @@ function waitForData() {
 }
 
 async function readExact(n) {
-  while (stdinBuf.length < n) {
+  while (stdinLength < n) {
     if (stdinEnded) return null;
     await waitForData();
   }
-  const result = stdinBuf.subarray(0, n);
-  stdinBuf = stdinBuf.subarray(n);
+  if (stdinChunks.length > 1) stdinChunks = [Buffer.concat(stdinChunks, stdinLength)];
+  const buf = stdinChunks[0] ?? Buffer.alloc(0);
+  const result = buf.subarray(0, n);
+  const rest = buf.subarray(n);
+  stdinChunks = rest.length > 0 ? [rest] : [];
+  stdinLength = rest.length;
   return Buffer.from(result);
 }
 

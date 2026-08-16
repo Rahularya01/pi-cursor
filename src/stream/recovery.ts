@@ -185,8 +185,16 @@ function fingerprintImage(image: ParsedImageContent): Record<string, unknown> {
   };
 }
 
-export function fingerprintCompletedTurns(turns: ParsedTurn[]): string {
-  const normalized = turns.map((turn) => ({
+// A given ParsedTurn object is commonly fingerprinted more than once per request (e.g. once to
+// check checkpoint staleness, again when committing the checkpoint for `[...completedTurns,
+// currentTurn]`). Caching per-turn hashes by object identity avoids re-serializing the same
+// turn's text/tool-args/images repeatedly within a request.
+const turnFingerprintCache = new WeakMap<ParsedTurn, string>();
+
+function fingerprintSingleTurn(turn: ParsedTurn): string {
+  const cached = turnFingerprintCache.get(turn);
+  if (cached !== undefined) return cached;
+  const normalized = {
     userText: turn.userText,
     userImages: (turn.userImages ?? []).map(fingerprintImage),
     steps: turn.steps.map((step) => {
@@ -205,8 +213,15 @@ export function fingerprintCompletedTurns(turns: ParsedTurn[]): string {
           : undefined,
       };
     }),
-  }));
-  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+  };
+  const hash = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+  turnFingerprintCache.set(turn, hash);
+  return hash;
+}
+
+export function fingerprintCompletedTurns(turns: ParsedTurn[]): string {
+  const combined = turns.map(fingerprintSingleTurn).join(",");
+  return createHash("sha256").update(combined).digest("hex");
 }
 
 export function clearStoredMidPauseMetadata(stored: StoredConversation): void {
