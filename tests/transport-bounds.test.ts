@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   __testInternals,
   createConnectFrameParser,
+  frameConnectMessage,
   lpEncode,
   MAX_CONNECT_MESSAGE_BYTES,
 } from "../src/client/bridge.js";
@@ -73,6 +74,35 @@ describe("transport input bounds", () => {
     const header = Buffer.alloc(5);
     header.writeUInt32BE(MAX_CONNECT_MESSAGE_BYTES + 1, 1);
     expect(() => parser(header)).toThrow(/exceeds/);
+  });
+
+  it("attaches forensic diagnostics to a declared-length overflow for debugging a desync", () => {
+    const parser = createConnectFrameParser(
+      () => {},
+      () => {},
+    );
+    // One clean frame first, so bytesConsumed/framesParsed reflect real prior progress.
+    const clean = frameConnectMessage(new Uint8Array([1, 2, 3]));
+    parser(clean);
+
+    const header = Buffer.alloc(5);
+    header.writeUInt32BE(MAX_CONNECT_MESSAGE_BYTES + 1, 1);
+    const trailing = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
+
+    let caught: unknown;
+    try {
+      parser(Buffer.concat([header, trailing]));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const diagnostics = (caught as Error & { connectFrameDesync?: unknown }).connectFrameDesync;
+    expect(diagnostics).toEqual({
+      bytesConsumedBeforeDesync: clean.length,
+      framesParsedBeforeDesync: 1,
+      headerHex: header.toString("hex"),
+      trailingContextHex: trailing.toString("hex"),
+    });
   });
 
   it("rejects oversized inline images before base64 decoding", () => {

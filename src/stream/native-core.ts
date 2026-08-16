@@ -27,6 +27,7 @@ import {
   frameConnectMessage,
   parseConnectEndStream,
   type BridgeHandle,
+  type ConnectFrameDesyncDiagnostics,
 } from "../client/bridge.js";
 import type { CursorModelParameter } from "../client/cursor-wire.js";
 export type {
@@ -1188,7 +1189,12 @@ function writeNativeStream(
       processChunk(chunk);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      debugLog("native.stream.frame_error", { requestId, message });
+      const desync =
+        error instanceof Error
+          ? (error as Error & { connectFrameDesync?: ConnectFrameDesyncDiagnostics })
+              .connectFrameDesync
+          : undefined;
+      debugLog("native.stream.frame_error", { requestId, message, desync });
       // A corrupted/misaligned Connect frame boundary can't be recovered within this
       // connection, but the desync is local per-connection state, not a permanent condition —
       // killing the bridge (rather than failing the stream outright) routes this through the

@@ -385,11 +385,26 @@ export const __testInternals = {
   createBridgeHandleForChild,
 };
 
+/** Attached to the error thrown for a declared-length overflow so callers can log forensics
+ *  (behind PI_CURSOR_PROVIDER_DEBUG) without needing to re-derive parser-internal state. */
+export interface ConnectFrameDesyncDiagnostics {
+  /** Bytes successfully parsed into complete frames before the desync, across this parser's life. */
+  bytesConsumedBeforeDesync: number;
+  /** Number of complete frames successfully parsed before the desync. */
+  framesParsedBeforeDesync: number;
+  /** Hex of the 5-byte header read as the (bogus) next frame. */
+  headerHex: string;
+  /** Hex of up to 32 bytes immediately following the header, for context. */
+  trailingContextHex: string;
+}
+
 export function createConnectFrameParser(
   onMessage: (bytes: Uint8Array) => void,
   onEndStream: (bytes: Uint8Array) => void,
 ): (incoming: Buffer) => void {
   const pending = new FrameAccumulator();
+  let bytesConsumed = 0;
+  let framesParsed = 0;
   return (incoming: Buffer) => {
     pending.push(incoming);
     while (pending.length >= 5) {
@@ -397,15 +412,34 @@ export function createConnectFrameParser(
       const flags = header[0]!;
       const msgLen = header.readUInt32BE(1);
       if (msgLen > MAX_CONNECT_MESSAGE_BYTES) {
+        const contextLen = Math.min(32, pending.length - 5);
+        const trailingContextHex =
+          contextLen > 0
+            ? pending
+                .peek(5 + contextLen)
+                .subarray(5)
+                .toString("hex")
+            : "";
+        const diagnostics: ConnectFrameDesyncDiagnostics = {
+          bytesConsumedBeforeDesync: bytesConsumed,
+          framesParsedBeforeDesync: framesParsed,
+          headerHex: header.toString("hex"),
+          trailingContextHex,
+        };
         pending.reset();
-        throw new Error(
-          `Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes (incoming, declared length ${msgLen}). ` +
-            `Enable PI_CURSOR_PROVIDER_DEBUG=1 and check the lifecycle log for the frame preceding this error.`,
+        throw Object.assign(
+          new Error(
+            `Connect message exceeds ${MAX_CONNECT_MESSAGE_BYTES} bytes (incoming, declared length ${msgLen}). ` +
+              `Enable PI_CURSOR_PROVIDER_DEBUG=1 and check the lifecycle log for the frame preceding this error.`,
+          ),
+          { connectFrameDesync: diagnostics },
         );
       }
       if (pending.length < 5 + msgLen) break;
       pending.consume(5);
       const messageBytes = pending.consume(msgLen);
+      bytesConsumed += 5 + msgLen;
+      framesParsed += 1;
       if (flags & CONNECT_END_STREAM_FLAG) onEndStream(messageBytes);
       else onMessage(messageBytes);
     }
