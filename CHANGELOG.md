@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.16] - 2026-08-16
+
+### Performance
+
+- **Eliminated O(n²) frame reassembly on the streaming hot path.** The bridge's stdout reader, the Connect frame parser, and `h2-bridge.mjs`'s stdin reader all re-concatenated the entire buffered backlog on every incoming chunk, which is quadratic in a frame's total size once it arrives split across many small reads (large tool results, images, checkpoints). Replaced with a chunk-array accumulator that only merges what's needed to make progress — up to ~690x faster reassembling a large frame from small chunks in benchmarks.
+- **Cached checkpoint history fingerprinting.** `fingerprintCompletedTurns()` re-serialized and hashed the full completed-turn history from scratch on every call, even though it runs multiple times per turn over overlapping turn arrays. Added a per-turn cache keyed by turn-object identity.
+- **Memoized MCP tool schema slimming.** `buildMcpToolDefinitions()` and the derived MCP tool-name list re-slimmed and re-encoded every tool's schema on every call, even when the underlying tool set was unchanged from the previous turn. Both are now cached by array identity.
+
 ## [1.4.15] - 2026-08-15
 
 ### Documentation
