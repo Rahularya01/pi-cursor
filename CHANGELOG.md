@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.19] - 2026-08-17
+
+### Performance
+
+- **Stopped reading whole journals to check one timestamp.** The run-journal TTL sweep runs once per user turn, on the main thread, and read plus `JSON.parse`d every journal file — megabytes of base64 blobs each — only to look at the `savedAt` field near the front of the record. It now reads a 512-byte head through a single file descriptor, falling back to a full parse only when the head does not carry the field; stale journals are rejected from the same head instead of decoding their blobs first. ~138x faster over a 25-journal cache directory (896ms → 6.5ms).
+- **Image dedup no longer hashes every payload.** `mergeImages()` sha256'd every image on every history replay. Duplicates must agree on MIME type and byte length, so shapes are bucketed first and only images colliding on shape are digested, with digests memoized by buffer identity. ~700x faster replaying a 12-image transcript, and ~5x on cold buffers with distinct sizes.
+- **Removed a `process.env` read from the per-token path.** `debugLog()` re-resolved `PI_CURSOR_PROVIDER_DEBUG` on every call, including once per streamed token. `process.env` is a native-backed proxy costing roughly 100x an ordinary property read, which made it the single largest cost in `processServerMessage()`. The flag is now resolved once, lazily. ~8x faster per server message.
+- **Fixed O(n²) model catalog building on the activation path.** `hasVariantParameterSet()` re-normalized all of a model's variants for each of that model's variants, so catalog building scaled quadratically in string sorts. The advertised parameter sets are now derived once per model. ~5x faster, taking the whole activation model chain from 3.75ms to 1.0ms. The canonical key sorts also moved off `localeCompare`, which was needlessly slow and could rank distinct strings as equal — leaving the key dependent on input order.
+- **Dropped dead work from side-channel splitting.** `splitUserTextAndSideChannel()` evaluated seven regexes and seven full-string trims per user message inside an `if` block with an empty body, then discarded the result.
+- **Memoized journal blob encoding.** A conversation's blobs are carried over unchanged across the journal writes triggered by each tool-call pause, so their base64 encoding is now cached by buffer identity rather than recomputed per write.
+
+No behavior change; startup module load was measured and deliberately left alone (the extension's own bundle imports in ~13ms — the rest is pi's peer dependencies).
+
 ## [1.4.18] - 2026-08-16
 
 ### Added
