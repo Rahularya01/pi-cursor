@@ -18,6 +18,7 @@ import type {
   ToolCall as PiToolCall,
 } from "@earendil-works/pi-ai";
 
+import { redactSecrets } from "../utils/security.js";
 import type { CursorNativeModelRouting } from "./model-routing.js";
 import type {
   ChatCompletionRequest,
@@ -131,6 +132,52 @@ export function assistantToolCallsFromPiContent(
   }));
 }
 
+/** Longest error detail carried into the replayed notice. */
+export const MAX_INTERRUPTED_NOTICE_ERROR_CHARS = 200;
+
+const INTERRUPTED_NOTICE_TAIL = "the output above is incomplete and nothing further was produced";
+
+/**
+ * Describe a prior assistant turn that never ran to completion.
+ *
+ * Cursor's turn structure only carries the text a turn produced, so an aborted
+ * or failed turn replays as one that simply trails off — indistinguishable from
+ * a model that chose to stop. Observed effect on a resumed session: the model
+ * reads the gap as missing context and goes looking for it (re-listing the
+ * workspace, reading unrelated transcripts) instead of continuing the work.
+ *
+ * Returns "" for turns that completed normally, which is the common case.
+ */
+export function interruptedAssistantNotice(message: {
+  stopReason?: AssistantMessage["stopReason"];
+  errorMessage?: string;
+}): string {
+  const reason = message.stopReason;
+  if (reason === "aborted") {
+    return `[pi-cursor: this assistant turn was interrupted before it finished; ${INTERRUPTED_NOTICE_TAIL}.]`;
+  }
+  if (reason === "error") {
+    // errorMessage is provider text and can carry a token; redact before it
+    // lands in a request body, and bound it so a huge error cannot dominate
+    // the replayed history.
+    const raw = redactSecrets((message.errorMessage ?? "").replace(/\s+/g, " ").trim());
+    const detail =
+      raw.length > MAX_INTERRUPTED_NOTICE_ERROR_CHARS
+        ? `${raw.slice(0, MAX_INTERRUPTED_NOTICE_ERROR_CHARS - 1)}…`
+        : raw;
+    return detail
+      ? `[pi-cursor: this assistant turn ended with an error before it finished (${detail}); ${INTERRUPTED_NOTICE_TAIL}.]`
+      : `[pi-cursor: this assistant turn ended with an error before it finished; ${INTERRUPTED_NOTICE_TAIL}.]`;
+  }
+  if (reason === "length") {
+    return `[pi-cursor: this assistant turn was cut off at the model's output limit; ${INTERRUPTED_NOTICE_TAIL}.]`;
+  }
+  if (reason === "pending") {
+    return `[pi-cursor: this assistant turn never completed; ${INTERRUPTED_NOTICE_TAIL}.]`;
+  }
+  return "";
+}
+
 export function piToolToOpenAI(tool: PiTool): OpenAIToolDef {
   return {
     type: "function",
@@ -194,7 +241,7 @@ export function contextToCursorChatCompletionRequest(
   const messages: OpenAIMessage[] = [];
   if (context.systemPrompt) messages.push({ role: "system", content: context.systemPrompt });
 
-  for (const message of context.messages) {
+  for (const [index, message] of context.messages.entries()) {
     if (message.role === "user") {
       messages.push({ role: "user", content: piContentToOpenAIContent(message.content) });
       continue;
@@ -202,10 +249,17 @@ export function contextToCursorChatCompletionRequest(
 
     if (message.role === "assistant") {
       const tool_calls = assistantToolCallsFromPiContent(message.content);
+      // Only annotate turns that are genuinely history. A trailing aborted
+      // assistant message is the turn being retried, not context behind us —
+      // annotating it would turn an empty-step turn into a non-empty one and
+      // strand the live user text.
+      const interrupted_notice =
+        index < context.messages.length - 1 ? interruptedAssistantNotice(message) : "";
       messages.push({
         role: "assistant",
         content: assistantTextFromPiContent(message.content),
         ...(tool_calls.length > 0 ? { tool_calls } : {}),
+        ...(interrupted_notice ? { interrupted_notice } : {}),
       });
       continue;
     }

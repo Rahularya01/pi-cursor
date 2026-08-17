@@ -23,7 +23,7 @@ import { join as pathJoin } from "node:path";
 
 import { getCacheDir } from "../utils/cache-dir.js";
 import { debugLog } from "./debug-log.js";
-import { MAX_INDIVIDUAL_BLOB_BYTES } from "./tuning.js";
+import { MAX_ACTIVE_BLOB_ENTRIES, MAX_INDIVIDUAL_BLOB_BYTES } from "./tuning.js";
 import type { StoredConversation } from "./types.js";
 
 const JOURNAL_VERSION = 1 as const;
@@ -32,6 +32,8 @@ const JOURNAL_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_JOURNAL_FILE_BYTES = 192 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024;
 const MAX_ENCODED_BLOB_CHARS = Math.ceil((MAX_INDIVIDUAL_BLOB_BYTES * 4) / 3) + 4;
+/** Headroom inside MAX_JOURNAL_FILE_BYTES for the record's non-blob fields. */
+const JOURNAL_METADATA_SLACK_CHARS = 64 * 1024;
 
 interface JournalBlobEntry {
   id: string;
@@ -57,6 +59,12 @@ export interface DurableJournalRecord {
   midPauseRecordedAtMs?: number;
   /** Content-addressed blobs referenced by checkpoints / history. */
   blobs: JournalBlobEntry[];
+  /**
+   * Blobs the byte budget could not fit. Non-zero means the stored checkpoint
+   * references content this record cannot supply, so the reader drops the
+   * checkpoint rather than resuming a conversation with blank history.
+   */
+  blobsOmitted?: number;
   lastAccessMs: number;
 }
 
@@ -139,21 +147,48 @@ function encodeBlob(data: Uint8Array): string {
   return encoded;
 }
 
-function encodeBlobs(blobStore: Map<string, Uint8Array>, maxBlobs = 64): JournalBlobEntry[] {
-  const entries: JournalBlobEntry[] = [];
-  // Map iteration is insertion order; keep the newest tail under the cap.
+/**
+ * Encode the whole blob store, newest-first eviction only when the byte budget
+ * genuinely cannot hold it.
+ *
+ * A checkpoint's `turns` are blob *references*, so any blob left out here is a
+ * turn that comes back blank on the next launch. The live store is already
+ * bounded (MAX_ACTIVE_BLOB_ENTRIES / MAX_CONVERSATION_BLOB_BYTES), so the
+ * common case fits and `omitted` stays zero.
+ */
+function encodeBlobs(
+  blobStore: Map<string, Uint8Array>,
+  budgetChars: number,
+): { entries: JournalBlobEntry[]; omitted: number } {
+  // Map iteration is insertion order; keep the newest tail when something must go.
   const all = [...blobStore.entries()];
-  const slice = all.length > maxBlobs ? all.slice(all.length - maxBlobs) : all;
-  for (const [id, data] of slice) {
-    entries.push({ id, data: encodeBlob(data) });
+  const kept: JournalBlobEntry[] = [];
+  let usedChars = 0;
+  let omitted = 0;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const [id, data] = all[i]!;
+    const encoded = encodeBlob(data);
+    // `id.length + encoded.length` under-counts the JSON punctuation around each
+    // entry; the slack constant covers that and the rest of the record.
+    if (kept.length >= MAX_ACTIVE_BLOB_ENTRIES || usedChars + encoded.length > budgetChars) {
+      omitted = i + 1;
+      break;
+    }
+    usedChars += encoded.length + id.length;
+    kept.push({ id, data: encoded });
   }
-  return entries;
+  kept.reverse();
+  return { entries: kept, omitted };
 }
 
-function decodeBlobs(entries: JournalBlobEntry[] | undefined): Map<string, Uint8Array> {
+function decodeBlobs(entries: JournalBlobEntry[] | undefined): {
+  map: Map<string, Uint8Array>;
+  skipped: number;
+} {
   const map = new Map<string, Uint8Array>();
-  if (!Array.isArray(entries)) return map;
-  for (const entry of entries.slice(0, 64)) {
+  if (!Array.isArray(entries)) return { map, skipped: 0 };
+  let skipped = 0;
+  for (const entry of entries.slice(0, MAX_ACTIVE_BLOB_ENTRIES)) {
     try {
       if (
         !entry ||
@@ -162,16 +197,21 @@ function decodeBlobs(entries: JournalBlobEntry[] | undefined): Map<string, Uint8
         typeof entry.data !== "string" ||
         entry.data.length > MAX_ENCODED_BLOB_CHARS
       ) {
+        skipped += 1;
         continue;
       }
       const data = Buffer.from(entry.data, "base64");
-      if (data.length > MAX_INDIVIDUAL_BLOB_BYTES) continue;
+      if (data.length > MAX_INDIVIDUAL_BLOB_BYTES) {
+        skipped += 1;
+        continue;
+      }
       map.set(entry.id, new Uint8Array(data));
     } catch {
-      // Skip corrupt blob entries.
+      // A corrupt entry is still a blob the checkpoint may reference.
+      skipped += 1;
     }
   }
-  return map;
+  return { map, skipped: skipped + Math.max(0, entries.length - MAX_ACTIVE_BLOB_ENTRIES) };
 }
 
 export function serializeConversationJournal(
@@ -179,6 +219,15 @@ export function serializeConversationJournal(
   stored: StoredConversation,
   now = Date.now(),
 ): DurableJournalRecord {
+  const checkpoint = stored.checkpoint ? Buffer.from(stored.checkpoint).toString("base64") : null;
+  const budgetChars = Math.max(
+    0,
+    MAX_JOURNAL_FILE_BYTES - (checkpoint?.length ?? 0) - JOURNAL_METADATA_SLACK_CHARS,
+  );
+  const { entries, omitted } = encodeBlobs(stored.blobStore, budgetChars);
+  if (omitted > 0) {
+    debugLog("journal.blobs_omitted", { convKey, omitted, kept: entries.length });
+  }
   return {
     version: JOURNAL_VERSION,
     convKey,
@@ -186,7 +235,7 @@ export function serializeConversationJournal(
     conversationId: stored.conversationId,
     sessionScoped: stored.sessionScoped,
     ...(stored.sessionId ? { sessionId: stored.sessionId } : {}),
-    checkpoint: stored.checkpoint ? Buffer.from(stored.checkpoint).toString("base64") : null,
+    checkpoint,
     ...(stored.checkpointSource ? { checkpointSource: stored.checkpointSource } : {}),
     ...(stored.checkpointTurnCount !== undefined
       ? { checkpointTurnCount: stored.checkpointTurnCount }
@@ -206,7 +255,8 @@ export function serializeConversationJournal(
     ...(stored.midPauseRecordedAtMs !== undefined
       ? { midPauseRecordedAtMs: stored.midPauseRecordedAtMs }
       : {}),
-    blobs: encodeBlobs(stored.blobStore),
+    blobs: entries,
+    ...(omitted > 0 ? { blobsOmitted: omitted } : {}),
     lastAccessMs: stored.lastAccessMs || now,
   };
 }
@@ -232,14 +282,35 @@ export function deserializeConversationJournal(
     }
   }
 
+  const { map: blobStore, skipped } = decodeBlobs(record.blobs);
+
+  // A checkpoint addresses its history by blob id. Replaying one whose blobs are
+  // missing does not fail — Cursor asks for them, gets an empty result, and the
+  // conversation comes back structurally intact with its older turns blank.
+  // Dropping the checkpoint instead costs one full-history rebuild from pi's
+  // transcript, which is always correct.
+  const blobsIncomplete = (record.blobsOmitted ?? 0) > 0 || skipped > 0;
+  if (checkpoint && blobsIncomplete) {
+    debugLog("journal.checkpoint_dropped_incomplete_blobs", {
+      convKey: record.convKey,
+      omitted: record.blobsOmitted ?? 0,
+      skipped,
+      kept: blobStore.size,
+    });
+    checkpoint = null;
+  }
+  const keepCheckpointMetadata = !!checkpoint;
+
   return {
     conversationId: record.conversationId,
     checkpoint,
-    ...(record.checkpointSource ? { checkpointSource: record.checkpointSource } : {}),
-    ...(record.checkpointTurnCount !== undefined
+    ...(keepCheckpointMetadata && record.checkpointSource
+      ? { checkpointSource: record.checkpointSource }
+      : {}),
+    ...(keepCheckpointMetadata && record.checkpointTurnCount !== undefined
       ? { checkpointTurnCount: record.checkpointTurnCount }
       : {}),
-    ...(record.checkpointHistoryFingerprint
+    ...(keepCheckpointMetadata && record.checkpointHistoryFingerprint
       ? { checkpointHistoryFingerprint: record.checkpointHistoryFingerprint }
       : {}),
     ...(record.midPausePendingToolCalls
@@ -256,7 +327,7 @@ export function deserializeConversationJournal(
       : {}),
     sessionScoped: !!record.sessionScoped,
     ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    blobStore: decodeBlobs(record.blobs),
+    blobStore,
     lastAccessMs: record.lastAccessMs || record.savedAt || Date.now(),
   };
 }

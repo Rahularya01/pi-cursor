@@ -269,6 +269,15 @@ function handleKvMessage(
     const blobId = (kvMsg as any).message.value.blobId;
     const blobIdKey = Buffer.from(blobId).toString("hex");
     const blobData = blobStore.get(blobIdKey);
+    if (!blobData) {
+      // Cursor only asks for a blob it holds a reference to, so a miss means a
+      // piece of the replayed conversation is gone. The protocol has no way to
+      // say so — an empty result is indistinguishable from an empty blob — and
+      // the turn continues with that history silently blank. Record it so the
+      // amnesia is at least diagnosable from /cursor.doctor and the lifecycle log.
+      lifecycleLog("kv_blob_miss", { blobId: blobIdKey.slice(0, 16), storeSize: blobStore.size });
+      setLastStreamEvent("kv_blob_miss");
+    }
     sendKvResponse(
       kvMsg,
       "getBlobResult",

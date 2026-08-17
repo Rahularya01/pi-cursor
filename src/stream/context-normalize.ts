@@ -24,6 +24,8 @@ export interface OpenAIMessage {
   tool_call_id?: string;
   name?: string;
   tool_calls?: unknown[];
+  /** Carried through untouched; see OpenAIMessage in ./types.ts. */
+  interrupted_notice?: string;
 }
 
 const CONTEXT_MODE_SIDE_CHANNEL_PRIORITY =

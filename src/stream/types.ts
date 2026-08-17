@@ -37,6 +37,12 @@ export interface OpenAIMessage {
   tool_calls?: OpenAIToolCall[];
   /** Propagated from Pi toolResult.isError into Cursor MCP results. */
   is_error?: boolean;
+  /**
+   * Set on a historical assistant message whose turn did not run to completion
+   * (aborted, errored, truncated). Replayed into the turn as a trailing
+   * assistant step — see `interruptedAssistantNotice()` in ./pi-adapter.ts.
+   */
+  interrupted_notice?: string;
 }
 
 export interface OpenAIToolDef {

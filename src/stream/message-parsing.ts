@@ -323,6 +323,15 @@ export function parseMessages(
         currentTurn.steps.push(step);
         currentTurn.toolCallById.set(step.toolCallId, step);
       }
+
+      // Appended last so it reads as the end of the turn, after any tool calls
+      // the turn managed to emit before it was cut short.
+      const notice = msg.interrupted_notice?.trim();
+      if (notice) {
+        const last = currentTurn.steps.at(-1);
+        if (last?.kind === "assistantText") last.text = `${last.text}\n\n${notice}`;
+        else currentTurn.steps.push({ kind: "assistantText", text: notice });
+      }
       continue;
     }
 
