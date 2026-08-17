@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.20] - 2026-08-18
+
+### Fixed
+
+- **An interrupted assistant turn replayed as one that simply trailed off.** Cursor's turn structure carries only the text a turn produced, so a turn that was aborted, errored, or truncated came back on the next request indistinguishable from a model that chose to stop — pi's `stopReason` and `errorMessage` were dropped entirely. Resuming a session after an interrupted turn therefore looked to the model like missing context rather than incomplete work: in the session that surfaced this, "continue please" sent the model listing the workspace and reading unrelated agent transcripts, from which it confabulated a prior discussion that never happened. Completed turns are untouched; a turn that did not finish now carries an explicit trailing note (`[pi-cursor: this assistant turn was interrupted before it finished; …]`) placed after any tool calls it managed to emit. Error detail rides along, redacted through `redactSecrets()` and capped at 200 characters. A trailing interrupted turn — the one being retried, not history behind us — is deliberately left unannotated so the live user text is not stranded.
+- **Conversation journals silently dropped all but the newest 64 blobs.** The live blob store holds up to `MAX_ACTIVE_BLOB_ENTRIES` (512) entries, but the on-disk journal that survives a restart persisted only 64. A checkpoint addresses its history by blob id, so a restored checkpoint referencing an evicted blob asked for content that was gone — and `getBlobArgs` answers a miss with an empty result, which is indistinguishable from an empty blob. The conversation came back structurally intact with its older turns blank, with no error at any layer. Journals now persist the whole store under a byte budget derived from the record's actual checkpoint size, and a record that still could not fit everything is marked so the reader drops its checkpoint and rebuilds from pi's transcript instead of resuming with holes. Roughly 15–20 turns was enough to cross the old cap.
+- **A blob miss is no longer invisible.** `getBlobArgs` for a blob we do not hold now records `kv_blob_miss` in the lifecycle log and in `/cursor.doctor`'s `lastStreamEvent`, so this class of silent history loss is diagnosable from the sanitized log alone.
+
 ## [1.4.19] - 2026-08-17
 
 ### Performance
