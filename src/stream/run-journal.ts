@@ -8,9 +8,12 @@
  * Storage is best-effort: if the cache dir is unusable we stay memory-only.
  */
 import {
+  closeSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
-  statSync,
+  readSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -77,13 +80,72 @@ function journalPath(convKey: string): string | undefined {
   return pathJoin(dir, `${safe}.json`);
 }
 
+/**
+ * Enough to cover `{"version":1,"convKey":"<=64 chars>","savedAt":<ms>` with room to spare.
+ * `convKey` is sanitized to `[a-zA-Z0-9._-]`, so it can never contain a quoted key itself —
+ * the first `"savedAt":` in the prefix is always the real field.
+ */
+const SAVED_AT_PROBE_BYTES = 512;
+const SAVED_AT_PATTERN = /"savedAt":\s*(\d+)/;
+
+interface JournalStat {
+  size: number;
+  /** `savedAt` when it was readable from the file's head, else undefined. */
+  savedAt?: number;
+}
+
+/**
+ * Stat a journal and recover its `savedAt` without reading the whole file.
+ *
+ * Blobs are base64 and sit at the tail of the record, so a journal is routinely megabytes
+ * while the timestamp the TTL sweep needs lives in the first hundred bytes. Reading a fixed
+ * prefix keeps `evictStaleJournals` proportional to the number of journals rather than to
+ * their total size.
+ */
+function statJournalHead(path: string): JournalStat | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const head = Buffer.allocUnsafe(Math.min(SAVED_AT_PROBE_BYTES, size));
+    const read = head.length > 0 ? readSync(fd, head, 0, head.length, 0) : 0;
+    const savedAt = Number(SAVED_AT_PATTERN.exec(head.toString("utf8", 0, read))?.[1]);
+    return { size, ...(Number.isFinite(savedAt) && savedAt > 0 ? { savedAt } : {}) };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed / never opened.
+      }
+    }
+  }
+}
+
+// A journal is rewritten on every checkpoint commit and every tool-call pause, but a
+// conversation's blobs are overwhelmingly carried over unchanged from the previous write.
+// Blob bytes are immutable once stored, so cache each buffer's encoding by identity rather
+// than re-encoding megabytes of base64 per pause.
+const blobBase64Cache = new WeakMap<Uint8Array, string>();
+
+function encodeBlob(data: Uint8Array): string {
+  let encoded = blobBase64Cache.get(data);
+  if (encoded === undefined) {
+    encoded = Buffer.from(data).toString("base64");
+    blobBase64Cache.set(data, encoded);
+  }
+  return encoded;
+}
+
 function encodeBlobs(blobStore: Map<string, Uint8Array>, maxBlobs = 64): JournalBlobEntry[] {
   const entries: JournalBlobEntry[] = [];
   // Map iteration is insertion order; keep the newest tail under the cap.
   const all = [...blobStore.entries()];
   const slice = all.length > maxBlobs ? all.slice(all.length - maxBlobs) : all;
   for (const [id, data] of slice) {
-    entries.push({ id, data: Buffer.from(data).toString("base64") });
+    entries.push({ id, data: encodeBlob(data) });
   }
   return entries;
 }
@@ -232,14 +294,24 @@ export function readConversationJournal(
   const path = journalPath(convKey);
   if (!path) return undefined;
   try {
-    if (statSync(path).size > MAX_JOURNAL_FILE_BYTES) {
+    const head = statJournalHead(path);
+    if (!head) return undefined;
+    if (head.size > MAX_JOURNAL_FILE_BYTES) {
       debugLog("journal.oversized", { convKey });
       return undefined;
     }
-    const raw = readFileSync(path, "utf8");
-    const record = JSON.parse(raw) as DurableJournalRecord;
     const now = options?.now ?? Date.now();
     const maxAge = options?.maxAgeMs ?? JOURNAL_TTL_MS;
+    // Reject a stale journal from its head rather than decoding megabytes of blobs first.
+    if (head.savedAt !== undefined) {
+      const headAge = now - head.savedAt;
+      if (headAge < 0 || headAge > maxAge) {
+        debugLog("journal.stale", { convKey, age: headAge });
+        return undefined;
+      }
+    }
+    const raw = readFileSync(path, "utf8");
+    const record = JSON.parse(raw) as DurableJournalRecord;
     const age = now - (record.savedAt || record.lastAccessMs || 0);
     if (!Number.isFinite(age) || age < 0 || age > maxAge) {
       debugLog("journal.stale", { convKey, age });
@@ -278,14 +350,23 @@ export function evictStaleJournals(now = Date.now(), maxAgeMs = JOURNAL_TTL_MS):
       if (!name.endsWith(".json")) continue;
       const full = pathJoin(dir, name);
       try {
-        if (statSync(full).size > MAX_JOURNAL_FILE_BYTES) {
+        const head = statJournalHead(full);
+        if (!head) throw new Error("unreadable journal");
+        if (head.size > MAX_JOURNAL_FILE_BYTES) {
           unlinkSync(full);
           removed += 1;
           continue;
         }
-        const raw = readFileSync(full, "utf8");
-        const record = JSON.parse(raw) as DurableJournalRecord;
-        const age = now - (record.savedAt || record.lastAccessMs || 0);
+        // The head carries `savedAt` for every journal this build writes, so the common
+        // sweep never reads a blob payload. Anything older, hand-edited, or truncated
+        // falls through to the full parse below.
+        let age: number;
+        if (head.savedAt !== undefined) {
+          age = now - head.savedAt;
+        } else {
+          const record = JSON.parse(readFileSync(full, "utf8")) as DurableJournalRecord;
+          age = now - (record.savedAt || record.lastAccessMs || 0);
+        }
         if (!Number.isFinite(age) || age > maxAgeMs) {
           unlinkSync(full);
           removed += 1;

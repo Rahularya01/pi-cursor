@@ -150,20 +150,46 @@ function parseImageDataUrlStrict(
   return image;
 }
 
+// The whole transcript is re-parsed on every request, so the same image buffers are hashed
+// again and again across turns. Image bytes are treated as immutable once decoded, so a digest
+// keyed by buffer identity stays valid for the buffer's lifetime.
+const contentDigestCache = new WeakMap<Uint8Array, string>();
+
+function contentDigest(data: Uint8Array): string {
+  let digest = contentDigestCache.get(data);
+  if (digest === undefined) {
+    digest = createHash("sha256").update(data).digest("hex");
+    contentDigestCache.set(data, digest);
+  }
+  return digest;
+}
+
 export function imageKey(image: ParsedImageContent): string {
-  return `${image.mimeType}:${createHash("sha256").update(image.data).digest("hex")}`;
+  return `${image.mimeType}:${contentDigest(image.data)}`;
 }
 
 export function mergeImages(
   ...groups: Array<ParsedImageContent[] | undefined>
 ): ParsedImageContent[] | undefined {
   const merged: ParsedImageContent[] = [];
-  const seen = new Set<string>();
+  // Two images can only be duplicates if they agree on MIME type and byte length, and that is
+  // cheap to check. Bucketing on it first means the common all-distinct case never hashes a
+  // payload at all; only images that collide on shape are digested to settle the tie.
+  const byShape = new Map<string, { first: ParsedImageContent; digests?: Set<string> }>();
   for (const group of groups) {
     for (const image of group ?? []) {
-      const key = imageKey(image);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const shape = `${image.mimeType}:${image.data.byteLength}`;
+      const bucket = byShape.get(shape);
+      if (!bucket) {
+        byShape.set(shape, { first: image });
+        merged.push(image);
+        continue;
+      }
+      // Second image of this shape: the bucket's digest set is worth materializing now.
+      const digests = (bucket.digests ??= new Set([contentDigest(bucket.first.data)]));
+      const digest = contentDigest(image.data);
+      if (digests.has(digest)) continue;
+      digests.add(digest);
       merged.push(image);
     }
   }

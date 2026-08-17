@@ -24,9 +24,23 @@ let debugLogFilePath: string | undefined;
 
 export const requestDebugByBody = new WeakMap<Uint8Array, CursorRequestDebugSummary>();
 
+// `debugLog` guards every call site on this, including one per server message on the streaming
+// hot path. `process.env` is a native-backed proxy whose property reads cost ~100x an ordinary
+// one, so resolve the flag once instead of on every token. Resolution stays lazy so a value pi
+// exports after this module loads is still picked up.
+let streamDebugEnabled: boolean | undefined;
+
 export function isStreamDebugEnabled(): boolean {
-  const raw = process.env.PI_CURSOR_PROVIDER_DEBUG?.trim().toLowerCase();
-  return !!raw && raw !== "0" && raw !== "false" && raw !== "off";
+  if (streamDebugEnabled === undefined) {
+    const raw = process.env.PI_CURSOR_PROVIDER_DEBUG?.trim().toLowerCase();
+    streamDebugEnabled = !!raw && raw !== "0" && raw !== "false" && raw !== "off";
+  }
+  return streamDebugEnabled;
+}
+
+/** Test seam: re-read PI_CURSOR_PROVIDER_DEBUG after mutating process.env. */
+export function resetStreamDebugForTests(): void {
+  streamDebugEnabled = undefined;
 }
 
 export function truncateDebugString(value: string, max = 4000): string {

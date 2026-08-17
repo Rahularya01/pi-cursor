@@ -130,20 +130,6 @@ export function splitUserTextAndSideChannel(text: string): {
   const raw = text ?? "";
   if (!raw.trim()) return { userText: "", sideText: "" };
 
-  // Fast path: pure side-channel.
-  if (
-    /^context-mode active\b/i.test(raw.trim()) ||
-    /^\[context\]/i.test(raw.trim()) ||
-    /^\[pi-lens automated\b/i.test(raw.trim()) ||
-    /^<session_state\b/i.test(raw.trim()) ||
-    /^<session_resume\b/i.test(raw.trim()) ||
-    /^<active_memory\b/i.test(raw.trim()) ||
-    /^<compaction\b/i.test(raw.trim())
-  ) {
-    // Still allow a real task after a trailing injection block if one exists.
-    // Most pure injections have no residual user text.
-  }
-
   if (!isContextModeSideChannelText(raw)) {
     return { userText: raw, sideText: "" };
   }

@@ -181,20 +181,40 @@ export function parameterizedBaseLabel(
   ].filter(Boolean) as string[];
 }
 
+// Every variant of a model is checked against every variant of that same model, so normalizing
+// the model's variant sets on each call made catalog building O(variants^2) in string sorts —
+// the dominant cost of activation with a live catalog. The advertised sets are fixed for a given
+// model object, so derive them once and keep them keyed by model identity.
+const variantParameterSetCache = new WeakMap<CursorParameterizedModel, Set<string>>();
+
+function advertisedParameterSets(model: CursorParameterizedModel): Set<string> {
+  let sets = variantParameterSetCache.get(model);
+  if (!sets) {
+    sets = new Set(model.variants.map((variant) => normalizeParameterValues(variant.parameters)));
+    variantParameterSetCache.set(model, sets);
+  }
+  return sets;
+}
+
 export function hasVariantParameterSet(
   model: CursorParameterizedModel,
   parameters: CursorModelParameter[],
 ): boolean {
-  const normalized = normalizeParameterValues(parameters);
-  return model.variants.some(
-    (variant) => normalizeParameterValues(variant.parameters) === normalized,
-  );
+  return advertisedParameterSets(model).has(normalizeParameterValues(parameters));
+}
+
+// Codepoint order rather than `localeCompare`: this string is only ever compared against other
+// outputs of this function, so the order just has to be deterministic and total. `localeCompare`
+// is both far slower and can rank distinct strings as equal, which would leave the key dependent
+// on the input array's order.
+function compareCodepoint(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 export function normalizeParameterValues(parameters: CursorModelParameter[]): string {
   return parameters
     .map((parameter) => `${parameter.id}=${parameter.value}`)
-    .sort((a, b) => a.localeCompare(b))
+    .sort(compareCodepoint)
     .join(";");
 }
 
@@ -277,7 +297,7 @@ export function parameterGroupKey(
   const params = variant.parameters
     .filter((parameter) => parameter.id !== effortParameterId)
     .map((parameter) => `${parameter.id}=${parameter.value}`)
-    .sort((a, b) => a.localeCompare(b))
+    .sort(compareCodepoint)
     .join(";");
   return `${variant.isMaxMode ? "max" : "nonmax"}|${params}`;
 }
