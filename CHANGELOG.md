@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.4.21] - 2026-08-18
+
+### Fixed
+
+- **Session switch/fork/shutdown deleted the on-disk conversation journal.** Switching chats (or `/fork`, `/tree`, shutdown) killed the HTTP/2 bridge _and_ `unlink`d the journal that `/resume` hydrates from. The next turn in that session had no Cursor checkpoint and rebuilt without the compacted summary — it looked like the chat had forgotten the conversation. Those hooks now only tear down bridges; the journal stays until TTL eviction.
+- **Trivial turns (`hi` / `ok`) blanked a system prompt that held folded session memory.** Greetings omit tools _and_ used to drop the system prompt to save tokens. After compaction that prompt is where the recovered `<session_state>` lives, so a short follow-up started from a blank slate. The prompt is kept when it contains provider-context / session-resume memory; tools are still omitted.
+- **Compaction and resume summaries were framed as disposable infrastructure.** The same "latest user message is the only task; do not continue prior work" banner wrapped live context-mode injections _and_ recovered `<summary>` / `<session_resume>` blocks, so the model treated the compacted memory as noise. Resume/compaction side-channels now say they are active memory to continue from. Empty hierarchy+mode-only injections are still dropped; a real `<summary>` is kept even when short. Trailing user text after `</session_state>` is no longer capped at 500 characters.
+- **A compacted Pi transcript kept the old Cursor `conversationId`.** When turn count or history fingerprint no longer matched the checkpoint, the checkpoint was discarded but the id stayed, so the next rebuild attached to a Cursor conversation whose history no longer existed. Those mismatches now rotate `conversationId`. A KV blob miss does the same: drop the checkpoint, rotate, persist — instead of answering the miss with an empty blob and leaving the hole in place.
+- **Replayed history dropped thinking.** Pi thinking blocks never became Cursor `ThinkingMessage` steps, so a rebuild after checkpoint loss lost the reasoning that earlier turns had produced. Thinking is now carried on the OpenAI-shaped assistant message and encoded as a turn step.
+- **Native Cursor execs (read / shell / …) stalled or listed the workspace to "recover" context.** Rejects now name the matching Pi MCP tool when one is advertised (`read` → `read`, `shellArgs` → `bash`, …). The system prompt also states the session is running inside Pi, not Cursor IDE.
+
+### Performance
+
+- **The HTTP/2 bridge process is reused across user turns.** Each turn previously spawned `h2-bridge.mjs` and did a fresh TLS + HTTP/2 handshake. A completed stream now keeps the child and session; the next turn sends `{"cmd":"open"}` and a new Connect stream. Spawn + handshake remain only for the first turn, after an idle TTL, or when the session is switched away. Mid-tool pauses still hold the live stream as before.
+
 ## [1.4.20] - 2026-08-18
 
 ### Fixed
