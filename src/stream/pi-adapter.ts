@@ -96,6 +96,17 @@ export function isPiToolCall(block: unknown): block is PiToolCall {
   return !!block && typeof block === "object" && (block as { type?: unknown }).type === "toolCall";
 }
 
+export function isPiThinkingContent(
+  block: unknown,
+): block is { type: "thinking"; thinking: string } {
+  return (
+    !!block &&
+    typeof block === "object" &&
+    (block as { type?: unknown }).type === "thinking" &&
+    typeof (block as { thinking?: unknown }).thinking === "string"
+  );
+}
+
 export function piContentToOpenAIContent(
   content: string | PiMessage["content"],
 ): OpenAIMessage["content"] {
@@ -116,6 +127,15 @@ export function assistantTextFromPiContent(content: AssistantMessage["content"])
   return content
     .filter((block): block is PiTextContent => isPiTextContent(block))
     .map((block) => block.text)
+    .join("\n");
+}
+
+export function assistantThinkingFromPiContent(content: AssistantMessage["content"]): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(isPiThinkingContent)
+    .map((block) => block.thinking)
+    .filter(Boolean)
     .join("\n");
 }
 
@@ -249,6 +269,7 @@ export function contextToCursorChatCompletionRequest(
 
     if (message.role === "assistant") {
       const tool_calls = assistantToolCallsFromPiContent(message.content);
+      const thinking = assistantThinkingFromPiContent(message.content);
       // Only annotate turns that are genuinely history. A trailing aborted
       // assistant message is the turn being retried, not context behind us —
       // annotating it would turn an empty-step turn into a non-empty one and
@@ -259,6 +280,7 @@ export function contextToCursorChatCompletionRequest(
         role: "assistant",
         content: assistantTextFromPiContent(message.content),
         ...(tool_calls.length > 0 ? { tool_calls } : {}),
+        ...(thinking ? { thinking } : {}),
         ...(interrupted_notice ? { interrupted_notice } : {}),
       });
       continue;

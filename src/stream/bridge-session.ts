@@ -55,6 +55,58 @@ export function removeActiveBridge(bridgeKey: string): void {
   activeBridges.delete(bridgeKey);
 }
 
+export const idleBridges = new Map<
+  string,
+  { bridge: BridgeHandle; idleTimer: ReturnType<typeof setTimeout> }
+>();
+
+function canReuseBridge(bridge: BridgeHandle): boolean {
+  return bridge.alive && typeof bridge.openStream === "function";
+}
+
+export function destroyIdleBridge(bridgeKey: string): void {
+  const idle = idleBridges.get(bridgeKey);
+  if (!idle) return;
+  idleBridges.delete(bridgeKey);
+  clearTimeout(idle.idleTimer);
+  if (idle.bridge.alive) idle.bridge.end();
+}
+
+export function destroyAllIdleBridges(): void {
+  for (const key of [...idleBridges.keys()]) destroyIdleBridge(key);
+}
+
+/** Keep a live HTTP/2 child around so the next user turn can skip spawn + TLS. */
+export function parkIdleBridge(bridgeKey: string, bridge: BridgeHandle): void {
+  // Drop the active-registry entry without killing the process — the leftover-turn
+  // path in native-core ends any bridge still listed as active.
+  removeActiveBridge(bridgeKey);
+  destroyIdleBridge(bridgeKey);
+  if (!canReuseBridge(bridge)) {
+    if (bridge.alive) bridge.end();
+    return;
+  }
+  debugLog("bridge.park_idle", { bridgeKey });
+  const idleTimer = setTimeout(() => {
+    debugLog("bridge.idle_expired", { bridgeKey, ttlMs: ACTIVE_BRIDGE_TTL_MS });
+    destroyIdleBridge(bridgeKey);
+  }, ACTIVE_BRIDGE_TTL_MS);
+  idleTimer.unref?.();
+  idleBridges.set(bridgeKey, { bridge, idleTimer });
+}
+
+function takeIdleBridge(bridgeKey: string): BridgeHandle | undefined {
+  const idle = idleBridges.get(bridgeKey);
+  if (!idle) return undefined;
+  idleBridges.delete(bridgeKey);
+  clearTimeout(idle.idleTimer);
+  if (!canReuseBridge(idle.bridge)) {
+    if (idle.bridge.alive) idle.bridge.end();
+    return undefined;
+  }
+  return idle.bridge;
+}
+
 function armActiveBridgeTtl(
   bridgeKey: string,
   active: Omit<ActiveBridge, "toolTimeoutTimer">,
@@ -96,15 +148,25 @@ export function startBridge(
   requestBytes: Uint8Array,
   options?: { bridgeKey?: string },
 ) {
-  const bridge = bridgeFactory({
-    accessToken,
-    rpcPath: "/agent.v1.AgentService/Run",
-    url: getCursorAgentUrl(),
-    connectTimeoutMs: resolveH2ConnectTimeoutMs(process.env.PI_CURSOR_H2_CONNECT_TIMEOUT_MS),
-    idleTimeoutMs: resolveH2IdleTimeoutMs(process.env.PI_CURSOR_H2_IDLE_TIMEOUT_MS),
-  });
-  debugLog("bridge.start_run", { requestBytes });
-  bridge.write(frameConnectMessage(requestBytes));
+  const reused = options?.bridgeKey ? takeIdleBridge(options.bridgeKey) : undefined;
+  let bridge;
+  if (reused) {
+    debugLog("bridge.reuse_idle", { bridgeKey: options?.bridgeKey });
+    reused.openStream!(accessToken);
+    reused.write(frameConnectMessage(requestBytes));
+    bridge = reused;
+  } else {
+    bridge = bridgeFactory({
+      accessToken,
+      rpcPath: "/agent.v1.AgentService/Run",
+      url: getCursorAgentUrl(),
+      persistent: true,
+      connectTimeoutMs: resolveH2ConnectTimeoutMs(process.env.PI_CURSOR_H2_CONNECT_TIMEOUT_MS),
+      idleTimeoutMs: resolveH2IdleTimeoutMs(process.env.PI_CURSOR_H2_IDLE_TIMEOUT_MS),
+    });
+    debugLog("bridge.start_run", { requestBytes });
+    bridge.write(frameConnectMessage(requestBytes));
+  }
   // Keep heartbeats referenced so long tool pauses do not look idle to the process.
   // 15s interval: frequent enough to prevent mid-pause idle kills, low enough to
   // avoid flooding a quiet stream with IPC chatter. Also slides the parked-bridge

@@ -124,6 +124,20 @@ describe("checkpoint durability", () => {
     expect(stored.checkpoint).not.toBeNull();
     expect(stored.midPausePendingToolCalls).toBeDefined();
   });
+
+  it("rotates conversation identity when Pi history no longer matches the checkpoint", () => {
+    const stored = storedConversation({
+      conversationId: "old-id",
+      checkpoint: new Uint8Array([0x0a, 0x00]),
+      checkpointTurnCount: 5,
+      checkpointHistoryFingerprint: "old-fp",
+    });
+
+    discardStaleCheckpointIfNeeded(stored, [{ userText: "only one", steps: [] }], "r1", "c1");
+
+    expect(stored.checkpoint).toBeNull();
+    expect(stored.conversationId).not.toBe("old-id");
+  });
 });
 
 describe("blob store eviction order", () => {

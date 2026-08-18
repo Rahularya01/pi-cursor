@@ -125,6 +125,26 @@ describe("contextToCursorChatCompletionRequest", () => {
     );
     expect(body.messages.find((m) => m.role === "assistant")!.interrupted_notice).toBeUndefined();
   });
+
+  it("replays prior thinking into the Cursor turn structure", () => {
+    const body = contextToCursorChatCompletionRequest(
+      model,
+      ctx([
+        { role: "user", content: [{ type: "text", text: "plan this" }] },
+        assistant([
+          { type: "thinking", thinking: "I should inspect src first" },
+          { type: "text", text: "I'll start with src." },
+        ]),
+        { role: "user", content: [{ type: "text", text: "go" }] },
+      ] as never),
+      undefined,
+      config,
+    );
+    const assistantMsg = body.messages.find((m) => m.role === "assistant")!;
+    expect(assistantMsg.thinking).toContain("inspect src");
+    const parsed = parseMessages(body.messages);
+    expect(parsed.turns[0]!.steps.some((step) => step.kind === "thinking")).toBe(true);
+  });
 });
 
 describe("parseMessages", () => {

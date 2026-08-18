@@ -101,12 +101,14 @@ import {
   parseMessages,
   parseToolCallArguments,
   stripInFlightResults,
+  systemPromptHasSessionMemory,
 } from "./message-parsing.js";
 export {
   frameContextModeSideChannel,
   isContextModeSideChannelText,
   normalizeMessagesForCursor,
   parseMessages,
+  systemPromptHasSessionMemory,
 } from "./message-parsing.js";
 export {
   callCursorUnaryRpc,
@@ -121,6 +123,7 @@ export { readCachedCatalog, writeCachedCatalog } from "./model-cache.js";
 import {
   activeBridges,
   cleanupBridge,
+  parkIdleBridge,
   removeActiveBridge,
   setActiveBridge,
   startBridge,
@@ -457,8 +460,20 @@ async function handleCursorNativeRequest(
   const selectedTools = omitToolsForTrivialTurn ? [] : toolResolution.tools;
   // Greetings and capability questions do not need Pi's large agent prompt:
   // sending it can cost tens of thousands of input tokens before the user text
-  // is even considered. Keep the full prompt for anything actionable.
-  const effectiveSystemPrompt = omitToolsForTrivialTurn ? "" : systemPrompt;
+  // is even considered. Keep the full prompt for anything actionable — and
+  // never drop a system prompt that carries folded session/compaction memory.
+  const PI_MCP_TOOLS_ONLY =
+    "You are running inside Pi, not the Cursor IDE. " +
+    "Cursor-native tools (read, write, ls, grep, shell, fetch, delete) are not available. " +
+    "Use only the MCP tools listed in this request. " +
+    "Do not re-list the workspace or re-read files to recover context unless the latest user message asks you to.";
+  let effectiveSystemPrompt =
+    omitToolsForTrivialTurn && !systemPromptHasSessionMemory(systemPrompt) ? "" : systemPrompt;
+  if (selectedTools.length > 0) {
+    effectiveSystemPrompt = effectiveSystemPrompt
+      ? `${effectiveSystemPrompt}\n\n${PI_MCP_TOOLS_ONLY}`
+      : PI_MCP_TOOLS_ONLY;
+  }
   if (omitToolsForTrivialTurn) {
     setLastStreamEvent("tools_omitted_trivial_turn");
     lifecycleLog("tools_omitted", {
@@ -1012,6 +1027,8 @@ function writeNativeStream(
   }
   idleWatchdog.start();
 
+  let streamFinalized = false;
+
   const emitText = (text: string, isThinking?: boolean) => {
     if (writer.closed) return;
     // A staged pause means the tool-call block is already on the response and `toolUse` is about to
@@ -1052,6 +1069,46 @@ function writeNativeStream(
       writer.text(flushed.content);
     }
   };
+
+  const finalizeSuccessfulStream = () => {
+    if (cancelled || streamFinalized) return;
+    streamFinalized = true;
+    idleWatchdog.clear();
+    clearInterval(heartbeatTimer);
+    options?.signal?.removeEventListener("abort", abort);
+    const stored = conversationStates.get(convKey);
+    if (mcpExecReceived) {
+      handleBridgeCloseMidPause({
+        stored,
+        latestCheckpoint: checkpointRef.current,
+        blobStore,
+        completedTurns,
+        pendingExecs: emittedExecs,
+        convKey,
+      });
+      removeActiveBridge(bridgeKey);
+      return;
+    }
+    emitFlushed();
+    if (stored) {
+      if (checkpointRef.current) {
+        commitStoredCheckpoint(
+          stored,
+          checkpointRef.current,
+          blobStore,
+          completedTurns,
+          currentTurn,
+          convKey,
+        );
+        debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
+      } else {
+        mergeBlobStore(stored, blobStore);
+      }
+    }
+    writer.done("stop", state);
+    parkIdleBridge(bridgeKey, bridge);
+  };
+  bridge.onStreamDone?.(finalizeSuccessfulStream);
 
   const processChunk = createConnectFrameParser(
     (messageBytes) => {
@@ -1227,6 +1284,7 @@ function writeNativeStream(
       code,
       cancelled,
       mcpExecReceived,
+      streamFinalized,
       currentTurn,
       latestCheckpoint: checkpointRef.current,
     });
@@ -1240,6 +1298,7 @@ function writeNativeStream(
       emittedUserVisibleContent,
       hasCheckpoint: !!checkpointRef.current,
     });
+    if (streamFinalized) return;
     idleWatchdog.clear();
     clearInterval(heartbeatTimer);
     options?.signal?.removeEventListener("abort", abort);

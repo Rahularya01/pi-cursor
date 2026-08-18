@@ -37,6 +37,7 @@ import {
   RequestedModel_ModelParameterbytesSchema,
   SelectedContextSchema,
   SelectedImageSchema,
+  ThinkingMessageSchema,
   ToolCallSchema,
   UserMessageActionSchema,
   UserMessageSchema,
@@ -430,6 +431,18 @@ export function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
         message: {
           case: "assistantMessage",
           value: create(AssistantMessageSchema, { text: step.text }),
+        },
+      }),
+    );
+  }
+
+  if (step.kind === "thinking") {
+    return toBinary(
+      ConversationStepSchema,
+      create(ConversationStepSchema, {
+        message: {
+          case: "thinkingMessage",
+          value: create(ThinkingMessageSchema, { text: step.text }),
         },
       }),
     );

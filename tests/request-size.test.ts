@@ -9,6 +9,7 @@ import {
   slimOpenAIToolsForCursor,
   summarizeRequestSize,
 } from "../src/stream/request-build.js";
+import { __testInternals as serverMessageInternals } from "../src/stream/server-messages.js";
 import type { OpenAIToolDef } from "../src/stream/types.js";
 
 function fatTools(count: number): OpenAIToolDef[] {
@@ -121,6 +122,26 @@ describe("slim tools for Cursor", () => {
       if (prev === undefined) delete process.env.PI_CURSOR_SLIM_TOOLS;
       else process.env.PI_CURSOR_SLIM_TOOLS = prev;
     }
+  });
+});
+
+describe("native Cursor exec steering", () => {
+  it("points a native read at the MCP read tool when one is available", () => {
+    const mcpTools = buildMcpToolDefinitions([
+      {
+        type: "function",
+        function: { name: "read", description: "Read a file", parameters: { type: "object" } },
+      },
+    ]);
+    expect(serverMessageInternals.nativeToolRejectReason("readArgs", mcpTools)).toMatch(
+      /Call the MCP tool "read"/,
+    );
+  });
+
+  it("falls back to a generic MCP-only hint when no matching tool exists", () => {
+    expect(serverMessageInternals.nativeToolRejectReason("shellArgs", [])).toMatch(
+      /Use the MCP tools/,
+    );
   });
 });
 

@@ -10,6 +10,7 @@ import {
   frameContextModeSideChannel as frameContextModeSideChannelImpl,
   isContextModeSideChannelText as isContextModeSideChannelTextImpl,
   normalizeMessagesForCursor as normalizeMessagesForCursorImpl,
+  systemPromptHasSessionMemory as systemPromptHasSessionMemoryImpl,
   type OpenAIMessage as NormalizedOpenAIMessage,
 } from "./context-normalize.js";
 import { debugLog } from "./debug-log.js";
@@ -228,6 +229,10 @@ export function frameContextModeSideChannel(text: string): string {
   return frameContextModeSideChannelImpl(text);
 }
 
+export function systemPromptHasSessionMemory(systemPrompt: string): boolean {
+  return systemPromptHasSessionMemoryImpl(systemPrompt);
+}
+
 export function normalizeMessagesForCursor(messages: OpenAIMessage[]): OpenAIMessage[] {
   return normalizeMessagesForCursorImpl(messages as NormalizedOpenAIMessage[]) as OpenAIMessage[];
 }
@@ -307,6 +312,10 @@ export function parseMessages(
     if (!currentTurn) continue;
 
     if (msg.role === "assistant") {
+      if (typeof msg.thinking === "string" && msg.thinking.trim()) {
+        if (currentTurn.sawToolResult) currentTurn.sawAssistantAfterToolResult = true;
+        currentTurn.steps.push({ kind: "thinking", text: msg.thinking });
+      }
       const text = textContent(msg.content);
       if (text) {
         if (currentTurn.sawToolResult) currentTurn.sawAssistantAfterToolResult = true;

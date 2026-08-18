@@ -8,6 +8,7 @@ import {
   frameConnectMessage,
   lpEncode,
   MAX_CONNECT_MESSAGE_BYTES,
+  STREAM_DONE_MAGIC,
 } from "../src/client/bridge.js";
 import { decodeBase64Image } from "../src/stream/images.js";
 
@@ -63,6 +64,15 @@ describe("transport input bounds", () => {
     bridge.onData((data) => received.push(Array.from(data)));
 
     expect(received).toEqual([[7, 8, 9]]);
+    expect(bridge.alive).toBe(true);
+  });
+
+  it("invokes onStreamDone when the persistent child reports stream end", () => {
+    const { proc, bridge } = childHarness();
+    const done = vi.fn();
+    bridge.onStreamDone!(done);
+    proc.stdout.write(lpEncode(STREAM_DONE_MAGIC));
+    expect(done).toHaveBeenCalledTimes(1);
     expect(bridge.alive).toBe(true);
   });
 

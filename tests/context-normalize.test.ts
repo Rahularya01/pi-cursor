@@ -5,6 +5,7 @@ import {
   isPureContextModeSideChannelText,
   normalizeMessagesForCursor,
   splitUserTextAndSideChannel,
+  systemPromptHasSessionMemory,
 } from "../src/stream/context-normalize.js";
 import { parseMessages } from "../src/stream/message-parsing.js";
 
@@ -53,7 +54,7 @@ describe("context-mode normalization", () => {
 
     const system = String(normalized.find((m) => m.role === "system")?.content ?? "");
     expect(system).toMatch(/provider_context source="context-mode"/);
-    expect(system).toMatch(/latest user message is the only task/i);
+    expect(system).toMatch(/recovered conversation context/i);
     expect(system).toMatch(/session_mode/);
   });
 
@@ -139,5 +140,39 @@ describe("context-mode normalization", () => {
     expect(system).not.toMatch(/provider_context/);
     expect(normalized.filter((m) => m.role === "user")).toHaveLength(1);
     expect(normalized.find((m) => m.role === "user")?.content).toBe("hi");
+  });
+
+  it("keeps a long trailing user task after a leading session_state block", () => {
+    const task = `please continue the auth work and ${"x".repeat(600)}`;
+    const mixed = `${injection}\n\n${task}`;
+    const { userText, sideText } = splitUserTextAndSideChannel(mixed);
+    expect(userText).toBe(task);
+    expect(sideText).toMatch(/session_state/);
+  });
+
+  it("keeps a short but useful compaction summary instead of treating it as a no-op", () => {
+    const short = [
+      "context-mode active. Hierarchy: ctx_batch_execute > ctx_execute.",
+      '<session_state source="compaction">',
+      "<session_mode>implement</session_mode>",
+      "<summary>You were implementing OAuth in src/auth/oauth.ts.</summary>",
+      "</session_state>",
+    ].join("\n");
+    expect(isNoOpSideChannelText(short)).toBe(false);
+
+    const normalized = normalizeMessagesForCursor([
+      { role: "system", content: "You are Pi." },
+      { role: "user", content: `continue\n\n${short}` },
+    ]);
+    const system = String(normalized.find((m) => m.role === "system")?.content ?? "");
+    expect(system).toMatch(/recovered conversation context/i);
+    expect(system).toMatch(/OAuth/);
+  });
+
+  it("detects folded session memory in the system prompt", () => {
+    expect(systemPromptHasSessionMemory("You are Pi.")).toBe(false);
+    expect(
+      systemPromptHasSessionMemory('<provider_context source="context-mode">x</provider_context>'),
+    ).toBe(true);
   });
 });

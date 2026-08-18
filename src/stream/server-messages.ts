@@ -71,8 +71,9 @@ import {
   MAX_ACTIVE_BLOB_ENTRIES,
   MAX_INDIVIDUAL_BLOB_BYTES,
 } from "./tuning.js";
-import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
+import { markBlobMiss } from "./session-state.js";
 import type { PendingExec, StreamState } from "./types.js";
+import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 
 /**
  * Returns true when this message represents forward progress / upstream liveness
@@ -274,9 +275,11 @@ function handleKvMessage(
       // piece of the replayed conversation is gone. The protocol has no way to
       // say so — an empty result is indistinguishable from an empty blob — and
       // the turn continues with that history silently blank. Record it so the
-      // amnesia is at least diagnosable from /cursor.doctor and the lifecycle log.
+      // amnesia is at least diagnosable from /cursor.doctor and the lifecycle log,
+      // and invalidate the checkpoint so the next turn rebuilds from Pi history.
       lifecycleLog("kv_blob_miss", { blobId: blobIdKey.slice(0, 16), storeSize: blobStore.size });
       setLastStreamEvent("kv_blob_miss");
+      markBlobMiss(blobStore);
     }
     sendKvResponse(
       kvMsg,
@@ -340,6 +343,33 @@ function availableToolNamesFor(mcpTools: McpToolDefinition[]): string[] {
   return names;
 }
 
+const NATIVE_EXEC_MCP_HINTS: Record<string, string[]> = {
+  readArgs: ["read", "Read"],
+  lsArgs: ["ls", "LS"],
+  grepArgs: ["grep", "Grep"],
+  writeArgs: ["write", "edit", "Edit"],
+  deleteArgs: ["bash", "edit", "Edit"],
+  shellArgs: ["bash"],
+  shellStreamArgs: ["bash"],
+  backgroundShellSpawnArgs: ["bash"],
+  writeShellStdinArgs: ["bash"],
+  fetchArgs: ["web_search", "fetch"],
+};
+
+function nativeToolRejectReason(execCase: string, mcpTools: McpToolDefinition[]): string {
+  const available = availableToolNamesFor(mcpTools);
+  const candidates = (NATIVE_EXEC_MCP_HINTS[execCase] ?? []).filter((name) =>
+    available.includes(name),
+  );
+  if (candidates.length > 0) {
+    return (
+      `This native Cursor tool is not available in Pi. ` +
+      `Call the MCP tool "${candidates[0]}" with the same arguments instead.`
+    );
+  }
+  return "This native Cursor tool is not available in Pi. Use the MCP tools provided instead.";
+}
+
 function handleExecMessageInner(
   execMsg: ExecServerMessage,
   mcpTools: McpToolDefinition[],
@@ -347,8 +377,7 @@ function handleExecMessageInner(
   onMcpExec: (exec: PendingExec) => void,
 ): boolean {
   const execCase = (execMsg as any).message.case;
-  const REJECT_REASON =
-    "Tool not available in this environment. Use the MCP tools provided instead.";
+  const REJECT_REASON = nativeToolRejectReason(execCase ?? "", mcpTools);
 
   if (execCase === "requestContextArgs") {
     const requestContext = create(RequestContextSchema, {
@@ -658,3 +687,7 @@ function sendExecResult(
   });
   sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
 }
+
+export const __testInternals = {
+  nativeToolRejectReason,
+};

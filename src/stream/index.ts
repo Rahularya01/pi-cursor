@@ -25,6 +25,7 @@ export {
   isContextModeSideChannelText,
   normalizeMessagesForCursor,
   frameContextModeSideChannel,
+  systemPromptHasSessionMemory,
 } from "./context-normalize.js";
 export {
   planRecovery,

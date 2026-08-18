@@ -26,12 +26,19 @@ export interface OpenAIMessage {
   tool_calls?: unknown[];
   /** Carried through untouched; see OpenAIMessage in ./types.ts. */
   interrupted_notice?: string;
+  /** Replayed thinking from a prior assistant turn. */
+  thinking?: string;
 }
 
 const CONTEXT_MODE_SIDE_CHANNEL_PRIORITY =
   "Provider infrastructure context only. The latest user message is the only task. " +
   "Do not continue prior work, re-read files, or run compaction/session recovery " +
   "unless the latest user message explicitly asks for that.";
+
+const RESUME_CONTEXT_PRIORITY =
+  "This block is the recovered conversation context from a resumed or compacted session. " +
+  "Treat it as active memory of prior work and continue from it. " +
+  "The latest user message is the current instruction, not a new unrelated task.";
 
 /** Markers that begin a side-channel block inside an otherwise normal user turn. */
 const SIDE_CHANNEL_BLOCK_START =
@@ -107,6 +114,7 @@ export function isNoOpSideChannelText(text: string): boolean {
   // Strip session_state blocks that only carry mode / empty shells.
   rest = rest
     .replace(/<session_state\b[^>]*>[\s\S]*?<\/session_state>/gi, (block) => {
+      if (sideChannelHasResumeMemory(block)) return block;
       const inner = block
         .replace(/<\/?session_state\b[^>]*>/gi, "")
         .replace(/<session_mode\b[^>]*>[\s\S]*?<\/session_mode>/gi, "")
@@ -152,7 +160,7 @@ export function splitUserTextAndSideChannel(text: string): {
     const closeIdx = sideText.toLowerCase().lastIndexOf("</session_state>");
     if (closeIdx >= 0) {
       const after = sideText.slice(closeIdx + "</session_state>".length).trim();
-      if (after && !isContextModeSideChannelText(after) && after.length <= 500) {
+      if (after && !isContextModeSideChannelText(after)) {
         userText = after;
         sideText = sideText.slice(0, closeIdx + "</session_state>".length).trim();
       }
@@ -183,10 +191,41 @@ function isPureSideResidue(text: string): boolean {
   return false;
 }
 
-export function frameContextModeSideChannel(text: string): string {
+/**
+ * True when a side-channel carries a compaction summary or session-resume memory
+ * that the model must treat as prior work, not as disposable infrastructure.
+ */
+export function isResumeOrCompactionSideChannel(text: string): boolean {
+  if (/<session_resume\b/i.test(text)) return true;
+  const summary = text.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)?.[1]?.trim() ?? "";
+  if (summary.length >= 8) return true;
+  const memory =
+    text.match(/<active_memory\b[^>]*>([\s\S]*?)<\/active_memory>/i)?.[1]?.trim() ?? "";
+  return memory.length >= 8;
+}
+
+function sideChannelHasResumeMemory(text: string): boolean {
+  return isResumeOrCompactionSideChannel(text);
+}
+
+/** True when the system prompt holds folded session/compaction memory that a greeting must not drop. */
+export function systemPromptHasSessionMemory(systemPrompt: string): boolean {
+  const t = systemPrompt ?? "";
+  if (!t) return false;
   return (
-    `<provider_context source="context-mode">\n${text.trim()}\n</provider_context>\n\n` +
-    CONTEXT_MODE_SIDE_CHANNEL_PRIORITY
+    /<provider_context\b/i.test(t) ||
+    /<session_state\b/i.test(t) ||
+    /<session_resume\b/i.test(t) ||
+    /<active_memory\b/i.test(t)
+  );
+}
+
+export function frameContextModeSideChannel(text: string): string {
+  const priority = isResumeOrCompactionSideChannel(text)
+    ? RESUME_CONTEXT_PRIORITY
+    : CONTEXT_MODE_SIDE_CHANNEL_PRIORITY;
+  return (
+    `<provider_context source="context-mode">\n${text.trim()}\n</provider_context>\n\n` + priority
   );
 }
 

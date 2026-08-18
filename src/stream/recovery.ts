@@ -199,6 +199,7 @@ function fingerprintSingleTurn(turn: ParsedTurn): string {
     userImages: (turn.userImages ?? []).map(fingerprintImage),
     steps: turn.steps.map((step) => {
       if (step.kind === "assistantText") return { kind: step.kind, text: step.text };
+      if (step.kind === "thinking") return { kind: step.kind, text: step.text };
       return {
         kind: step.kind,
         toolCallId: step.toolCallId,
@@ -249,6 +250,7 @@ export function stripInFlightResults(turn: ParsedTurn): ParsedTurn {
     userText: turn.userText,
     steps: turn.steps.map((step) => {
       if (step.kind === "assistantText") return { kind: "assistantText", text: step.text };
+      if (step.kind === "thinking") return { kind: "thinking" as const, text: step.text };
       return {
         kind: "toolCall",
         toolCallId: step.toolCallId,

@@ -11,12 +11,17 @@
  * the message history, and are evicted on a TTL so an abandoned session cannot
  * pin its blob store forever.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { fromBinary } from "@bufbuild/protobuf";
 
 import { ConversationStateStructureSchema } from "../proto/agent_pb.js";
-import { activeBridges, cleanupBridge } from "./bridge-session.js";
+import {
+  activeBridges,
+  cleanupBridge,
+  destroyAllIdleBridges,
+  destroyIdleBridge,
+} from "./bridge-session.js";
 import { debugLog } from "./debug-log.js";
 import { textContent } from "./message-parsing.js";
 import {
@@ -70,6 +75,7 @@ export function cleanupAllSessionState(): void {
   for (const [bridgeKey, active] of activeBridges) {
     cleanupBridge(active.bridge, active.heartbeatTimer, bridgeKey);
   }
+  destroyAllIdleBridges();
   conversationStates.clear();
 }
 
@@ -99,6 +105,24 @@ export function clearStoredCheckpoint(stored: StoredConversation, clearBlobStore
   delete stored.checkpointHistoryFingerprint;
   clearStoredMidPauseMetadata(stored);
   if (clearBlobStore) stored.blobStore.clear();
+}
+
+/**
+ * A live KV blob miss means Cursor asked for history we no longer hold.
+ * Drop the checkpoint and rotate the conversation id so the next turn rebuilds
+ * from Pi's transcript instead of replaying holes.
+ */
+export function markBlobMiss(blobStore: Map<string, Uint8Array>): void {
+  for (const [convKey, stored] of conversationStates) {
+    if (stored.blobStore !== blobStore) continue;
+    debugLog("conversation.blob_miss_invalidate", {
+      convKey,
+      hadCheckpoint: !!stored.checkpoint,
+    });
+    clearStoredCheckpoint(stored, false);
+    stored.conversationId = randomUUID();
+    persistJournal(convKey, stored);
+  }
 }
 
 /**
@@ -171,6 +195,23 @@ export function discardStaleCheckpointIfNeeded(
     currentHistoryFingerprint,
   });
   clearStoredCheckpoint(stored, true);
+
+  // Compaction and other history rewrites make the Cursor conversation identity
+  // stale. Start a fresh conversation so we rebuild from Pi's (summarized)
+  // transcript instead of replaying a checkpoint with holes.
+  const historyRewritten =
+    reason === "completed_turn_count_mismatch" ||
+    reason === "completed_history_fingerprint_mismatch";
+  if (historyRewritten) {
+    stored.conversationId = randomUUID();
+    debugLog("conversation.rotated", {
+      requestId,
+      convKey,
+      reason,
+      conversationId: stored.conversationId,
+    });
+  }
+  persistJournal(convKey, stored);
 }
 
 export function trimBlobStore(
@@ -432,8 +473,10 @@ export function cleanupSessionState(sessionId?: string): void {
     hadConversation: conversationStates.has(convKey),
   });
   if (active) cleanupBridge(active.bridge, active.heartbeatTimer, bridgeKey);
+  destroyIdleBridge(bridgeKey);
+  // Drop the in-memory copy so a long-lived process cannot pin a large blob store
+  // after the user switched away. The journal stays so /resume can hydrate.
   conversationStates.delete(convKey);
-  deleteConversationJournal(convKey);
 }
 
 export function deterministicConversationId(convKey: string): string {

@@ -15,11 +15,20 @@ export interface SpawnBridgeOptions {
   rpcPath: string;
   url?: string;
   unary?: boolean;
+  /**
+   * Keep the HTTP/2 session alive after a stream ends so the next turn can
+   * open a new stream without a process spawn + TLS handshake. Streaming
+   * chat uses this; unary RPCs do not.
+   */
+  persistent?: boolean;
   /** Initial connect idle kill (ms). Default 30s. */
   connectTimeoutMs?: number;
   /** Activity idle kill after first I/O (ms). Default 15m. */
   idleTimeoutMs?: number;
 }
+
+/** Sentinel the persistent h2-bridge writes when a Connect stream ends but the process stays up. */
+export const STREAM_DONE_MAGIC = Buffer.from("PI_CURSOR_STREAM_DONE");
 
 export interface BridgeHandle {
   proc: Pick<ChildProcess, "kill">;
@@ -30,6 +39,13 @@ export interface BridgeHandle {
   end(): void;
   onData(cb: (chunk: Buffer) => void): void;
   onClose(cb: (code: number) => void): void;
+  /**
+   * Open a new Connect stream on a persistent bridge. Absent on one-shot
+   * (unary / test) handles.
+   */
+  openStream?(accessToken: string): void;
+  /** Fires when a persistent child reports the current stream ended. */
+  onStreamDone?(cb: () => void): void;
 }
 
 export type BridgeFactory = (options: SpawnBridgeOptions) => BridgeHandle;
@@ -163,9 +179,11 @@ function createBridgeHandleForChild(
   const cbs = {
     data: null as ((chunk: Buffer) => void) | null,
     close: null as ((code: number) => void) | null,
+    streamDone: null as (() => void) | null,
   };
   const queuedData: Buffer[] = [];
   let queuedDataBytes = 0;
+  let queuedStreamDone = false;
 
   let stderrBuf = "";
   let stderrTail = "";
@@ -218,6 +236,27 @@ function createBridgeHandleForChild(
     invokeClose();
   };
   const deliverData = (payload: Buffer): boolean => {
+    if (payload.equals(STREAM_DONE_MAGIC)) {
+      if (!cbs.streamDone) {
+        queuedStreamDone = true;
+        return true;
+      }
+      try {
+        cbs.streamDone();
+        return true;
+      } catch (error) {
+        debugLog("bridge.stream_done_callback_error", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        try {
+          proc.kill();
+        } catch {
+          // The process may already have exited.
+        }
+        finalizeExit(1);
+        return false;
+      }
+    }
     if (!cbs.data) {
       queuedDataBytes += payload.byteLength;
       if (queuedDataBytes > MAX_BRIDGE_MESSAGE_BYTES) {
@@ -312,6 +351,7 @@ function createBridgeHandleForChild(
     url: options.url ?? CURSOR_API_URL,
     path: options.rpcPath,
     unary: options.unary ?? false,
+    persistent: options.persistent === true,
     connectTimeoutMs: options.connectTimeoutMs,
     idleTimeoutMs: options.idleTimeoutMs,
   });
@@ -351,6 +391,13 @@ function createBridgeHandleForChild(
     write(data: Uint8Array) {
       safeWrite(data);
     },
+    openStream(accessToken: string) {
+      safeWrite(
+        new TextEncoder().encode(
+          JSON.stringify({ cmd: "open", accessToken: accessToken || options.accessToken }),
+        ),
+      );
+    },
     end() {
       safeWrite(new Uint8Array(0));
       safeEnd();
@@ -361,6 +408,19 @@ function createBridgeHandleForChild(
         const payload = queuedData.shift()!;
         queuedDataBytes -= payload.byteLength;
         if (!deliverData(payload)) break;
+      }
+    },
+    onStreamDone(cb: () => void) {
+      cbs.streamDone = cb;
+      if (queuedStreamDone && !exited) {
+        queuedStreamDone = false;
+        try {
+          cb();
+        } catch (error) {
+          debugLog("bridge.stream_done_callback_error", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     },
     onClose(cb: (code: number) => void) {

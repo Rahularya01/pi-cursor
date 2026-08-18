@@ -43,6 +43,8 @@ export interface OpenAIMessage {
    * assistant step — see `interruptedAssistantNotice()` in ./pi-adapter.ts.
    */
   interrupted_notice?: string;
+  /** Replayed thinking from a prior assistant turn; see ./pi-adapter.ts. */
+  thinking?: string;
 }
 
 export interface OpenAIToolDef {
@@ -96,6 +98,11 @@ export interface ParsedAssistantTextStep {
   text: string;
 }
 
+export interface ParsedThinkingStep {
+  kind: "thinking";
+  text: string;
+}
+
 export interface ParsedToolCallStep {
   kind: "toolCall";
   toolCallId: string;
@@ -104,7 +111,7 @@ export interface ParsedToolCallStep {
   result?: ParsedToolResult;
 }
 
-export type ParsedTurnStep = ParsedAssistantTextStep | ParsedToolCallStep;
+export type ParsedTurnStep = ParsedAssistantTextStep | ParsedThinkingStep | ParsedToolCallStep;
 
 export interface ParsedTurn {
   userText: string;

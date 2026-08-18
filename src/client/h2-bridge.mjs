@@ -12,11 +12,17 @@
  *   [4 bytes big-endian length][payload]
  *
  * First message on stdin is JSON config:
- *   { "accessToken": "...", "url": "...", "path": "...", "unary": false }
+ *   { "accessToken": "...", "url": "...", "path": "...", "unary": false, "persistent": true }
  *
  * When unary=true, the bridge uses application/proto (raw protobuf) instead
  * of application/connect+proto (Connect streaming). The single stdin message
  * is written as the request body and the stream is ended immediately.
+ *
+ * Streaming with persistent=true (the default for chat) keeps the HTTP/2
+ * session after a stream ends, writes a STREAM_DONE sentinel, and waits for
+ * an `{"cmd":"open"}` stdin message to open the next Connect stream — so later
+ * turns skip process spawn + TLS.
+ *
  * After config, subsequent stdin messages are raw bytes to write to the H2 stream.
  * H2 response data is written to stdout using the same length-prefixed framing.
  */
@@ -129,7 +135,9 @@ if (!config || typeof config !== "object") {
   process.stderr.write("[h2-bridge] config must be a JSON object\n");
   process.exit(1);
 }
-const { accessToken, url, path: rpcPath, unary } = config;
+const { accessToken, url, path: rpcPath, unary, persistent: persistentFlag } = config;
+const persistent = unary ? false : persistentFlag !== false;
+const STREAM_DONE_MAGIC = Buffer.from("PI_CURSOR_STREAM_DONE");
 // Connect timeout still protects against a hung first handshake (default 30s).
 // Activity idle is off by default (0) so long agent turns are not killed;
 // set idleTimeoutMs / PI_CURSOR_H2_IDLE_TIMEOUT_MS to re-enable a safety net.
@@ -225,109 +233,177 @@ client.on("goaway", (errorCode, _lastStreamId, opaqueData) => {
   setTimeout(() => process.exit(2), 100);
 });
 
-const headers = {
-  ":method": "POST",
-  ":path": rpcPath || "/agent.v1.AgentService/Run",
-  "content-type": unary ? "application/proto" : "application/connect+proto",
-  "connect-protocol-version": "1",
-  te: "trailers",
-  authorization: `Bearer ${accessToken}`,
-  "x-ghost-mode": "true",
-  "x-cursor-client-version": CURSOR_CLIENT_VERSION,
-  "x-cursor-client-type": "cli",
-  "x-request-id": crypto.randomUUID(),
-};
-const h2Stream = client.request(headers);
-let responseStatus = 0;
-let responseStatusText = "";
-const errorChunks = [];
-let errorBodyBytes = 0;
-const isErrorStatus = () => responseStatus !== 0 && (responseStatus < 200 || responseStatus >= 300);
+function requestHeaders(token) {
+  return {
+    ":method": "POST",
+    ":path": rpcPath || "/agent.v1.AgentService/Run",
+    "content-type": unary ? "application/proto" : "application/connect+proto",
+    "connect-protocol-version": "1",
+    te: "trailers",
+    authorization: `Bearer ${token}`,
+    "x-ghost-mode": "true",
+    "x-cursor-client-version": CURSOR_CLIENT_VERSION,
+    "x-cursor-client-type": "cli",
+    "x-request-id": crypto.randomUUID(),
+  };
+}
 
-h2Stream.on("response", (responseHeaders) => {
-  resetTimeout();
-  responseStatus = Number(responseHeaders[":status"] || 0);
-  responseStatusText =
-    responseHeaders["grpc-message"] || responseHeaders["connect-error-message"] || "";
-});
+function parseOpenCommand(msg) {
+  if (!msg || msg.length === 0 || msg[0] !== 0x7b) return undefined;
+  try {
+    const parsed = JSON.parse(msg.toString("utf8"));
+    if (parsed && parsed.cmd === "open") return parsed;
+  } catch {
+    // Binary Connect frames that happen to start with `{` are not open commands.
+  }
+  return undefined;
+}
 
-// Forward H2 response data → stdout (length-prefixed)
-h2Stream.on("data", (chunk) => {
-  resetTimeout();
-  if (isErrorStatus()) {
-    const remaining = MAX_ERROR_BODY_BYTES - errorBodyBytes;
-    if (remaining > 0) {
-      const kept = Buffer.from(chunk).subarray(0, remaining);
-      errorChunks.push(kept);
-      errorBodyBytes += kept.byteLength;
-    }
-  } else {
-    if (!writeMessage(chunk)) {
+function attachStream(h2Stream) {
+  let responseStatus = 0;
+  let responseStatusText = "";
+  const errorChunks = [];
+  let errorBodyBytes = 0;
+  const isErrorStatus = () => responseStatus !== 0 && (responseStatus < 200 || responseStatus >= 300);
+
+  h2Stream.on("response", (responseHeaders) => {
+    resetTimeout();
+    responseStatus = Number(responseHeaders[":status"] || 0);
+    responseStatusText =
+      responseHeaders["grpc-message"] || responseHeaders["connect-error-message"] || "";
+  });
+
+  h2Stream.on("data", (chunk) => {
+    resetTimeout();
+    if (isErrorStatus()) {
+      const remaining = MAX_ERROR_BODY_BYTES - errorBodyBytes;
+      if (remaining > 0) {
+        const kept = Buffer.from(chunk).subarray(0, remaining);
+        errorChunks.push(kept);
+        errorBodyBytes += kept.byteLength;
+      }
+    } else if (!writeMessage(chunk)) {
       h2Stream.pause();
       process.stdout.once("drain", () => h2Stream.resume());
     }
-  }
-});
+  });
 
-h2Stream.on("end", () => {
+  return new Promise((resolve) => {
+    const finish = (result) => {
+      resolve(result);
+    };
+
+    h2Stream.on("end", () => {
+      if (isErrorStatus()) {
+        const body = Buffer.concat(errorChunks).toString("utf8").trim();
+        const detail = responseStatusText || body || "HTTP/2 upstream request failed";
+        writeMessage(
+          connectEndStreamError(`http_${responseStatus}`, `Cursor HTTP ${responseStatus}: ${detail}`),
+        );
+        finish({ ok: false, fatal: true });
+        return;
+      }
+      finish({ ok: true, fatal: false });
+    });
+
+    h2Stream.on("error", (err) => {
+      process.stderr.write(
+        `[h2-bridge] stream error: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      finish({ ok: false, fatal: true });
+    });
+  });
+}
+
+function shutdownClient(code) {
   clearBridgeTimeout();
   if (pingTimer) clearInterval(pingTimer);
-  client.close();
-  if (isErrorStatus()) {
-    const body = Buffer.concat(errorChunks).toString("utf8").trim();
-    const detail = responseStatusText || body || "HTTP/2 upstream request failed";
-    writeMessage(
-      connectEndStreamError(`http_${responseStatus}`, `Cursor HTTP ${responseStatus}: ${detail}`),
-    );
-    setTimeout(() => process.exit(1), 100);
-    return;
+  try {
+    client.close();
+  } catch {
+    // Already closed.
   }
-  // Give stdout time to flush
-  setTimeout(() => process.exit(0), 100);
-});
+  setTimeout(() => process.exit(code), 100);
+}
 
-h2Stream.on("error", (err) => {
-  clearBridgeTimeout();
-  if (pingTimer) clearInterval(pingTimer);
-  process.stderr.write(
-    `[h2-bridge] stream error: ${err instanceof Error ? err.message : String(err)}\n`,
-  );
-  client.close();
-  process.exit(1);
-});
-
-// Forward stdin → H2 stream (after config message)
 if (unary) {
-  // Unary mode: read a single body message, write it, and end the stream.
+  const h2Stream = client.request(requestHeaders(accessToken));
+  const ended = attachStream(h2Stream);
   const body = await readMessage();
   if (body && body.length > 0 && !h2Stream.closed && !h2Stream.destroyed) {
     h2Stream.end(body);
   } else {
     h2Stream.end();
   }
+  const result = await ended;
+  shutdownClient(result.ok ? 0 : 1);
 } else {
-  // Streaming mode: forward all stdin messages as Connect frames.
+  let currentStream = client.request(requestHeaders(accessToken));
+  let currentEnded = attachStream(currentStream);
+
+  currentEnded.then((result) => {
+    if (!result.ok) {
+      shutdownClient(1);
+      return;
+    }
+    if (!persistent) {
+      shutdownClient(0);
+      return;
+    }
+    writeMessage(STREAM_DONE_MAGIC);
+    currentStream = null;
+  });
+
   (async () => {
     while (true) {
       const msg = await readMessage();
-      if (!msg || msg.length === 0) {
-        // EOF or zero-length = done writing
-        break;
+      if (!msg) {
+        shutdownClient(0);
+        return;
       }
-      if (!h2Stream.closed && !h2Stream.destroyed) {
+      if (msg.length === 0) {
+        if (currentStream && !currentStream.closed && !currentStream.destroyed) {
+          currentStream.end();
+        }
+        if (!persistent) {
+          shutdownClient(0);
+          return;
+        }
+        continue;
+      }
+
+      const open = parseOpenCommand(msg);
+      if (open) {
+        if (client.destroyed || client.closed) {
+          process.stderr.write("[h2-bridge] cannot open stream: client closed\n");
+          shutdownClient(1);
+          return;
+        }
+        const token = typeof open.accessToken === "string" && open.accessToken ? open.accessToken : accessToken;
+        currentStream = client.request(requestHeaders(token));
+        currentEnded = attachStream(currentStream);
+        currentEnded.then((result) => {
+          if (!result.ok) {
+            shutdownClient(1);
+            return;
+          }
+          writeMessage(STREAM_DONE_MAGIC);
+          currentStream = null;
+        });
+        continue;
+      }
+
+      if (currentStream && !currentStream.closed && !currentStream.destroyed) {
         resetTimeout();
-        if (!h2Stream.write(msg)) {
+        if (!currentStream.write(msg)) {
           try {
-            await once(h2Stream, "drain");
+            await once(currentStream, "drain");
           } catch {
             break;
           }
         }
       }
-    }
-
-    if (!h2Stream.closed && !h2Stream.destroyed) {
-      h2Stream.end();
+      // Idle leftover heartbeats (after STREAM_DONE, before the next open) are ignored.
     }
   })();
 }
