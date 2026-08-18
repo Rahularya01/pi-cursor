@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.22] - 2026-08-18
+
+### Fixed
+
+- **Greetings and "who are you" were answered in Cursor's voice, not Pi's.** Trivial conversational turns drop tools and blank the system prompt so a bare "hi" does not spend tens of thousands of input tokens on the agent prompt. The allowlist also held identity and capability questions — `who are you`, `what can you do for me`, `tell me about yourself` — whose answer _is_ the system prompt, so exactly those turns reached Cursor carrying no prompt at all and came back describing Cursor's IDE assistant. The allowlist is now split: pleasantries still drop the prompt, identity and capability turns keep it, and both still omit tools. A dropped prompt is no longer empty either — it carries a one-line "You are running inside Pi, not the Cursor IDE", so a greeting cannot be answered in Cursor's voice either. `tools_omitted` records whether the prompt was dropped.
+- **The bundled fallback catalog under-reported the context window of every 1M Claude model by 5x.** Ten rows — `claude-4.6-opus-high`, `claude-4.6-opus-max`, `claude-4.6-sonnet-medium`, `claude-4.5-sonnet`, `claude-4-sonnet-1m` and their `-thinking` variants — carried `contextWindow: 200000` while their own display names read "1M". Live discovery infers the window from the id and name and had these right; only the offline snapshot was wrong, so the bad number surfaced precisely when discovery was unavailable. The rows are corrected, and `FALLBACK_MODELS` now derives `contextWindow` the same way it already derived `reasoning`, so the file cannot drift back out of agreement.
+- **Every model advertised a 64K output ceiling.** `maxTokens` was a hardcoded `64_000` at all three places a model row is built, so Claude 4.6 and the GPT-5 family were reported at half their real limit. Cursor's `ModelDetails` carries no output ceiling, so it is now inferred from the id and display name alongside the context window: Claude 4.6+ and GPT-5 report 128K, and everything else — Claude 4.5 and older, Haiku 4.5, Composer, Gemini, Grok, Kimi, and `Auto` — keeps the 64K floor. This is Pi-side budgeting metadata only; the Cursor run request has no output-token field.
+
+### Internal
+
+- Context-window and output-token inference moved to a dependency-free `src/models/limits.ts`, re-exported from `src/stream/model-discovery.ts`. Importing them directly would have made the startup-path model catalog pull in the bridge and HTTP/2 transport modules at runtime, where it previously had only an erased `import type`.
+
 ## [1.4.21] - 2026-08-18
 
 ### Fixed
