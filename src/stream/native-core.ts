@@ -83,12 +83,14 @@ import {
   buildCursorRequest,
   buildMcpSuccessContent,
   buildMcpToolDefinitions,
+  isIdentityConversationalTurn,
   isTrivialConversationalTurn,
   normalizeToolResultForTransport,
   summarizeRequestSize,
 } from "./request-build.js";
 export {
   buildCursorRequest,
+  isIdentityConversationalTurn,
   isSlimToolsEnabled,
   isTrivialConversationalTurn,
   slimOpenAIToolsForCursor,
@@ -458,17 +460,24 @@ async function handleCursorNativeRequest(
     userImages.length === 0 &&
     isTrivialConversationalTurn(userText);
   const selectedTools = omitToolsForTrivialTurn ? [] : toolResolution.tools;
-  // Greetings and capability questions do not need Pi's large agent prompt:
-  // sending it can cost tens of thousands of input tokens before the user text
-  // is even considered. Keep the full prompt for anything actionable — and
-  // never drop a system prompt that carries folded session/compaction memory.
+  // Greetings do not need Pi's large agent prompt: sending it can cost tens of
+  // thousands of input tokens before the user text is even considered. Keep the
+  // full prompt for anything actionable, for identity/capability questions the
+  // prompt itself answers, and whenever it carries folded session/compaction
+  // memory.
   const PI_MCP_TOOLS_ONLY =
     "You are running inside Pi, not the Cursor IDE. " +
     "Cursor-native tools (read, write, ls, grep, shell, fetch, delete) are not available. " +
     "Use only the MCP tools listed in this request. " +
     "Do not re-list the workspace or re-read files to recover context unless the latest user message asks you to.";
-  let effectiveSystemPrompt =
-    omitToolsForTrivialTurn && !systemPromptHasSessionMemory(systemPrompt) ? "" : systemPrompt;
+  // Even a dropped prompt leaves this much behind: without it the model answers
+  // a greeting as Cursor's IDE assistant.
+  const PI_IDENTITY_ONLY = "You are running inside Pi, not the Cursor IDE.";
+  const dropSystemPrompt =
+    omitToolsForTrivialTurn &&
+    !isIdentityConversationalTurn(userText) &&
+    !systemPromptHasSessionMemory(systemPrompt);
+  let effectiveSystemPrompt = dropSystemPrompt ? PI_IDENTITY_ONLY : systemPrompt;
   if (selectedTools.length > 0) {
     effectiveSystemPrompt = effectiveSystemPrompt
       ? `${effectiveSystemPrompt}\n\n${PI_MCP_TOOLS_ONLY}`
@@ -480,6 +489,7 @@ async function handleCursorNativeRequest(
       requestId,
       reason: "trivial_conversational_turn",
       originalToolCount: toolResolution.tools.length,
+      systemPromptDropped: dropSystemPrompt,
     });
   }
   const modelId = resolveRequestedModelId(body.model, body.reasoning_effort, body.cursor_model_id);

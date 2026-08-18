@@ -3,6 +3,7 @@ import {
   MAX_MCP_TOOL_RESULT_BYTES,
   MAX_MCP_TOOL_TEXT_BYTES,
   buildMcpToolDefinitions,
+  isIdentityConversationalTurn,
   isSlimToolsEnabled,
   isTrivialConversationalTurn,
   normalizeToolResultForTransport,
@@ -81,6 +82,21 @@ describe("trivial conversational turns", () => {
     "how are you doing this?",
   ])("keeps tools for actionable text %j", (text) =>
     expect(isTrivialConversationalTurn(text)).toBe(false),
+  );
+
+  // The system prompt is what answers these, so native-core keeps it even though
+  // the turn is tool-free. Dropping it made the model introduce itself as Cursor.
+  it.each(["who are you?", "What can you do for me", "tell me about yourself"])(
+    "treats %j as an identity turn",
+    (text) => {
+      expect(isIdentityConversationalTurn(text)).toBe(true);
+      expect(isTrivialConversationalTurn(text)).toBe(true);
+    },
+  );
+
+  it.each(["hi", "thanks", "sounds good.", "PING", "hi, inspect src"])(
+    "does not treat %j as an identity turn",
+    (text) => expect(isIdentityConversationalTurn(text)).toBe(false),
   );
 });
 

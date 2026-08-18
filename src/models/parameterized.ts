@@ -9,6 +9,7 @@ import type {
   CursorParameterizedVariant,
 } from "../client/cursor-wire.js";
 import type { CursorModel } from "../stream/model-discovery.js";
+import { inferCursorContextWindow, inferCursorMaxOutputTokens } from "./limits.js";
 import { supportsReasoningModelId } from "./processing.js";
 
 export const GPT55_VARIANTS = [
@@ -64,7 +65,7 @@ export function gpt55ParameterizedModels(): CursorModel[] {
           name: nameParts.join(" "),
           reasoning: true,
           contextWindow: variant.contextWindow,
-          maxTokens: 64_000,
+          maxTokens: inferCursorMaxOutputTokens(id, nameParts.join(" ")),
           requestedModelId: "gpt-5.5",
           requiresMaxMode: variant.context === "1m",
           requestedMaxMode: variant.requestedMaxMode,
@@ -279,7 +280,7 @@ export function buildParameterizedRowsFromGroup(options: {
         name,
         reasoning: Boolean(options.effortParameterId) || thinking,
         contextWindow,
-        maxTokens: 64_000,
+        maxTokens: inferCursorMaxOutputTokens(id, name),
         requestedModelId: options.model.name,
         requiresMaxMode: variant.isMaxMode,
         requestedMaxMode: options.requestedMaxMode,
@@ -401,9 +402,15 @@ export function augmentCursorModels(
   return [...byId.values()];
 }
 
+// The bundled catalog is a snapshot of a live discovery response, so its derived
+// columns are recomputed here rather than trusted. Ten rows had already drifted:
+// every "1M" Claude row claimed a 200K window because the file was hand-edited
+// after `inferCursorContextWindow` learned to read the "1M" suffix.
 export const FALLBACK_MODELS: CursorModel[] = augmentCursorModels(
   rawFallbackModels as CursorModel[],
 ).map((model) => ({
   ...model,
   reasoning: supportsReasoningModelId(model.id),
+  contextWindow: inferCursorContextWindow(model.id, model.name),
+  maxTokens: inferCursorMaxOutputTokens(model.id, model.name),
 }));

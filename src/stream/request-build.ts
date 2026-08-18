@@ -124,7 +124,11 @@ export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS):
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
-const TRIVIAL_CONVERSATIONAL_TURNS = new Set([
+/**
+ * Turns whose answer depends on nothing but politeness. Pi's agent prompt adds
+ * nothing to "thanks", so it can be dropped along with the tools.
+ */
+const PLEASANTRY_CONVERSATIONAL_TURNS = new Set([
   "hi",
   "hello",
   "hey",
@@ -151,6 +155,14 @@ const TRIVIAL_CONVERSATIONAL_TURNS = new Set([
   "great",
   "nice",
   "ping",
+]);
+
+/**
+ * Identity and capability questions. Tool-free like a pleasantry, but the system
+ * prompt *is* the answer here — drop it and the model introduces itself as
+ * Cursor. Tools go; the prompt stays.
+ */
+const IDENTITY_CONVERSATIONAL_TURNS = new Set([
   "what can you do",
   "what can you do for me",
   "what can you help me with",
@@ -158,19 +170,37 @@ const TRIVIAL_CONVERSATIONAL_TURNS = new Set([
   "tell me about yourself",
 ]);
 
-/**
- * Narrow allowlist for turns that cannot reasonably require a tool. Exact
- * matching is intentional: "hi, inspect src" must retain the full tool set.
- */
-export function isTrivialConversationalTurn(text: string): boolean {
-  const normalized = text
+const TRIVIAL_CONVERSATIONAL_TURNS = new Set([
+  ...PLEASANTRY_CONVERSATIONAL_TURNS,
+  ...IDENTITY_CONVERSATIONAL_TURNS,
+]);
+
+function normalizeConversationalTurn(text: string): string {
+  return text
     .trim()
     .toLowerCase()
     .replace(/[’']/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Narrow allowlist for turns that cannot reasonably require a tool. Exact
+ * matching is intentional: "hi, inspect src" must retain the full tool set.
+ */
+export function isTrivialConversationalTurn(text: string): boolean {
+  const normalized = normalizeConversationalTurn(text);
   return normalized.length <= 40 && TRIVIAL_CONVERSATIONAL_TURNS.has(normalized);
+}
+
+/**
+ * Subset of trivial turns the system prompt itself answers. These keep the full
+ * prompt even though they still drop tools.
+ */
+export function isIdentityConversationalTurn(text: string): boolean {
+  const normalized = normalizeConversationalTurn(text);
+  return normalized.length <= 40 && IDENTITY_CONVERSATIONAL_TURNS.has(normalized);
 }
 
 const SCHEMA_ANNOTATION_KEYS = new Set([

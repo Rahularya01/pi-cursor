@@ -27,6 +27,15 @@ import {
 import { getBridgeFactory } from "./bridge-session.js";
 import { getCursorAgentUrl } from "./config.js";
 import { writeCachedCatalog } from "./model-cache.js";
+import { inferCursorContextWindow, inferCursorMaxOutputTokens } from "../models/limits.js";
+
+// Re-exported so existing importers of the model-discovery surface keep working.
+export {
+  DEFAULT_CONTEXT_WINDOW,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  inferCursorContextWindow,
+  inferCursorMaxOutputTokens,
+} from "../models/limits.js";
 
 export async function callCursorUnaryRpc(options: {
   accessToken: string;
@@ -281,13 +290,6 @@ export async function discoverCursorCatalog(
   return { rawModels, parameterizedModels };
 }
 
-export function inferCursorContextWindow(id: string, name: string): number {
-  const text = `${id} ${name}`.toLowerCase();
-  if (/\b1\s*m\b|(?:^|-)1m(?:-|$)/.test(text)) return 1_000_000;
-  if (/\b272\s*k\b|(?:^|-)272k(?:-|$)/.test(text)) return 272_000;
-  return 200_000;
-}
-
 function normalizeCursorModels(models: readonly unknown[]): CursorModel[] {
   const byId = new Map<string, CursorModel>();
   for (const model of models) {
@@ -300,7 +302,7 @@ function normalizeCursorModels(models: readonly unknown[]): CursorModel[] {
       name,
       reasoning: Boolean(m.thinkingDetails),
       contextWindow: inferCursorContextWindow(id, name),
-      maxTokens: 64_000,
+      maxTokens: inferCursorMaxOutputTokens(id, name),
     });
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
