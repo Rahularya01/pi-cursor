@@ -10,6 +10,7 @@ import {
   mergeBlobStore,
   trimBlobStore,
 } from "../src/stream/session-state.js";
+import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
 import type { OpenAIMessage, StoredConversation } from "../src/stream/types.js";
 
 const PNG_HEADER = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -154,5 +155,29 @@ describe("blob store eviction order", () => {
 
     expect(stored.blobStore.has("system")).toBe(true);
     expect(stored.blobStore.has("turn-1")).toBe(false);
+  });
+
+  it("bounds the store by entries, not only by bytes", () => {
+    const stored = storedConversation();
+    // Realistically sized turn blobs: the entry bound is reached while the byte
+    // total is still a rounding error against MAX_CONVERSATION_BLOB_BYTES, so a
+    // byte-only trim leaves the store growing without limit.
+    for (let i = 0; i < MAX_ACTIVE_BLOB_ENTRIES + 40; i++) {
+      mergeBlobStore(stored, new Map([[`turn-${i}`, new Uint8Array(1500).fill(i % 256)]]));
+    }
+
+    expect(stored.blobStore.size).toBe(MAX_ACTIVE_BLOB_ENTRIES);
+    expect(stored.blobStore.has("turn-0")).toBe(false);
+    expect(stored.blobStore.has(`turn-${MAX_ACTIVE_BLOB_ENTRIES + 39}`)).toBe(true);
+  });
+
+  it("leaves a store inside both bounds untouched", () => {
+    const stored = storedConversation();
+    for (let i = 0; i < 10; i++) {
+      mergeBlobStore(stored, new Map([[`turn-${i}`, new Uint8Array(8).fill(i)]]));
+    }
+
+    expect(trimBlobStore(stored.blobStore).removed).toBe(0);
+    expect(stored.blobStore.size).toBe(10);
   });
 });

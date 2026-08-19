@@ -71,7 +71,7 @@ import {
   MAX_ACTIVE_BLOB_ENTRIES,
   MAX_INDIVIDUAL_BLOB_BYTES,
 } from "./tuning.js";
-import { markBlobMiss } from "./session-state.js";
+import { markBlobMiss, trimBlobStore } from "./session-state.js";
 import type { PendingExec, StreamState } from "./types.js";
 import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 
@@ -297,7 +297,21 @@ function handleKvMessage(
       throw new Error(`Cursor blob exceeds the ${MAX_INDIVIDUAL_BLOB_BYTES} byte per-blob limit`);
     }
     if (!blobStore.has(blobIdKey) && blobStore.size >= MAX_ACTIVE_BLOB_ENTRIES) {
-      throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_ENTRIES} entry limit`);
+      // Turn blobs run a couple of KB, so the entry bound is reached at a
+      // fraction of a percent of the byte budget and the byte trim never fires.
+      // Failing the write here failed the whole turn, and since the store is
+      // only ever added to, every later turn in that conversation failed the
+      // same way. Evict oldest-first instead: a blob Cursor still references
+      // comes back as a getBlobArgs miss, which invalidates the checkpoint and
+      // rebuilds from Pi's history — one costlier turn rather than a dead
+      // conversation, the same trade the byte trim already makes.
+      const evicted = trimBlobStore(blobStore, MAX_ACTIVE_BLOB_BYTES, MAX_ACTIVE_BLOB_ENTRIES - 1);
+      debugLog("kv.blob_store_evicted", {
+        removed: evicted.removed,
+        totalBytes: evicted.totalBytes,
+        entries: blobStore.size,
+        maxEntries: MAX_ACTIVE_BLOB_ENTRIES,
+      });
     }
     let totalBytes = blobData.byteLength;
     for (const [key, value] of blobStore) {
