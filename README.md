@@ -28,11 +28,11 @@ or CLI, it just works — no setup beyond installing the package.
 
 ## Requirements
 
-|                             |                                                                                      |
-| --------------------------- | ------------------------------------------------------------------------------------ |
-| **Pi Coding Agent / Pi AI** | version `0.80.0` or later                                                            |
-| **Node.js**                 | version `22.0.0` or later (needed for native HTTP/2 streaming and credential lookup) |
-| **A Cursor account**        | with model access — signed in via the Cursor app, Cursor CLI, or browser login below |
+|                             |                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| **Pi Coding Agent / Pi AI** | version `0.80.0` or later                                                             |
+| **Node.js**                 | version `22.19.0` or later (needed for native HTTP/2 streaming and credential lookup) |
+| **A Cursor account**        | with model access — signed in via the Cursor app, Cursor CLI, or browser login below  |
 
 ## Install
 
@@ -86,16 +86,18 @@ pi update npm:@rahularya01/pi-cursor
 
 ```text
 1. CURSOR_ACCESS_TOKEN environment variable
-2. Cursor CLI credentials in macOS Keychain (cursor-access-token / cursor-refresh-token)
-3. Cursor IDE local state DB (globalStorage/state.vscdb on macOS, Windows, Linux, or WSL)
-4. Pi OAuth credentials store (~/.pi/agent/auth.json via /login cursor)
+2. Pi OAuth credentials store (~/.pi/agent/auth.json via /login cursor)
+3. Cursor CLI credentials in macOS Keychain (cursor-access-token / cursor-refresh-token)
+4. Cursor IDE local state DB (globalStorage/state.vscdb on macOS, Windows, Linux, or WSL)
 ```
+
+`/login cursor` is preferred over Keychain/IDE harvest so an explicit Pi login is not silently overridden by another Cursor app account on the machine.
 
 ### Automatic CLI & IDE login detection
 
 If you are logged into the Cursor desktop app or Cursor CLI (`cursor` / `agent`), `pi-cursor` automatically extracts your session credentials so you can start chatting immediately without manual browser login.
 
-On **WSL (Windows Subsystem for Linux)**, `pi-cursor` automatically scans Windows host user profiles (`/mnt/c/Users/*/AppData/...`) to detect and reuse your Windows Cursor app login.
+On **WSL (Windows Subsystem for Linux)**, `pi-cursor` reuses the **current** Windows user's Cursor IDE login (`USERPROFILE` / `USERNAME` → `/mnt/c/Users/<you>/AppData/...`). It does not scan other Windows profiles.
 
 To **opt out** of Keychain / IDE / WSL credential reuse (OAuth or `CURSOR_ACCESS_TOKEN` only):
 
@@ -271,9 +273,9 @@ layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
 - **Wire-protocol drift:** Cursor can change `agent.v1` at any time. Unrecognized server messages and unknown protobuf fields are no longer skipped silently — they are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` under `wireDrift`. `wireDriftStranding=yes` means an unanswered message could have parked the turn, which is the difference between "our schema is a bit behind" and "this is why it hung". Run `CURSOR_ACCESS_TOKEN=... npm run smoke:wire` to check the handshake and schema against the live endpoint without starting a chat turn, then see [`proto/README.md`](proto/README.md) to resync the schema.
-- **Stuck / dies after a few minutes of work:** v1.2.2 answers all Cursor `InteractionQuery` permission prompts (web search / ask-question / etc.) that previously parked the stream. Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
+- **Stuck / dies after a few minutes of work:** Cursor `InteractionQuery` prompts are answered so the stream does not park. Web/search and unnamed proto fields are rejected (use Pi tools instead). Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
-- **WSL credential detection:** Ensure your Windows user profile folder exists under `/mnt/c/Users/` and is readable from WSL. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
+- **WSL credential detection:** Set `USERPROFILE` or `USERNAME` so the Windows home directory is known, and ensure `/mnt/c/Users/<you>/AppData/...` is readable. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
 - **Slow startup:** Activation should be a few milliseconds. `/cursor.doctor` reports `catalogCache` (`none(using bundled fallback)` means every launch is starting cold — check that `catalogCacheDir` is writable) and `unaryTransport`. A stale Cursor CLI keychain entry no longer blocks startup: a refresh token that fails is remembered for 10 minutes so it is not retried on the next launch, and any valid locally stored token is always preferred over a network exchange.
 - **Model list looks stale:** It is the last successfully discovered catalog. Open `/model` to trigger a background refresh, or delete `PI_CURSOR_CACHE_DIR` to force full rediscovery.
 

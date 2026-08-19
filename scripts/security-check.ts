@@ -6,6 +6,8 @@ const forbidden = [
   /sk-[a-zA-Z0-9]{20,}/,
   /ya29\.[A-Za-z0-9._~+/-]+/,
   /-----BEGIN (RSA |EC )?PRIVATE KEY-----/,
+  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
+  /WorkosCursorSessionToken=[A-Za-z0-9._~+/-]{16,}/,
 ];
 
 function walk(dir: string, out: string[] = []): string[] {

@@ -10,6 +10,8 @@
  * Based on https://github.com/ephraimduncan/opencode-cursor by Ephraim Duncan.
  */
 
+import { redactSecrets } from "../utils/security.js";
+
 const CURSOR_LOGIN_URL = "https://cursor.com/loginDeepControl";
 const CURSOR_POLL_URL = "https://api2.cursor.sh/auth/poll";
 const CURSOR_REFRESH_URL = "https://api2.cursor.sh/auth/exchange_user_api_key";
@@ -195,7 +197,7 @@ export function createCursorAuthClient(deps: CursorAuthClientDependencies = {}) 
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Cursor token refresh failed: ${error}`);
+      throw new Error(`Cursor token refresh failed: ${redactSecrets(error)}`);
     }
 
     const data = parseTokenResponse(await response.json(), "Cursor token refresh");

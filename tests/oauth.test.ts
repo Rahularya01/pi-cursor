@@ -58,4 +58,16 @@ describe("Cursor OAuth transport", () => {
     });
     await expect(client.refreshToken("refresh-token")).rejects.toThrow(/no access token/);
   });
+
+  it("redacts refresh error bodies", async () => {
+    const jwt = [
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+      "eyJzdWIiOiIxMjM0In0",
+      "signaturepad",
+    ].join(".");
+    const client = createCursorAuthClient({
+      fetch: vi.fn(async () => new Response(jwt, { status: 401 })) as unknown as typeof fetch,
+    });
+    await expect(client.refreshToken("refresh-token")).rejects.toThrow(/\[redacted-jwt\]/);
+  });
 });

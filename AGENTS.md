@@ -10,7 +10,7 @@ Guidance and repository standards for LLM coding agents working on `@rahularya01
 
 ### Core Stack
 
-- **Runtime:** Node.js >= 22.0.0 (ESM native `"type": "module"`)
+- **Runtime:** Node.js >= 22.19.0 (ESM native `"type": "module"`)
 - **Peer Dependencies:** `@earendil-works/pi-ai` (>=0.80.0), `@earendil-works/pi-coding-agent` (>=0.80.0)
 - **Protobuf / RPC:** `@bufbuild/protobuf` v2, `@bufbuild/buf` for schema compilation (`proto/agent.proto`)
 - **Transport:** Native HTTP/2 child-process bridge (`src/client/h2-bridge.mjs`)
@@ -104,9 +104,9 @@ src/
 ### 3. Authentication Cascade Policy
 
 1. `CURSOR_ACCESS_TOKEN` environment variable
-2. Cursor CLI / macOS Keychain (`cursor-access-token` / `cursor-refresh-token`)
-3. Cursor IDE local state DB (`globalStorage/state.vscdb` on macOS, Linux, Windows, or WSL)
-4. Pi OAuth store (`~/.pi/agent/auth.json` via `/login cursor`)
+2. Pi OAuth store (`~/.pi/agent/auth.json` via `/login cursor`)
+3. Cursor CLI / macOS Keychain (`cursor-access-token` / `cursor-refresh-token`)
+4. Cursor IDE local state DB (`globalStorage/state.vscdb` on macOS, Linux, Windows, or WSL — current Windows user only)
 
 - Respect `PI_CURSOR_SYSTEM_CREDENTIALS=0` to opt-out of Keychain/IDE DB reading.
 - Always redact tokens and sensitive authorization headers in diagnostics or logs (`redactSecrets()` from `src/utils/security.ts`).

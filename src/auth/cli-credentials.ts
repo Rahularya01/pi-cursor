@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir, platform } from "node:os";
@@ -21,6 +21,29 @@ export interface CursorTokenResult {
 interface StoredTokens {
   accessToken?: string;
   refreshToken?: string;
+}
+
+/** Windows account that owns this WSL session — never scan sibling profiles. */
+export function windowsUsernameFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const profile = env.USERPROFILE?.trim();
+  if (profile) {
+    const normalized = profile.replace(/\\/g, "/");
+    const match = /\/Users\/([^/]+)/i.exec(normalized);
+    const fromProfile = match?.[1]?.trim();
+    if (
+      fromProfile &&
+      fromProfile !== "Public" &&
+      fromProfile !== "Default" &&
+      !fromProfile.startsWith(".")
+    ) {
+      return fromProfile;
+    }
+  }
+  const username = env.USERNAME?.trim();
+  if (username && username !== "Public" && username !== "Default" && !username.startsWith(".")) {
+    return username;
+  }
+  return undefined;
 }
 
 function isUsable(token: string | undefined): token is string {
@@ -132,20 +155,19 @@ async function readVscdbTokens(): Promise<StoredTokens> {
   } else {
     // Linux / WSL
     dbPaths.push(join(home, ".config/Cursor/User/globalStorage/state.vscdb"));
-    // If running inside WSL, auto-detect Windows host Cursor credentials
-    if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP || existsSync("/mnt/c/Users")) {
-      try {
-        const usersDir = "/mnt/c/Users";
-        if (existsSync(usersDir)) {
-          for (const user of readdirSync(usersDir)) {
-            if (user === "Public" || user === "Default" || user.startsWith(".")) continue;
-            dbPaths.push(
-              join(usersDir, user, "AppData/Roaming/Cursor/User/globalStorage/state.vscdb"),
-            );
-          }
-        }
-      } catch {
-        // Ignore read permission errors on Windows user profiles
+    const wslHost = Boolean(
+      process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP || existsSync("/mnt/c/Users"),
+    );
+    if (wslHost) {
+      const windowsUser = windowsUsernameFromEnv(process.env);
+      if (windowsUser) {
+        dbPaths.push(
+          join(
+            "/mnt/c/Users",
+            windowsUser,
+            "AppData/Roaming/Cursor/User/globalStorage/state.vscdb",
+          ),
+        );
       }
     }
   }

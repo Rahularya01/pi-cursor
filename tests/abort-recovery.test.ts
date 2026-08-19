@@ -42,9 +42,9 @@ describe("aborted native streams", () => {
     );
 
     expect(stored.checkpoint).toBe(checkpoint);
-    expect(stored.checkpointTurnCount).toBe(2);
+    expect(stored.checkpointTurnCount).toBe(1);
     expect(stored.checkpointHistoryFingerprint).toBe(
-      __testInternals.fingerprintCompletedTurns([...completedTurns, currentTurn]),
+      __testInternals.fingerprintCompletedTurns(completedTurns),
     );
     expect(stored.blobStore.get("blob-1")).toEqual(new Uint8Array([4, 5, 6]));
   });
@@ -90,5 +90,29 @@ describe("aborted native streams", () => {
     );
     expect(stored.midPausePendingToolCalls).toEqual([{ toolCallId: "call-1", toolName: "shell" }]);
     expect(stored.midPauseTurnCount).toBe(completedTurns.length);
+  });
+
+  it("keeps an in-flight checkpoint usable after idle with no pending tools", () => {
+    const convKey = "conv-key";
+    const stored = storedConversation();
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const checkpoint = new Uint8Array([0x0a, 0x00]);
+    __testInternals.conversationStates.set(convKey, stored);
+
+    __testInternals.persistAbortedConversationState(
+      convKey,
+      checkpoint,
+      new Map(),
+      completedTurns,
+      {
+        userText: "continue after tools",
+        steps: [{ kind: "assistantText", text: "Working" }],
+      },
+    );
+
+    __testInternals.discardStaleCheckpointIfNeeded(stored, completedTurns, "r1", convKey);
+
+    expect(stored.checkpoint).toBe(checkpoint);
+    expect(stored.checkpointTurnCount).toBe(completedTurns.length);
   });
 });

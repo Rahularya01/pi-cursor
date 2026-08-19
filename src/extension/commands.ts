@@ -125,7 +125,7 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
         "runtimeCli=not-used",
         "proxyPath=removed",
         "commands=/cursor.models /cursor.usage /cursor.doctor",
-        "hint=On stalls check lifecycle log + lastStreamEvent; InteractionQuery hangs fixed in 1.2.2; re-login or PI_CURSOR_CLIENT_VERSION on wire errors",
+        "hint=On stalls check lifecycle log + lastStreamEvent; re-login or PI_CURSOR_CLIENT_VERSION on wire errors",
       ];
       if (driftSignals.length > 0) {
         lines.push("--- wire drift detail ---");

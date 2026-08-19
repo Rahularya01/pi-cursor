@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Tool continuation after an idle timeout no longer discards a valid checkpoint as `stale_checkpoint`.** Abort/idle persistence treated the in-flight turn as completed (`checkpointTurnCount + 1`) and cleared mid-pause metadata, so the next retry skipped recovery. In-flight checkpoints are now keyed to the completed-turn history only. Fixes [#5](https://github.com/Rahularya01/pi-cursor/issues/5).
+- **`/login cursor` is no longer overridden by IDE/CLI credentials.** Cascade is now env → Pi OAuth → Keychain → IDE DB. Rotated OAuth refresh tokens are written back to `auth.json`.
+- **WSL no longer reads every Windows user's Cursor `state.vscdb`.** Only the current Windows account (`USERPROFILE` / `USERNAME`) is considered.
+- **Unknown Cursor exec messages fail closed** instead of sending a guessed empty MCP result.
+- **Web/search InteractionQuery is rejected by default**; unnamed proto field 9 and Cursor mode-switches no longer auto-approve.
+- Refresh error bodies and debug logs redact refresh tokens / JWTs. `security-check` also flags committed JWTs and session cookies. README engines match Node `>=22.19.0`.
+
 ## [1.4.22] - 2026-08-18
 
 ### Fixed

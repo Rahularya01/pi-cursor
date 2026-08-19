@@ -35,6 +35,8 @@ export PI_CURSOR_SYSTEM_CREDENTIALS=0
 
 When disabled, authenticate only via `/login cursor` or `CURSOR_ACCESS_TOKEN`.
 
+On WSL, only the current Windows user's `state.vscdb` is read (`USERPROFILE` / `USERNAME`). Other profiles under `/mnt/c/Users` are not scanned.
+
 ### Agent URL allowlist
 
 Custom agent URLs (`PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL`) must use an allowed Cursor host (`*.cursor.sh` / `*.cursor.com` or localhost). This reduces token exfiltration risk from a poisoned base URL.

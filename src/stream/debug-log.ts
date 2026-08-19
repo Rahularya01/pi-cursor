@@ -15,6 +15,7 @@ import { appendFile } from "node:fs";
 import { join as pathJoin } from "node:path";
 
 import { getCacheDir } from "../utils/cache-dir.js";
+import { redactSecrets } from "../utils/security.js";
 import { normalizeImageMimeType } from "./images.js";
 import type { CursorRequestDebugSummary } from "./types.js";
 
@@ -111,9 +112,32 @@ function summarizeDebugImageObject(value: Record<string, unknown>): unknown | un
   return undefined;
 }
 
+const SENSITIVE_DEBUG_KEYS = new Set([
+  "accesstoken",
+  "refreshtoken",
+  "authorization",
+  "access_token",
+  "refresh_token",
+  "code_verifier",
+  "cookie",
+  "workoscursorsessiontoken",
+  "apikey",
+  "api_key",
+]);
+
+function isSensitiveDebugKey(key: string): boolean {
+  const normalized = key.replace(/[_-]/g, "").toLowerCase();
+  return (
+    SENSITIVE_DEBUG_KEYS.has(key.toLowerCase()) ||
+    SENSITIVE_DEBUG_KEYS.has(normalized) ||
+    key === "access" ||
+    key === "refresh"
+  );
+}
+
 export function sanitizeForDebug(value: unknown): unknown {
   if (value == null) return value;
-  if (typeof value === "string") return truncateDebugString(value);
+  if (typeof value === "string") return redactSecrets(truncateDebugString(value));
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -136,7 +160,7 @@ export function sanitizeForDebug(value: unknown): unknown {
     const imageSummary = summarizeDebugImageObject(value as Record<string, unknown>);
     if (imageSummary) return imageSummary;
     const entries = Object.entries(value as Record<string, unknown>).map(([key, inner]) => {
-      if (key === "accessToken") return [key, "<redacted>"] as const;
+      if (isSensitiveDebugKey(key)) return [key, "<redacted>"] as const;
       if (key === "data" && typeof inner === "string")
         return [key, `<redacted base64 ${inner.length} chars>`] as const;
       if (key === "url" && typeof inner === "string" && inner.startsWith("data:image/")) {

@@ -310,18 +310,18 @@ export function persistAbortedConversationState(
     return;
   }
 
-  // Pi records the partial assistant response on an aborted stream. Keep Cursor's
-  // matching checkpoint as well, so the next turn can continue the same native
-  // conversation instead of rebuilding from a potentially truncated transcript.
+  // The stream did not finish this turn. `commitStoredCheckpoint` would count
+  // `currentTurn` as completed (turnCount+1) and drop mid-pause metadata, which
+  // makes the next tool-continuation / idle-retry treat a still-valid checkpoint
+  // as stale. Keep the checkpoint keyed to the completed history only.
   if (latestCheckpoint) {
-    commitStoredCheckpoint(
-      stored,
-      latestCheckpoint,
-      blobStore,
-      completedTurns,
-      currentTurn,
-      convKey,
-    );
+    mergeBlobStore(stored, blobStore);
+    stored.checkpoint = latestCheckpoint;
+    stored.checkpointSource = "upstream";
+    stored.checkpointTurnCount = completedTurns.length;
+    stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
+    stored.lastAccessMs = Date.now();
+    persistJournal(convKey, stored);
   } else {
     // Blob ids referenced by the retained Pi history must outlive the cancelled
     // bridge even when Cursor has not emitted a checkpoint yet.

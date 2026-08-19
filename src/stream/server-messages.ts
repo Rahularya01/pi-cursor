@@ -659,15 +659,10 @@ function handleExecMessageInner(
     return true;
   }
 
-  // Catch-all: log and attempt a generic rejection so the bridge doesn't hang
+  // Fail closed: a guessed result case with an MCP payload is indistinguishable
+  // from a successful reply for a future destructive exec and can strand the run.
   console.error(`[cursor-provider] UNHANDLED exec case: "${execCase}". Bridge may stall.`);
   setLastStreamEvent(`unhandled_exec:${String(execCase ?? "unknown")}`);
-  // Try to derive the result case name from the args case name
-  const guessedResult = (execCase as string)?.replace(/Args$/, "Result");
-  if (guessedResult && guessedResult !== execCase) {
-    sendExecResult(execMsg, guessedResult, create(McpResultSchema, {}), sendFrame);
-    return true;
-  }
   return false;
 }
 
@@ -690,4 +685,5 @@ function sendExecResult(
 
 export const __testInternals = {
   nativeToolRejectReason,
+  handleExecMessageInner,
 };

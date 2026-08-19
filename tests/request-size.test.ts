@@ -159,6 +159,20 @@ describe("native Cursor exec steering", () => {
       /Use the MCP tools/,
     );
   });
+
+  it("does not invent a reply for an unknown native exec", () => {
+    const frames: Uint8Array[] = [];
+    const handled = serverMessageInternals.handleExecMessageInner(
+      { message: { case: "futureDestructiveArgs", value: {} } } as never,
+      [],
+      (frame: Uint8Array) => frames.push(frame),
+      () => {
+        throw new Error("should not execute");
+      },
+    );
+    expect(handled).toBe(false);
+    expect(frames).toHaveLength(0);
+  });
 });
 
 describe("request size summary", () => {

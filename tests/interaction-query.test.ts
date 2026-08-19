@@ -5,11 +5,12 @@ import {
   WebSearchRequestQuerySchema,
   AskQuestionInteractionQuerySchema,
   AskQuestionArgsSchema,
+  SwitchModeRequestQuerySchema,
 } from "../src/proto/agent_pb.js";
 import { handleInteractionQuery } from "../src/stream/interaction-query.js";
 
 describe("handleInteractionQuery", () => {
-  it("answers web search queries so the stream does not stall", () => {
+  it("rejects web search by default so Cursor-side fetches do not run", () => {
     const frames: Uint8Array[] = [];
     const query = create(InteractionQuerySchema, {
       id: 7,
@@ -20,9 +21,40 @@ describe("handleInteractionQuery", () => {
     });
     const result = handleInteractionQuery(query, (frame) => frames.push(frame));
     expect(result.handled).toBe(true);
+    expect(result.action).toBe("web_search_rejected");
+    expect(frames).toHaveLength(1);
+  });
+
+  it("still answers web search when explicitly approved", () => {
+    const frames: Uint8Array[] = [];
+    const query = create(InteractionQuerySchema, {
+      id: 8,
+      query: {
+        case: "webSearchRequestQuery",
+        value: create(WebSearchRequestQuerySchema, {}),
+      },
+    });
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
+      approveWeb: true,
+    });
+    expect(result.handled).toBe(true);
     expect(result.action).toBe("web_search_approved");
     expect(frames).toHaveLength(1);
-    expect(frames[0]!.byteLength).toBeGreaterThan(5);
+  });
+
+  it("rejects Cursor mode switches", () => {
+    const frames: Uint8Array[] = [];
+    const query = create(InteractionQuerySchema, {
+      id: 4,
+      query: {
+        case: "switchModeRequestQuery",
+        value: create(SwitchModeRequestQuerySchema, {}),
+      },
+    });
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame));
+    expect(result.handled).toBe(true);
+    expect(result.action).toBe("switch_mode_rejected");
+    expect(frames).toHaveLength(1);
   });
 
   it("skips ask-question interactions instead of hanging", () => {
@@ -42,29 +74,17 @@ describe("handleInteractionQuery", () => {
     expect(frames).toHaveLength(1);
   });
 
-  it("approves unnamed web-fetch field #9", () => {
+  it("fails closed for unnamed proto field #9", () => {
     const frames: Uint8Array[] = [];
     const query = create(InteractionQuerySchema, { id: 11 });
     (
       query as unknown as { $unknown: Array<{ no: number; wireType: number; data: Uint8Array }> }
     ).$unknown = [{ no: 9, wireType: 2, data: new Uint8Array([0x0a, 0x00]) }];
-    const result = handleInteractionQuery(query, (frame) => frames.push(frame));
-    expect(result.handled).toBe(true);
-    expect(result.action).toBe("web_fetch_approved");
-    expect(frames).toHaveLength(1);
-  });
-
-  it("does not approve raw web-fetch when web access is disabled", () => {
-    const frames: Uint8Array[] = [];
-    const query = create(InteractionQuerySchema, { id: 12 });
-    (
-      query as unknown as { $unknown: Array<{ no: number; wireType: number; data: Uint8Array }> }
-    ).$unknown = [{ no: 9, wireType: 2, data: new Uint8Array([0x0a, 0x00]) }];
     const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
-      approveWeb: false,
+      approveWeb: true,
     });
     expect(result.handled).toBe(false);
-    expect(result.action).toMatch(/rejected/);
+    expect(result.action).toBe("unknown_field_9_rejected");
     expect(frames).toHaveLength(0);
   });
 

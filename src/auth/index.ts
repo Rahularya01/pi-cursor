@@ -12,6 +12,7 @@ export {
   resolveSystemCursorAccessToken,
   getCursorKeychainToken,
   getCursorVscdbToken,
+  windowsUsernameFromEnv,
   type CredentialSource,
   type CursorTokenResult,
 } from "./cli-credentials.js";
