@@ -382,7 +382,9 @@ export function parseMessages(
     if (currentTurn.steps.length === 0 || isToolContinuation) {
       userText = currentTurn.userText;
       userImages = currentTurn.userImages ?? [];
-      if (toolCallSteps.length > 0) inFlightTurn = stripInFlightResults(currentTurn);
+      // Results are kept: this turn is fingerprinted against the completed turn pi will replay
+      // next request, which carries them. Recovery strips them itself where it needs to.
+      if (toolCallSteps.length > 0) inFlightTurn = stripTurnRuntimeState(currentTurn);
       if (hasAnyToolResults) {
         toolResults = toolCallSteps.filter(isToolCallStepWithResult).map((step) => ({
           toolCallId: step.toolCallId,

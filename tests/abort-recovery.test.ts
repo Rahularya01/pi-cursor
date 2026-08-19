@@ -37,7 +37,7 @@ describe("aborted native streams", () => {
       convKey,
       checkpoint,
       blobStore,
-      completedTurns,
+      __testInternals.liveTranscript(completedTurns),
       currentTurn,
     );
 
@@ -55,10 +55,13 @@ describe("aborted native streams", () => {
     const blobStore = new Map([["blob-1", new Uint8Array([4, 5, 6])]]);
     __testInternals.conversationStates.set(convKey, stored);
 
-    __testInternals.persistAbortedConversationState(convKey, null, blobStore, [], {
-      userText: "continue the task",
-      steps: [],
-    });
+    __testInternals.persistAbortedConversationState(
+      convKey,
+      null,
+      blobStore,
+      __testInternals.liveTranscript([]),
+      { userText: "continue the task", steps: [] },
+    );
 
     expect(stored.checkpoint).toBeNull();
     expect(stored.blobStore.get("blob-1")).toEqual(new Uint8Array([4, 5, 6]));
@@ -75,7 +78,7 @@ describe("aborted native streams", () => {
       convKey,
       checkpoint,
       new Map(),
-      completedTurns,
+      __testInternals.liveTranscript(completedTurns),
       {
         userText: "run a command",
         steps: [{ kind: "toolCall", toolCallId: "call-1", toolName: "shell", arguments: {} }],

@@ -20,13 +20,11 @@ import {
   ExecClientMessageSchema,
   McpResultSchema,
   McpSuccessSchema,
-  type McpToolDefinition,
 } from "../proto/agent_pb.js";
 import {
   createConnectFrameParser,
   frameConnectMessage,
   parseConnectEndStream,
-  type BridgeHandle,
   type ConnectFrameDesyncDiagnostics,
 } from "../client/bridge.js";
 import type { CursorModelParameter } from "../client/cursor-wire.js";
@@ -38,6 +36,13 @@ export type {
 
 import { processServerMessage } from "./server-messages.js";
 import { createThinkingTagFilter } from "./thinking-filter.js";
+import {
+  clientCompletedHistory,
+  clientInFlightTurn,
+  liveTranscript,
+  recoveredTranscript,
+  withSyntheticCurrentTurn,
+} from "./client-transcript.js";
 import {
   contextToCursorChatCompletionRequest,
   nativeRequestParameterError,
@@ -214,11 +219,12 @@ export { getCursorAgentUrl } from "./config.js";
 import type {
   ActiveBridge,
   ChatCompletionRequest,
-  CheckpointRef,
+  ClientTranscript,
   CursorNativeStreamConfig,
   CursorNativeStreamOptions,
   IdleRestartContext,
   NativeStreamAttemptInput,
+  NativeStreamInput,
   NativeStreamWriter,
   ParsedImageContent,
   ParsedMessages,
@@ -245,8 +251,13 @@ export type {
 
 export const __testInternals = {
   activeBridges,
+  clientCompletedHistory,
+  clientInFlightTurn,
   conversationStates,
   createStreamIdleWatchdog,
+  liveTranscript,
+  recoveredTranscript,
+  withSyntheticCurrentTurn,
   canBlindIdleRestart,
   canRecoverAfterTransportLoss,
   clearStoredMidPauseMetadata,
@@ -568,6 +579,7 @@ async function handleCursorNativeRequest(
             convKey,
             sessionId,
             completedTurns: turns,
+            clientTranscript: activeBridge.clientTranscript,
             maxMode,
             cursorModelParameters: body.cursor_model_parameters ?? [],
             getAccessToken,
@@ -635,6 +647,7 @@ async function handleCursorNativeRequest(
         convKey,
         completedTurns: turns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: recoveredTranscript(turns, inFlightTurn ?? recoveredCurrentTurn),
         writer,
         options,
         requestId,
@@ -690,6 +703,7 @@ async function handleCursorNativeRequest(
         convKey,
         completedTurns: rebuiltCompletedTurns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: recoveredTranscript(turns, inFlightTurn ?? decision.inFlightTurn),
         writer,
         options,
         requestId,
@@ -821,6 +835,7 @@ async function handleCursorNativeRequest(
     convKey,
     completedTurns: turns,
     currentTurn,
+    clientTranscript: liveTranscript(turns),
     writer,
     options,
     requestId,
@@ -833,25 +848,26 @@ async function handleCursorNativeRequest(
   });
 }
 
-function writeNativeStream(
-  bridge: BridgeHandle,
-  heartbeatTimer: ReturnType<typeof setInterval>,
-  blobStore: Map<string, Uint8Array>,
-  mcpTools: McpToolDefinition[],
-  _model: Model<Api>,
-  modelId: string,
-  bridgeKey: string,
-  convKey: string,
-  completedTurns: ParsedTurn[],
-  currentTurn: ParsedTurn,
-  writer: NativeStreamWriter,
-  options?: CursorNativeStreamOptions,
-  requestId?: string,
-  idleRetry?: StreamIdleRetryController,
-  streamIdleTimeoutMs = resolveStreamIdleTimeoutMs(process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS),
-  checkpointRef: CheckpointRef = { current: null },
-  preservedMidPauseExecs: PendingExec[] = [],
-): void {
+function writeNativeStream(input: NativeStreamInput): void {
+  const {
+    bridge,
+    heartbeatTimer,
+    blobStore,
+    mcpTools,
+    modelId,
+    bridgeKey,
+    convKey,
+    completedTurns,
+    currentTurn,
+    clientTranscript,
+    writer,
+    options,
+    requestId,
+    idleRetry,
+    streamIdleTimeoutMs = resolveStreamIdleTimeoutMs(process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS),
+    checkpointRef = { current: null },
+    preservedMidPauseExecs = [],
+  } = input;
   debugLog("native.stream.start", {
     requestId,
     bridgeKey,
@@ -887,9 +903,10 @@ function writeNativeStream(
   // rest, so the pause is deferred until the whole chunk has been parsed.
   let pauseRequested = false;
   let cachedHistoryFingerprint: string | undefined;
-  // Completed turns are fixed for the life of a stream, so this is hashed at most once.
+  // pi's completed turns, not the wire history: the request path compares this against a fresh
+  // parse of the client's messages. Fixed for the life of a stream, so hashed at most once.
   const historyFingerprint = () =>
-    (cachedHistoryFingerprint ??= fingerprintCompletedTurns(completedTurns));
+    (cachedHistoryFingerprint ??= fingerprintCompletedTurns(clientTranscript.completedTurns));
   const idleWatchdog = createStreamIdleWatchdog({
     timeoutMs: streamIdleTimeoutMs,
     onTimeout: () => {
@@ -925,7 +942,7 @@ function writeNativeStream(
         convKey,
         checkpointRef.current,
         blobStore,
-        completedTurns,
+        clientTranscript,
         currentTurn,
         emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
       );
@@ -1016,7 +1033,7 @@ function writeNativeStream(
       convKey,
       checkpointRef.current,
       blobStore,
-      completedTurns,
+      clientTranscript,
       currentTurn,
       emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
     );
@@ -1092,7 +1109,7 @@ function writeNativeStream(
         stored,
         latestCheckpoint: checkpointRef.current,
         blobStore,
-        completedTurns,
+        transcript: clientTranscript,
         pendingExecs: emittedExecs,
         convKey,
       });
@@ -1106,8 +1123,7 @@ function writeNativeStream(
           stored,
           checkpointRef.current,
           blobStore,
-          completedTurns,
-          currentTurn,
+          clientCompletedHistory(clientTranscript, currentTurn),
           convKey,
         );
         debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
@@ -1159,7 +1175,7 @@ function writeNativeStream(
                 stored,
                 checkpointRef.current,
                 blobStore,
-                completedTurns,
+                clientTranscript,
                 emittedExecs,
                 convKey,
               );
@@ -1186,6 +1202,7 @@ function writeNativeStream(
               currentTurn,
               checkpointRef,
               state,
+              clientTranscript,
               historyFingerprint: historyFingerprint(),
             });
             debugLog("native.stream.tool_call_pause", {
@@ -1321,7 +1338,7 @@ function writeNativeStream(
           stored,
           latestCheckpoint: checkpointRef.current,
           blobStore,
-          completedTurns,
+          transcript: clientTranscript,
           pendingExecs: emittedExecs,
           convKey,
         });
@@ -1377,7 +1394,7 @@ function writeNativeStream(
             convKey,
             checkpointRef.current,
             blobStore,
-            completedTurns,
+            clientTranscript,
             currentTurn,
             emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
           );
@@ -1404,7 +1421,7 @@ function writeNativeStream(
           stored,
           latestCheckpoint: checkpointRef.current,
           blobStore,
-          completedTurns,
+          transcript: clientTranscript,
           pendingExecs: emittedExecs,
           convKey,
         });
@@ -1435,8 +1452,7 @@ function writeNativeStream(
             stored,
             checkpointRef.current,
             blobStore,
-            completedTurns,
-            currentTurn,
+            clientCompletedHistory(clientTranscript, currentTurn),
             convKey,
           );
           debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
@@ -1450,7 +1466,7 @@ function writeNativeStream(
         stored,
         latestCheckpoint: checkpointRef.current,
         blobStore,
-        completedTurns,
+        transcript: clientTranscript,
         pendingExecs: emittedExecs,
         convKey,
       });
@@ -1479,6 +1495,7 @@ interface ResumeContext {
   convKey: string;
   sessionId: string | undefined;
   completedTurns: ParsedTurn[];
+  clientTranscript: ClientTranscript;
   maxMode: boolean;
   cursorModelParameters: CursorModelParameter[];
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
@@ -1501,6 +1518,7 @@ function handleNativeToolResultResume(
     convKey,
     sessionId,
     completedTurns,
+    clientTranscript,
     maxMode,
     cursorModelParameters,
     getAccessToken,
@@ -1562,6 +1580,7 @@ function handleNativeToolResultResume(
       mcpTools,
       pendingExecs,
       currentTurn,
+      clientTranscript,
       checkpointRef,
       state: pausedState,
       historyFingerprint,
@@ -1580,7 +1599,7 @@ function handleNativeToolResultResume(
         stored,
         checkpointRef.current,
         blobStore,
-        completedTurns,
+        clientTranscript,
         [...pendingExecs],
         convKey,
       );
@@ -1631,8 +1650,11 @@ function handleNativeToolResultResume(
       const decision = planRecovery({
         stored,
         toolResults,
-        completedTurns,
-        inFlightTurn: stripInFlightResults(currentTurn),
+        completedTurns: clientTranscript.completedTurns,
+        // pi's in-flight turn, not the bridge's. After any earlier recovery the bridge turn holds
+        // only the steps since that recovery, so matching it against the tool results pi replays
+        // could never succeed again for the rest of the turn.
+        inFlightTurn: stripInFlightResults(clientInFlightTurn(clientTranscript, currentTurn)),
         rebuildReason: "synthesized_after_idle",
         sessionId,
         requestId: requestId ?? "native-tool-idle-retry",
@@ -1680,6 +1702,7 @@ function handleNativeToolResultResume(
           convKey,
           completedTurns: rebuiltCompletedTurns,
           currentTurn: recoveredCurrentTurn,
+          clientTranscript: withSyntheticCurrentTurn(clientTranscript, currentTurn),
           writer,
           options,
           requestId,
@@ -1755,6 +1778,7 @@ function handleNativeToolResultResume(
         convKey,
         completedTurns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: withSyntheticCurrentTurn(clientTranscript, currentTurn),
         writer,
         options,
         requestId,
@@ -1770,28 +1794,28 @@ function handleNativeToolResultResume(
     },
   };
 
-  writeNativeStream(
+  writeNativeStream({
     bridge,
     heartbeatTimer,
     blobStore,
     mcpTools,
-    model,
     modelId,
     bridgeKey,
     convKey,
     completedTurns,
     currentTurn,
+    clientTranscript,
     writer,
     options,
     requestId,
     idleRetry,
-    resumeIdleTimeoutMs,
+    streamIdleTimeoutMs: resumeIdleTimeoutMs,
     // Same bridge, so the same checkpoint cell: frames that landed during the pause stay visible.
     checkpointRef,
     // A timeout after Cursor receives the tool result still needs the original pause
     // snapshot so recovery can safely recreate that continuation.
-    pendingExecs,
-  );
+    preservedMidPauseExecs: pendingExecs,
+  });
 }
 
 // ── Request handling ──
@@ -1858,6 +1882,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
   let blobStore = input.blobStore;
   let completedTurns = input.completedTurns;
   let currentTurn = input.currentTurn;
+  let clientTranscript = input.clientTranscript;
 
   const controller: StreamIdleRetryController = {
     currentAttempt: 1,
@@ -1907,6 +1932,10 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           requestBytes = payload.requestBytes;
           blobStore = payload.blobStore;
           completedTurns = context.completedTurns;
+          const clientHistory = clientCompletedHistory(clientTranscript, context.currentTurn);
+          // The continuation turn is ours, not pi's: fold the steps produced so far into pi's
+          // in-flight turn so later snapshots still describe the transcript pi will replay.
+          clientTranscript = withSyntheticCurrentTurn(clientTranscript, context.currentTurn);
           currentTurn = { userText: continueText, steps: [] };
           const stored = conversationStates.get(input.convKey);
           if (stored) {
@@ -1914,8 +1943,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
               stored,
               context.latestCheckpoint,
               context.blobStore,
-              context.completedTurns,
-              context.currentTurn,
+              clientHistory,
               input.convKey,
             );
           }
@@ -1944,23 +1972,23 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
         const { bridge, heartbeatTimer } = startBridge(accessToken, requestBytes, {
           bridgeKey: input.bridgeKey,
         });
-        writeNativeStream(
+        writeNativeStream({
           bridge,
           heartbeatTimer,
           blobStore,
-          input.mcpTools,
-          input.model,
-          input.modelId,
-          input.bridgeKey,
-          input.convKey,
+          mcpTools: input.mcpTools,
+          modelId: input.modelId,
+          bridgeKey: input.bridgeKey,
+          convKey: input.convKey,
           completedTurns,
           currentTurn,
-          input.writer,
-          input.options,
-          input.requestId,
-          controller,
-          input.streamIdleTimeoutMs,
-        );
+          clientTranscript,
+          writer: input.writer,
+          options: input.options,
+          requestId: input.requestId,
+          idleRetry: controller,
+          streamIdleTimeoutMs: input.streamIdleTimeoutMs,
+        });
       };
 
       // First attempt is synchronous. Later attempts force-refresh credentials when possible.

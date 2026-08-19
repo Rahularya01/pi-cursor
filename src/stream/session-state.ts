@@ -39,8 +39,10 @@ import {
   MAX_CHECKPOINT_BYTES,
   MAX_CONVERSATION_BLOB_BYTES,
 } from "./tuning.js";
+import { clientCompletedHistory } from "./client-transcript.js";
 import type {
   ChatCompletionRequest,
+  ClientTranscript,
   OpenAIMessage,
   ParsedTurn,
   StoredConversation,
@@ -258,15 +260,18 @@ export function mergeBlobStore(
   stored.lastAccessMs = Date.now();
 }
 
+/**
+ * `completedHistory` is pi's history once this turn lands, not the wire history. After a recovery
+ * the two differ, and recording the wire one makes the next turn discard a healthy checkpoint and
+ * rotate the conversation. See ./client-transcript.ts.
+ */
 export function commitStoredCheckpoint(
   stored: StoredConversation,
   checkpointBytes: Uint8Array,
   blobStore: Map<string, Uint8Array>,
-  completedTurns: ParsedTurn[],
-  currentTurn: ParsedTurn,
+  completedHistory: ParsedTurn[],
   convKey?: string,
 ): void {
-  const completedHistory = [...completedTurns, currentTurn];
   mergeBlobStore(stored, blobStore);
   stored.checkpoint = checkpointBytes;
   stored.checkpointSource = "upstream";
@@ -281,8 +286,8 @@ export function persistAbortedConversationState(
   convKey: string,
   latestCheckpoint: Uint8Array | null,
   blobStore: Map<string, Uint8Array>,
-  completedTurns: ParsedTurn[],
-  currentTurn: ParsedTurn,
+  transcript: ClientTranscript,
+  wireCurrentTurn: ParsedTurn,
   pendingToolCalls: Array<{ toolCallId: string; toolName: string }> = [],
 ): void {
   const stored = conversationStates.get(convKey);
@@ -296,16 +301,15 @@ export function persistAbortedConversationState(
       stored,
       latestCheckpoint,
       blobStore,
-      completedTurns,
+      transcript,
       pendingToolCalls,
       convKey,
     );
     debugLog("native.stream.abort_state_saved", {
       convKey,
       hasCheckpoint: !!latestCheckpoint,
-      completedTurnCount: completedTurns.length,
+      completedTurnCount: transcript.completedTurns.length,
       pendingToolCallIds: pendingToolCalls.map((call) => call.toolCallId),
-      currentTurn,
     });
     return;
   }
@@ -318,8 +322,7 @@ export function persistAbortedConversationState(
       stored,
       latestCheckpoint,
       blobStore,
-      completedTurns,
-      currentTurn,
+      clientCompletedHistory(transcript, wireCurrentTurn),
       convKey,
     );
   } else {
@@ -333,8 +336,7 @@ export function persistAbortedConversationState(
   debugLog("native.stream.abort_state_saved", {
     convKey,
     hasCheckpoint: !!latestCheckpoint,
-    completedTurnCount: completedTurns.length,
-    currentTurn,
+    completedTurnCount: transcript.completedTurns.length,
   });
 }
 
@@ -342,11 +344,12 @@ export function commitStoredCheckpointMidPause(
   stored: StoredConversation,
   checkpointBytes: Uint8Array | null,
   blobStore: Map<string, Uint8Array>,
-  completedTurns: ParsedTurn[],
+  transcript: ClientTranscript,
   pendingToolCalls: Array<{ toolCallId: string; toolName: string }>,
   convKey?: string,
 ): void {
   mergeBlobStore(stored, blobStore);
+  const completedTurns = transcript.completedTurns;
   const completedHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
   if (checkpointBytes) {
     stored.checkpoint = checkpointBytes;
@@ -376,7 +379,7 @@ export interface HandleBridgeCloseMidPauseInput {
   stored: StoredConversation | undefined;
   latestCheckpoint: Uint8Array | null;
   blobStore: Map<string, Uint8Array>;
-  completedTurns: ParsedTurn[];
+  transcript: ClientTranscript;
   pendingExecs: Array<{ toolCallId: string; toolName: string }>;
   convKey?: string;
 }
@@ -389,7 +392,7 @@ export function handleBridgeCloseMidPause(input: HandleBridgeCloseMidPauseInput)
     input.stored,
     input.latestCheckpoint,
     input.blobStore,
-    input.completedTurns,
+    input.transcript,
     input.pendingExecs,
     input.convKey,
   );

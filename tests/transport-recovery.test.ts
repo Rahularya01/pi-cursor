@@ -261,23 +261,22 @@ describe("native stream terminal cleanup", () => {
       },
     };
     const heartbeatTimer = setInterval(() => {}, 60_000);
-    __testInternals.writeNativeStream(
+    __testInternals.writeNativeStream({
       bridge,
       heartbeatTimer,
-      new Map(),
-      [],
-      {} as never,
-      "claude-4.5-sonnet",
-      "bridge-cleanup",
-      "conv-cleanup",
-      [],
-      { userText: "hi", steps: [] },
-      writer as never,
-      signal ? ({ signal } as never) : undefined,
-      "req-cleanup",
-      undefined,
-      0,
-    );
+      blobStore: new Map(),
+      mcpTools: [],
+      modelId: "claude-4.5-sonnet",
+      bridgeKey: "bridge-cleanup",
+      convKey: "conv-cleanup",
+      completedTurns: [],
+      currentTurn: { userText: "hi", steps: [] },
+      clientTranscript: __testInternals.liveTranscript([]),
+      writer: writer as never,
+      options: signal ? ({ signal } as never) : undefined,
+      requestId: "req-cleanup",
+      streamIdleTimeoutMs: 0,
+    });
     return {
       calls,
       get endCalls() {
@@ -385,23 +384,21 @@ describe("completed-turn connection close", () => {
     };
     const heartbeatTimer = setInterval(() => {}, 60_000);
 
-    __testInternals.writeNativeStream(
+    __testInternals.writeNativeStream({
       bridge,
       heartbeatTimer,
-      new Map(),
-      [],
-      {} as never,
-      "claude-4.5-sonnet",
-      "bridge-key",
-      "conv-key",
-      [],
-      { userText: "hi", steps: [] },
-      writer as never,
-      undefined,
-      "req-1",
-      undefined,
-      0,
-    );
+      blobStore: new Map(),
+      mcpTools: [],
+      modelId: "claude-4.5-sonnet",
+      bridgeKey: "bridge-key",
+      convKey: "conv-key",
+      completedTurns: [],
+      currentTurn: { userText: "hi", steps: [] },
+      clientTranscript: __testInternals.liveTranscript([]),
+      writer: writer as never,
+      requestId: "req-1",
+      streamIdleTimeoutMs: 0,
+    });
 
     onData(
       updateFrame({

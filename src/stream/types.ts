@@ -132,6 +132,11 @@ export interface ParsedMessages {
   userImages: ParsedImageContent[];
   turns: ParsedTurn[];
   toolResults: ToolResultInfo[];
+  /**
+   * The turn pi is still working on, tool results included, exactly as pi will replay it as a
+   * completed turn next request. Recovery strips the results itself when it needs the pre-result
+   * shape; fingerprints need them.
+   */
   inFlightTurn?: ParsedTurn;
 }
 
@@ -170,6 +175,17 @@ export interface CheckpointRef {
   current: Uint8Array | null;
 }
 
+/**
+ * pi's view of the turn in flight, as opposed to the wire history sent upstream.
+ *
+ * `live` means the wire current turn is pi's own turn. `recovered` means recovery replaced the
+ * wire turn with a synthetic one, so pi's turn is `inFlightTurn` extended by whatever the
+ * synthetic turn produces. Behaviour lives in ./client-transcript.ts.
+ */
+export type ClientTranscript =
+  | { kind: "live"; completedTurns: ParsedTurn[] }
+  | { kind: "recovered"; completedTurns: ParsedTurn[]; inFlightTurn: ParsedTurn };
+
 export interface ActiveBridge {
   bridge: BridgeHandle;
   heartbeatTimer: ReturnType<typeof setInterval>;
@@ -180,6 +196,8 @@ export interface ActiveBridge {
   currentTurn: ParsedTurn;
   checkpointRef: CheckpointRef;
   state: StreamState;
+  /** pi's view of this turn, which recovery must not rewrite. See ./client-transcript.ts. */
+  clientTranscript: ClientTranscript;
   /** Fingerprint of the completed turns this bridge was parked on; guards against key collisions. */
   historyFingerprint: string;
 }
@@ -254,6 +272,29 @@ export interface StreamIdleRetryController {
   restart(nextAttempt: number, context: IdleRestartContext): boolean;
 }
 
+export interface NativeStreamInput {
+  bridge: BridgeHandle;
+  heartbeatTimer: ReturnType<typeof setInterval>;
+  blobStore: Map<string, Uint8Array>;
+  mcpTools: McpToolDefinition[];
+  modelId: string;
+  bridgeKey: string;
+  convKey: string;
+  /** History sent upstream. Recovery rewrites this; it is not pi's transcript. */
+  completedTurns: ParsedTurn[];
+  currentTurn: ParsedTurn;
+  clientTranscript: ClientTranscript;
+  writer: NativeStreamWriter;
+  options?: CursorNativeStreamOptions;
+  requestId?: string;
+  idleRetry?: StreamIdleRetryController;
+  streamIdleTimeoutMs?: number;
+  /** Shared so a checkpoint delivered during a tool pause survives the resume boundary. */
+  checkpointRef?: CheckpointRef;
+  /** Pause snapshot to retain when this stream is a resume that never emits its own execs. */
+  preservedMidPauseExecs?: PendingExec[];
+}
+
 export interface NativeStreamAttemptInput {
   accessToken: string;
   requestBytes: Uint8Array;
@@ -265,6 +306,7 @@ export interface NativeStreamAttemptInput {
   convKey: string;
   completedTurns: ParsedTurn[];
   currentTurn: ParsedTurn;
+  clientTranscript: ClientTranscript;
   writer: NativeStreamWriter;
   options?: CursorNativeStreamOptions;
   requestId?: string;
