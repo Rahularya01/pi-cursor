@@ -155,4 +155,15 @@ describe("blob store eviction order", () => {
     expect(stored.blobStore.has("system")).toBe(true);
     expect(stored.blobStore.has("turn-1")).toBe(false);
   });
+
+  it("evicts oldest entries to stay inside the entry bound", () => {
+    const store = new Map<string, Uint8Array>();
+    for (let i = 0; i < 5; i++) store.set(`b${i}`, new Uint8Array([i]));
+    const trimmed = trimBlobStore(store, 1024, 3);
+    expect(trimmed.removed).toBe(2);
+    expect(store.size).toBe(3);
+    expect(store.has("b0")).toBe(false);
+    expect(store.has("b1")).toBe(false);
+    expect(store.has("b4")).toBe(true);
+  });
 });

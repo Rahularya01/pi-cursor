@@ -38,6 +38,42 @@ const CURSOR_WEB_FETCH_INTERACTION_FIELD = 9;
 const PI_REJECT_REASON =
   "Not available through the Pi Cursor provider. Use Pi tools (web_search, fetch, bash, etc.) instead.";
 
+function encodeVarint(value: number): number[] {
+  const bytes: number[] = [];
+  let remaining = value >>> 0;
+  while (remaining >= 0x80) {
+    bytes.push((remaining & 0x7f) | 0x80);
+    remaining >>>= 7;
+  }
+  bytes.push(remaining);
+  return bytes;
+}
+
+function encodeLengthDelimitedField(fieldNo: number, data: Uint8Array): number[] {
+  return [(fieldNo << 3) | 2, ...encodeVarint(data.length), ...data];
+}
+
+/**
+ * Field #9 is unnamed in the generated proto (web-fetch shaped). Approving it is
+ * indistinguishable from granting a future destructive capability if Cursor reuses
+ * the number, so we always reject. We still have to *answer* — `handled: false`
+ * throws and kills the in-flight turn (#10).
+ *
+ * Wire shape mirrors ExaFetch/WebSearch: response oneof field 2 = rejected,
+ * rejected.reason = 1.
+ */
+function buildCursorWebFetchInteractionRejectionBytes(id: number): Uint8Array {
+  const reason = new TextEncoder().encode(PI_REJECT_REASON);
+  const rejected = new Uint8Array(encodeLengthDelimitedField(1, reason));
+  const result = new Uint8Array(encodeLengthDelimitedField(2, rejected));
+  const interactionResponse = new Uint8Array([
+    0x08,
+    ...encodeVarint(id),
+    ...encodeLengthDelimitedField(CURSOR_WEB_FETCH_INTERACTION_FIELD, result),
+  ]);
+  return new Uint8Array(encodeLengthDelimitedField(6, interactionResponse));
+}
+
 function hasUnknownInteractionField(query: InteractionQuery, fieldNo: number): boolean {
   return ((query as unknown as { $unknown?: Array<{ no: number }> }).$unknown ?? []).some(
     (field) => field.no === fieldNo,
@@ -265,9 +301,12 @@ export function handleInteractionQuery(
 
   // Field #9 is unnamed in the generated proto. Approving it is indistinguishable
   // from granting a future destructive capability if Cursor reuses the number.
+  // Reject with a real InteractionResponse so Cursor unblocks instead of parking,
+  // and so processServerMessage does not throw and kill the turn (#10).
   if (hasUnknownInteractionField(query, CURSOR_WEB_FETCH_INTERACTION_FIELD)) {
+    sendFrame(frameConnectMessage(buildCursorWebFetchInteractionRejectionBytes(query.id)));
     return {
-      handled: false,
+      handled: true,
       action: "unknown_field_9_rejected",
       queryCase: queryCase ?? "unknown_field_9",
     };

@@ -79,7 +79,7 @@ describe("idle progress classification", () => {
     expect(executions).toHaveLength(0);
   });
 
-  it("rejects active blob stores that exceed their entry bound", () => {
+  it("evicts the oldest active blob instead of failing the write at the entry bound", () => {
     const store = new Map<string, Uint8Array>();
     for (let i = 0; i < MAX_ACTIVE_BLOB_ENTRIES; i++) {
       store.set(i.toString(16).padStart(4, "0"), new Uint8Array([1]));
@@ -105,17 +105,22 @@ describe("idle progress classification", () => {
       totalTokens: 0,
       turnEnded: false,
     };
-    expect(() =>
+    const frames: Uint8Array[] = [];
+    expect(
       processServerMessage(
         message,
         store,
         [],
-        () => {},
+        (frame) => frames.push(frame),
         state,
         () => {},
         () => {},
       ),
-    ).toThrow(/entry limit/);
+    ).toBe(true);
+    expect(frames).toHaveLength(1);
+    expect(store.size).toBe(MAX_ACTIVE_BLOB_ENTRIES);
+    expect(store.has("0000")).toBe(false);
+    expect(store.has("ffff")).toBe(true);
   });
 
   it("treats tokenDelta and toolCallCompleted as watchdog progress", () => {

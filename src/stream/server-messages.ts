@@ -71,7 +71,7 @@ import {
   MAX_ACTIVE_BLOB_ENTRIES,
   MAX_INDIVIDUAL_BLOB_BYTES,
 } from "./tuning.js";
-import { markBlobMiss } from "./session-state.js";
+import { markBlobMiss, trimBlobStore } from "./session-state.js";
 import type { PendingExec, StreamState } from "./types.js";
 import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 
@@ -296,14 +296,24 @@ function handleKvMessage(
     if (blobData.byteLength > MAX_INDIVIDUAL_BLOB_BYTES) {
       throw new Error(`Cursor blob exceeds the ${MAX_INDIVIDUAL_BLOB_BYTES} byte per-blob limit`);
     }
-    if (!blobStore.has(blobIdKey) && blobStore.size >= MAX_ACTIVE_BLOB_ENTRIES) {
-      throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_ENTRIES} entry limit`);
+    // Reject blobs that cannot fit even in an empty store before any eviction, so a
+    // failed write cannot punch holes in history Cursor still references.
+    if (blobData.byteLength > MAX_ACTIVE_BLOB_BYTES) {
+      throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_BYTES} byte limit`);
     }
-    let totalBytes = blobData.byteLength;
-    for (const [key, value] of blobStore) {
-      if (key !== blobIdKey) totalBytes += value.byteLength;
-      if (totalBytes > MAX_ACTIVE_BLOB_BYTES) {
-        throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_BYTES} byte limit`);
+    if (!blobStore.has(blobIdKey)) {
+      const evicted = trimBlobStore(
+        blobStore,
+        MAX_ACTIVE_BLOB_BYTES - blobData.byteLength,
+        MAX_ACTIVE_BLOB_ENTRIES - 1,
+      );
+      if (evicted.removed > 0) {
+        debugLog("kv.blob_store_evicted", {
+          removed: evicted.removed,
+          totalBytes: evicted.totalBytes,
+          entries: blobStore.size,
+          maxEntries: MAX_ACTIVE_BLOB_ENTRIES,
+        });
       }
     }
     blobStore.set(blobIdKey, blobData);

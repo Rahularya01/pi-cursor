@@ -170,6 +170,14 @@ export interface CheckpointRef {
   current: Uint8Array | null;
 }
 
+/**
+ * Pi's view of the turn in flight, as opposed to the wire history sent upstream.
+ * Behaviour lives in ./client-transcript.ts.
+ */
+export type ClientTranscript =
+  | { kind: "live"; completedTurns: ParsedTurn[] }
+  | { kind: "recovered"; completedTurns: ParsedTurn[]; inFlightTurn: ParsedTurn };
+
 export interface ActiveBridge {
   bridge: BridgeHandle;
   heartbeatTimer: ReturnType<typeof setInterval>;
@@ -182,6 +190,8 @@ export interface ActiveBridge {
   state: StreamState;
   /** Fingerprint of the completed turns this bridge was parked on; guards against key collisions. */
   historyFingerprint: string;
+  /** Pi's completed-turn history when the wire current turn is synthetic after recovery. */
+  clientTranscript?: ClientTranscript;
 }
 
 export interface StoredConversation {
@@ -265,6 +275,8 @@ export interface NativeStreamAttemptInput {
   convKey: string;
   completedTurns: ParsedTurn[];
   currentTurn: ParsedTurn;
+  /** Pi's transcript when `completedTurns`/`currentTurn` are a recovered wire view. */
+  clientTranscript?: ClientTranscript;
   writer: NativeStreamWriter;
   options?: CursorNativeStreamOptions;
   requestId?: string;

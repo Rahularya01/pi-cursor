@@ -184,9 +184,11 @@ import {
   type CursorResolvableModel as ExtractedCursorResolvableModel,
   type ResolvedCursorModelRouting as ExtractedResolvedCursorModelRouting,
 } from "./model-routing.js";
+import { liveTranscript, withSyntheticCurrentTurn } from "./client-transcript.js";
 import {
   planRecovery as planRecoveryImpl,
   wrapRecoveredToolResults as wrapRecoveredToolResultsImpl,
+  collapseToolResultsById as collapseToolResultsByIdImpl,
   lostToolContinuationErrorBody as lostToolContinuationErrorBodyImpl,
   formatLostToolContinuationDiagnostic as formatLostToolContinuationDiagnosticImpl,
   lostToolContinuationMessage as lostToolContinuationMessageImpl,
@@ -215,6 +217,7 @@ import type {
   ActiveBridge,
   ChatCompletionRequest,
   CheckpointRef,
+  ClientTranscript,
   CursorNativeStreamConfig,
   CursorNativeStreamOptions,
   IdleRestartContext,
@@ -310,7 +313,9 @@ export function wrapRecoveredToolResults(
 }
 
 function collectToolResultImages(toolResults: ToolResultInfo[]): ParsedImageContent[] {
-  return toolResults.flatMap((result) => (result.images ?? []).map(cloneParsedImage));
+  return collapseToolResultsByIdImpl(toolResults).flatMap((result) =>
+    (result.images ?? []).map(cloneParsedImage),
+  );
 }
 
 function toolResultsContainRecoverySentinel(
@@ -568,6 +573,7 @@ async function handleCursorNativeRequest(
             convKey,
             sessionId,
             completedTurns: turns,
+            inFlightTurn,
             maxMode,
             cursorModelParameters: body.cursor_model_parameters ?? [],
             getAccessToken,
@@ -851,7 +857,9 @@ function writeNativeStream(
   streamIdleTimeoutMs = resolveStreamIdleTimeoutMs(process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS),
   checkpointRef: CheckpointRef = { current: null },
   preservedMidPauseExecs: PendingExec[] = [],
+  clientTranscript: ClientTranscript = liveTranscript(completedTurns),
 ): void {
+  const persistenceTurns = clientTranscript.completedTurns;
   debugLog("native.stream.start", {
     requestId,
     bridgeKey,
@@ -925,7 +933,7 @@ function writeNativeStream(
         convKey,
         checkpointRef.current,
         blobStore,
-        completedTurns,
+        persistenceTurns,
         currentTurn,
         emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
       );
@@ -1016,7 +1024,7 @@ function writeNativeStream(
       convKey,
       checkpointRef.current,
       blobStore,
-      completedTurns,
+      persistenceTurns,
       currentTurn,
       emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
     );
@@ -1092,7 +1100,7 @@ function writeNativeStream(
         stored,
         latestCheckpoint: checkpointRef.current,
         blobStore,
-        completedTurns,
+        completedTurns: persistenceTurns,
         pendingExecs: emittedExecs,
         convKey,
       });
@@ -1159,7 +1167,7 @@ function writeNativeStream(
                 stored,
                 checkpointRef.current,
                 blobStore,
-                completedTurns,
+                persistenceTurns,
                 emittedExecs,
                 convKey,
               );
@@ -1187,6 +1195,7 @@ function writeNativeStream(
               checkpointRef,
               state,
               historyFingerprint: historyFingerprint(),
+              clientTranscript,
             });
             debugLog("native.stream.tool_call_pause", {
               requestId,
@@ -1321,7 +1330,7 @@ function writeNativeStream(
           stored,
           latestCheckpoint: checkpointRef.current,
           blobStore,
-          completedTurns,
+          completedTurns: persistenceTurns,
           pendingExecs: emittedExecs,
           convKey,
         });
@@ -1377,7 +1386,7 @@ function writeNativeStream(
             convKey,
             checkpointRef.current,
             blobStore,
-            completedTurns,
+            persistenceTurns,
             currentTurn,
             emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
           );
@@ -1404,7 +1413,7 @@ function writeNativeStream(
           stored,
           latestCheckpoint: checkpointRef.current,
           blobStore,
-          completedTurns,
+          completedTurns: persistenceTurns,
           pendingExecs: emittedExecs,
           convKey,
         });
@@ -1450,7 +1459,7 @@ function writeNativeStream(
         stored,
         latestCheckpoint: checkpointRef.current,
         blobStore,
-        completedTurns,
+        completedTurns: persistenceTurns,
         pendingExecs: emittedExecs,
         convKey,
       });
@@ -1479,6 +1488,8 @@ interface ResumeContext {
   convKey: string;
   sessionId: string | undefined;
   completedTurns: ParsedTurn[];
+  /** Pi's in-flight turn from the resume request, not the bridge's currentTurn suffix. */
+  inFlightTurn?: ParsedTurn;
   maxMode: boolean;
   cursorModelParameters: CursorModelParameter[];
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
@@ -1515,7 +1526,13 @@ function handleNativeToolResultResume(
     checkpointRef,
     state: pausedState,
     historyFingerprint,
+    clientTranscript: parkedTranscript,
   } = active;
+  const resumeTranscript = parkedTranscript ?? liveTranscript(completedTurns);
+  const recoveredClientTranscript = withSyntheticCurrentTurn(
+    resumeTranscript,
+    ctx.inFlightTurn ?? currentTurn,
+  );
   const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
     process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
   );
@@ -1632,7 +1649,7 @@ function handleNativeToolResultResume(
         stored,
         toolResults,
         completedTurns,
-        inFlightTurn: stripInFlightResults(currentTurn),
+        inFlightTurn: stripInFlightResults(ctx.inFlightTurn ?? currentTurn),
         rebuildReason: "synthesized_after_idle",
         sessionId,
         requestId: requestId ?? "native-tool-idle-retry",
@@ -1680,6 +1697,7 @@ function handleNativeToolResultResume(
           convKey,
           completedTurns: rebuiltCompletedTurns,
           currentTurn: recoveredCurrentTurn,
+          clientTranscript: recoveredClientTranscript,
           writer,
           options,
           requestId,
@@ -1755,6 +1773,7 @@ function handleNativeToolResultResume(
         convKey,
         completedTurns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: recoveredClientTranscript,
         writer,
         options,
         requestId,
@@ -1791,6 +1810,7 @@ function handleNativeToolResultResume(
     // A timeout after Cursor receives the tool result still needs the original pause
     // snapshot so recovery can safely recreate that continuation.
     pendingExecs,
+    resumeTranscript,
   );
 }
 
@@ -1960,6 +1980,9 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           input.requestId,
           controller,
           input.streamIdleTimeoutMs,
+          { current: null },
+          [],
+          input.clientTranscript ?? liveTranscript(completedTurns),
         );
       };
 

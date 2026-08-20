@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Unnamed InteractionQuery field 9 no longer kills the in-flight turn.** 1.4.23 fail-closed without sending an `InteractionResponse`, so Cursor parked and `processServerMessage` threw (`stopReason: error`). Field 9 is still rejected (not approved); we now answer with a reject-shaped response so the stream continues. Fixes [#10](https://github.com/Rahularya01/pi-cursor/issues/10).
+- **Idle/transport restart after a tool pause matches Pi's in-flight turn, not the bridge suffix.** Multi-round chains and a second bridge loss in the same turn were dying with `pending_tool_call_mismatch` because recovery compared the last writeNativeStream round against every tool result Pi replayed. Resume planning now uses the parsed client turn; recovered streams carry a `ClientTranscript` so mid-pause snapshots stay keyed to Pi's history. Duplicate re-emitted exec ids are collapsed (last result wins). Ports the diagnoses from [#8](https://github.com/Rahularya01/pi-cursor/pull/8) and [#9](https://github.com/Rahularya01/pi-cursor/pull/9).
+- **Blob store entry bound evicts oldest-first instead of failing the conversation.** Crossing 512 distinct blobs threw on every later turn. Eviction happens before the write is acked; an incoming blob that cannot fit even in an empty store is still rejected without punching holes. Inspired by [#11](https://github.com/Rahularya01/pi-cursor/pull/11).
+
 ## [1.4.23] - 2026-08-19
 
 ### Fixed

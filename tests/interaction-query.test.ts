@@ -74,7 +74,7 @@ describe("handleInteractionQuery", () => {
     expect(frames).toHaveLength(1);
   });
 
-  it("fails closed for unnamed proto field #9", () => {
+  it("rejects unnamed proto field #9 without killing the turn", () => {
     const frames: Uint8Array[] = [];
     const query = create(InteractionQuerySchema, { id: 11 });
     (
@@ -83,9 +83,10 @@ describe("handleInteractionQuery", () => {
     const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
       approveWeb: true,
     });
-    expect(result.handled).toBe(false);
+    expect(result.handled).toBe(true);
     expect(result.action).toBe("unknown_field_9_rejected");
-    expect(frames).toHaveLength(0);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.byteLength).toBeGreaterThan(5);
   });
 
   it("fails closed for unknown future interaction fields", () => {

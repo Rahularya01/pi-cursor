@@ -261,4 +261,64 @@ describe("wrapRecoveredToolResults", () => {
     expect(text).toContain("Tool call id: abc");
     expect(text).toContain("hello");
   });
+
+  it("collapses duplicate ids so the last result wins", () => {
+    const text = wrapRecoveredToolResults(
+      [
+        { toolCallId: "t1", content: "stale" },
+        { toolCallId: "t1", content: "fresh" },
+      ],
+      "fixed-id",
+    );
+    expect(text).toContain("fresh");
+    expect(text).not.toContain("stale");
+    expect(text.match(/Tool call id: t1/g)).toHaveLength(1);
+  });
+});
+
+describe("duplicate tool ids on recovery", () => {
+  it("rebuilds when the client re-emits an already-answered exec id", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [{ toolCallId: "t2", toolName: "read" }],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [
+        { toolCallId: "t1", content: "first" },
+        { toolCallId: "t1", content: "first-again" },
+        { toolCallId: "t2", content: "second" },
+      ],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1", "t2"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+  });
+
+  it("still skips when a parked exec has no result", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: null,
+      midPausePendingToolCalls: [{ toolCallId: "t2", toolName: "read" }],
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "only-round-1" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    }
+  });
 });
