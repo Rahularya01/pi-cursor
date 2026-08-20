@@ -74,6 +74,7 @@ src/
 │   └── bridge.ts           # Bridge process spawn/IPC manager
 ├── stream/                 # Stream Simple adapter & session handling
 │   ├── native-core.ts      # Core stream Simple interface for Pi AI
+│   ├── root-prompt.ts      # Model-facing prompt messages (system prompt + replayed history)
 │   ├── context-normalize.ts# Folds side-channel injections into system prompt
 │   ├── thinking-filter.ts  # Reasoning effort mapping (off, minimal, low, medium, high, xhigh, max)
 │   ├── model-discovery.ts  # GetUsableModels RPC & catalog mapping
@@ -116,13 +117,29 @@ src/
 - Side-channel user messages (such as `<session_state>` blocks or context-mode injections) must be normalized into the system prompt via `normalizeMessagesForCursor()` in `src/stream/context-normalize.ts`.
 - This ensures Cursor's message parser does not misidentify side-channel metadata as the active user prompt turn.
 
-### 5. Transport Choice: In-Process vs. Bridge Subprocess
+### 5. Prompt Assembly: `root_prompt_messages_json` Is the Prompt
+
+- Cursor's agent server builds the model prompt from
+  `ConversationStateStructure.root_prompt_messages_json` — a list of blob ids, each holding one
+  JSON message in the AI-SDK model-message shape (`user` / `assistant` / `tool`).
+- `conversation_state.turns` is **state**, not prompt. The server keeps it for its own
+  checkpointing and never renders it back into prompt messages. A request that carries history
+  only as turn structures reaches the model as a single fresh question.
+- The server discards `{"role":"system"}` entries and substitutes Cursor's own system prompt, so
+  Pi's system prompt must ride a `user` message (`<rules>…</rules>`), the way Cursor frames its own.
+- Historic tool activity replays as `tool-call` / `tool-result` content parts with names in
+  Cursor's `mcp_pi_<tool>` form.
+- All of this lives in `src/stream/root-prompt.ts` and applies only when a request is built
+  _without_ an upstream checkpoint. A checkpoint already carries the server-rendered history; only
+  a changed system prompt is appended to it (`refreshSystemPrompt`).
+
+### 6. Transport Choice: In-Process vs. Bridge Subprocess
 
 - Streaming RPCs always go through the `h2-bridge.mjs` child process — Node's `node:http2` bidirectional streaming has known issues under some runtimes, which is why the bridge exists.
 - Unary RPCs (model discovery, usage) use the in-process HTTP/2 client in `h2-unary.ts` instead, to avoid paying a process-spawn + fresh TLS/H2 handshake cost for a single request/response round trip.
 - `fetch`/`undici` cannot be used for either path: Cursor's hosts speak HTTP/2 only and undici rejects the h2 preface.
 
-### 6. Reasoning Effort & Thinking Mapping
+### 7. Reasoning Effort & Thinking Mapping
 
 - Pi reasoning effort levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) map directly to Cursor's model parameter variants.
 - Do not bypass model collapse or effort mapping unless `PI_CURSOR_RAW_MODELS=1` is explicitly set.
@@ -141,3 +158,4 @@ src/
 | `PI_CURSOR_RAW_MODELS`                     | Set to `1` or `true` to disable reasoning effort suffix collapsing in model picker    |
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables)               |
 | `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                   |
+| `PI_CURSOR_PROMPT_HISTORY`                 | Set to `0` or `false` to stop publishing system prompt + history as prompt messages   |

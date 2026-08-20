@@ -46,6 +46,12 @@ import {
 } from "../proto/agent_pb.js";
 import { buildSelectedContextBlob, type CursorModelParameter } from "../client/cursor-wire.js";
 import { debugLog, requestDebugByBody } from "./debug-log.js";
+import {
+  buildRootPromptMessages,
+  encodeRootPromptMessage,
+  isPromptHistoryEnabled,
+  systemPromptRootMessage,
+} from "./root-prompt.js";
 import type {
   CursorRequestPayload,
   OpenAIToolDef,
@@ -545,6 +551,8 @@ export interface BuildCursorRequestOptions {
   userImages?: BuildCursorRequestImageInput[];
   userText?: string;
   maxMode?: boolean;
+  /** Re-publish the system prompt onto a checkpoint whose recorded prompt is stale. */
+  refreshSystemPrompt?: boolean;
 }
 
 export function normalizeImageInput(image: BuildCursorRequestImageInput): ParsedImageContent {
@@ -581,6 +589,7 @@ export function buildCursorRequest(
   cursorModelParameters: CursorModelParameter[] = [],
   mcpTools: McpToolDefinition[] = [],
   userImages: ParsedImageContent[] = [],
+  refreshSystemPrompt = false,
 ): CursorRequestPayload {
   if (typeof modelOrOptions !== "string") {
     const normalizedTurns = (modelOrOptions.turns ?? []).map(normalizeTurnInput);
@@ -605,6 +614,7 @@ export function buildCursorRequest(
       modelOrOptions.cursorModelParameters ?? [],
       modelOrOptions.mcpTools ?? [],
       currentImages,
+      modelOrOptions.refreshSystemPrompt ?? false,
     );
   }
 
@@ -620,6 +630,7 @@ export function buildCursorRequest(
     cursorModelParameters,
     mcpTools,
     userImages,
+    refreshSystemPrompt,
   );
 }
 
@@ -635,6 +646,7 @@ export function buildCursorRequestFromParts(
   cursorModelParameters: CursorModelParameter[] = [],
   mcpTools: McpToolDefinition[] = [],
   userImages: ParsedImageContent[] = [],
+  refreshSystemPrompt = false,
 ): CursorRequestPayload {
   debugLog("cursor_request.build.start", {
     modelId,
@@ -660,6 +672,16 @@ export function buildCursorRequestFromParts(
   let conversationState;
   if (checkpoint) {
     conversationState = fromBinary(ConversationStateStructureSchema, checkpoint);
+    // A checkpoint froze the instructions recorded when the conversation began.
+    // Pi rewrites its system prompt as a session evolves — context-mode folds
+    // session memory into it — so a changed prompt is re-published here instead
+    // of being silently pinned to whatever turn one happened to say.
+    if (refreshSystemPrompt && isPromptHistoryEnabled() && systemPrompt.trim()) {
+      conversationState.rootPromptMessagesJson = [
+        ...conversationState.rootPromptMessagesJson,
+        storeAsBlob(encodeRootPromptMessage(systemPromptRootMessage(systemPrompt)), blobStore),
+      ];
+    }
   } else {
     const turnBlobIds: Uint8Array[] = [];
     for (const turn of turns) {
@@ -680,8 +702,17 @@ export function buildCursorRequestFromParts(
       );
     }
 
+    // `turns` is state, not prompt: Cursor's server never renders it back into
+    // model messages. The prompt it actually reads is this list, so the system
+    // prompt and every completed turn are replayed here — see ./root-prompt.ts.
+    const promptBlobIds = isPromptHistoryEnabled()
+      ? buildRootPromptMessages(systemPrompt, turns).map((message) =>
+          storeAsBlob(encodeRootPromptMessage(message), blobStore),
+        )
+      : [];
+
     conversationState = create(ConversationStateStructureSchema, {
-      rootPromptMessagesJson: [systemBlobId],
+      rootPromptMessagesJson: [systemBlobId, ...promptBlobIds],
       turns: turnBlobIds,
       todos: [],
       pendingToolCalls: [],

@@ -57,6 +57,8 @@ export interface DurableJournalRecord {
   midPauseTurnCount?: number;
   midPauseHistoryFingerprint?: string;
   midPauseRecordedAtMs?: number;
+  /** Hash of the system prompt last published to Cursor for this conversation. */
+  systemPromptHash?: string;
   /** Content-addressed blobs referenced by checkpoints / history. */
   blobs: JournalBlobEntry[];
   /**
@@ -243,6 +245,7 @@ export function serializeConversationJournal(
     ...(stored.checkpointHistoryFingerprint
       ? { checkpointHistoryFingerprint: stored.checkpointHistoryFingerprint }
       : {}),
+    ...(stored.systemPromptHash ? { systemPromptHash: stored.systemPromptHash } : {}),
     ...(stored.midPausePendingToolCalls
       ? { midPausePendingToolCalls: stored.midPausePendingToolCalls }
       : {}),
@@ -312,6 +315,9 @@ export function deserializeConversationJournal(
       : {}),
     ...(keepCheckpointMetadata && record.checkpointHistoryFingerprint
       ? { checkpointHistoryFingerprint: record.checkpointHistoryFingerprint }
+      : {}),
+    ...(keepCheckpointMetadata && record.systemPromptHash
+      ? { systemPromptHash: record.systemPromptHash }
       : {}),
     ...(record.midPausePendingToolCalls
       ? { midPausePendingToolCalls: record.midPausePendingToolCalls }

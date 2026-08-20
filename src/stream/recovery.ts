@@ -5,6 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import type {
+  ParsedAssistantTextStep,
   ParsedImageContent,
   ParsedTurn,
   ParsedToolCallStep,
@@ -204,23 +205,30 @@ function fingerprintSingleTurn(turn: ParsedTurn): string {
   const normalized = {
     userText: turn.userText,
     userImages: (turn.userImages ?? []).map(fingerprintImage),
-    steps: turn.steps.map((step) => {
-      if (step.kind === "assistantText") return { kind: step.kind, text: step.text };
-      if (step.kind === "thinking") return { kind: step.kind, text: step.text };
-      return {
-        kind: step.kind,
-        toolCallId: step.toolCallId,
-        toolName: step.toolName,
-        arguments: stableNormalizeForHash(step.arguments),
-        result: step.result
-          ? {
-              content: step.result.content,
-              isError: step.result.isError,
-              images: (step.result.images ?? []).map(fingerprintImage),
-            }
-          : undefined,
-      };
-    }),
+    // Reasoning is deliberately excluded. The provider records a turn's steps as
+    // it streams, and never records a thinking step; Pi replays one on the next
+    // turn. Hashing it made every reasoning-model turn look like a rewritten
+    // history, which discarded a perfectly good checkpoint on each turn.
+    steps: turn.steps
+      .filter(
+        (step): step is ParsedAssistantTextStep | ParsedToolCallStep => step.kind !== "thinking",
+      )
+      .map((step) => {
+        if (step.kind === "assistantText") return { kind: step.kind, text: step.text };
+        return {
+          kind: step.kind,
+          toolCallId: step.toolCallId,
+          toolName: step.toolName,
+          arguments: stableNormalizeForHash(step.arguments),
+          result: step.result
+            ? {
+                content: step.result.content,
+                isError: step.result.isError,
+                images: (step.result.images ?? []).map(fingerprintImage),
+              }
+            : undefined,
+        };
+      }),
   };
   const hash = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
   turnFingerprintCache.set(turn, hash);

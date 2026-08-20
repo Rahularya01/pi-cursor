@@ -213,6 +213,7 @@ for tuning timeouts, debugging, and edge-case overrides.
 | `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | h2-bridge activity idle kill. **Default `0` (disabled)**. Parent heartbeats reset it when enabled.                                                                                                                                                                                                           |
 | `PI_CURSOR_SLIM_TOOLS`                     | Compact Cursor MCP tool definitions: concise function purpose, no annotation-only parameter prose, full callable schema constraints preserved. **Default on**; set `0`/`false` for verbatim schemas.                                                                                                         |
 | `PI_CURSOR_MIDPAUSE_REBUILD_MAX_AGE_MS`    | Max age of mid-pause metadata used for full-history rebuild (default: 15 min).                                                                                                                                                                                                                               |
+| `PI_CURSOR_PROMPT_HISTORY`                 | Publish the system prompt and completed turns as Cursor prompt messages when a request is built without an upstream checkpoint. **Default on**; `0`/`false` restores the pre-1.4.24 behavior, where a rebuilt conversation reached the model with no history and no Pi system prompt.                        |
 
 </details>
 

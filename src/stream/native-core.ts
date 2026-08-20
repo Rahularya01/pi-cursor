@@ -97,6 +97,13 @@ export {
   summarizeRequestSize,
   type BuildCursorRequestOptions,
 } from "./request-build.js";
+import { hashSystemPrompt } from "./root-prompt.js";
+export {
+  buildRootPromptMessages,
+  hashSystemPrompt,
+  isPromptHistoryEnabled,
+  turnRootMessages,
+} from "./root-prompt.js";
 import {
   appendAssistantTextToTurn,
   getTurnToolCallResults,
@@ -763,19 +770,26 @@ async function handleCursorNativeRequest(
   const mcpTools = buildMcpToolDefinitions(selectedTools);
   const effectiveUserText = userText;
   const effectiveUserImages = userText || userImages.length > 0 ? userImages : [];
-  const payload = buildCursorRequest(
+  // Pi rewrites its system prompt as a session evolves (context-mode folds
+  // session memory into it). A checkpoint carries the prompt recorded when the
+  // conversation started, so a changed prompt has to be re-published.
+  const systemPromptHash = hashSystemPrompt(effectiveSystemPrompt);
+  const refreshSystemPrompt = !!stored.checkpoint && stored.systemPromptHash !== systemPromptHash;
+  const payload = buildCursorRequest({
     modelId,
-    effectiveSystemPrompt,
-    effectiveUserText,
+    systemPrompt: effectiveSystemPrompt,
+    userText: effectiveUserText,
     turns,
-    stored.conversationId,
-    stored.checkpoint,
-    stored.blobStore,
+    conversationId: stored.conversationId,
+    checkpoint: stored.checkpoint,
+    existingBlobStore: stored.blobStore,
     maxMode,
-    body.cursor_model_parameters,
+    cursorModelParameters: body.cursor_model_parameters,
     mcpTools,
-    effectiveUserImages,
-  );
+    userImages: effectiveUserImages,
+    refreshSystemPrompt,
+  });
+  stored.systemPromptHash = systemPromptHash;
   payload.mcpTools = mcpTools;
 
   const currentTurn: ParsedTurn = {

@@ -204,6 +204,8 @@ export interface StoredConversation {
   midPauseTurnCount?: number;
   midPauseHistoryFingerprint?: string;
   midPauseRecordedAtMs?: number;
+  /** Hash of the system prompt last published to Cursor for this conversation. */
+  systemPromptHash?: string;
   sessionScoped: boolean;
   sessionId?: string;
   blobStore: Map<string, Uint8Array>;

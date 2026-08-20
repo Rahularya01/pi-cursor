@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Cursor never saw the conversation history or Pi's system prompt on a rebuilt request.** The provider carried history as `conversation_state.turns` structures, but Cursor's server builds the model prompt from `root_prompt_messages_json` and never renders turn structures back into prompt messages — so any request built without an upstream checkpoint (first turn of a resumed session, checkpoint discarded, conversation rotated, Pi restarted) reached the model as a single fresh question with no memory of the chat. The same list was carrying Pi's system prompt as a `{"role":"system"}` entry, which the server discards in favour of Cursor's own IDE prompt; that is why turns came back in Cursor's voice and called native Cursor tools (`Grep`, `read`) that do not exist in Pi. Requests built without a checkpoint now publish the system prompt as a `<rules>` user message and replay every completed turn as `user` / `assistant` / `tool` prompt messages, with historic tool calls named the way Cursor names MCP tools (`mcp_pi_<tool>`). Set `PI_CURSOR_PROMPT_HISTORY=0` to restore the old behaviour.
+- **Every reasoning-model turn threw away a perfectly good checkpoint.** The history fingerprint that decides whether a stored checkpoint still matches Pi's transcript hashed thinking steps. The provider records a turn's steps as it streams and never records a thinking step, while Pi replays one on the next turn, so the two fingerprints could not agree for any model that emits reasoning. Each turn was scored as a rewritten history: checkpoint discarded, `conversationId` rotated, history rebuilt — into the path above that dropped it. Reasoning is now excluded from the fingerprint; a rewritten user turn or tool call is still detected.
+- A conversation's system prompt is no longer pinned to whatever the first turn happened to say. Pi rewrites it as a session evolves (context-mode folds session memory into it), and a checkpoint froze the original; a changed prompt is now re-published onto the checkpointed conversation.
+
 ## [1.4.24] - 2026-08-20
 
 ### Fixed
