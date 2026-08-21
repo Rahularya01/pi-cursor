@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`/cursor.usage` duplicated the dashboard and corrupted fullscreen TUI.** Command handlers notified Pi's UI and also wrote to stdout, so fullscreen mode painted the dashboard twice over the editor and footer. `/cursor.models` and `/cursor.doctor` used the same dual path. Output now goes through `notify` when a UI is present, otherwise stdout/stderr. Fixes [#12](https://github.com/Rahularya01/pi-cursor/issues/12).
+
 ## [1.4.25] - 2026-08-20
 
 ### Fixed

@@ -22,6 +22,22 @@ export interface CursorCommandOptions {
   getCurrentTokenSource: () => CredentialSource;
 }
 
+function emitCommandOutput(
+  ctx: ExtensionCommandContext,
+  text: string,
+  level: "info" | "error" = "info",
+): void {
+  if (ctx.hasUI) {
+    ctx.ui.notify(text, level);
+    return;
+  }
+  if (level === "error") {
+    console.error(text);
+    return;
+  }
+  console.log(text);
+}
+
 export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandOptions): void {
   pi.registerCommand("cursor.models", {
     description: "List Cursor runtime models registered by this provider",
@@ -54,8 +70,7 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
       }
       if (!rows.length) lines.push("No models registered. Run /login cursor first.");
       const text = lines.join("\n");
-      if (ctx.hasUI) ctx.ui.notify(text, "info");
-      console.log(text);
+      emitCommandOutput(ctx, text);
     },
   });
 
@@ -64,14 +79,12 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
     handler: async (_args, ctx: ExtensionCommandContext) => {
       try {
         const text = formatCursorUsage(await getCursorUsageSummary(options.getAccessToken));
-        if (ctx.hasUI) ctx.ui.notify(text, "info");
-        console.log(text);
+        emitCommandOutput(ctx, text);
       } catch (error) {
         const text = `Cursor usage unavailable: ${redactSecrets(
           error instanceof Error ? error.message : String(error),
         )}`;
-        if (ctx.hasUI) ctx.ui.notify(text, "error");
-        console.error(text);
+        emitCommandOutput(ctx, text, "error");
       }
     },
   });
@@ -136,8 +149,7 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
         lines.push("  or pin PI_CURSOR_CLIENT_VERSION to a build that matches.");
       }
       const text = lines.join("\n");
-      if (ctx.hasUI) ctx.ui.notify(`Cursor doctor\n${text}`, "info");
-      console.log(text);
+      emitCommandOutput(ctx, `Cursor doctor\n${text}`);
     },
   });
 }
