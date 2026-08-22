@@ -963,6 +963,13 @@ function writeNativeStream(
       cleanupBridge(bridge, heartbeatTimer, bridgeKey);
       options?.signal?.removeEventListener("abort", abort);
 
+      // An unanswered exec is a schema gap, not silence. Retrying the same
+      // request re-issues the exec we still cannot decode.
+      if (parkedExecCase !== undefined) {
+        writer.error(formatStreamParkMessage(parkedExecCase, parkTimeoutMs), "error", state);
+        return;
+      }
+
       // Blind restart is only safe with zero streamed content. Checkpoint
       // continuation is safe even after partial text: Cursor resumes server
       // state and emits only new tokens, which Pi appends to the writer.
@@ -1028,14 +1035,12 @@ function writeNativeStream(
         }
       }
       writer.error(
-        parkedExecCase === undefined
-          ? formatStreamIdleTimeoutMessage(
-              streamIdleTimeoutMs,
-              finalAttempt,
-              maxRetries,
-              emittedUserVisibleContent,
-            )
-          : formatStreamParkMessage(parkedExecCase, parkTimeoutMs),
+        formatStreamIdleTimeoutMessage(
+          streamIdleTimeoutMs,
+          finalAttempt,
+          maxRetries,
+          emittedUserVisibleContent,
+        ),
         "error",
         state,
       );
