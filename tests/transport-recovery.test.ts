@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 import {
   AgentServerMessageSchema,
+  ExecServerMessageSchema,
+  HeartbeatUpdateSchema,
   InteractionUpdateSchema,
   TextDeltaUpdateSchema,
   TurnEndedUpdateSchema,
@@ -428,6 +430,87 @@ describe("completed-turn connection close", () => {
     clearInterval(heartbeatTimer);
 
     expect(calls).toEqual(["done:stop"]);
+  });
+
+  it("fails a turn parked on an unanswerable exec even while heartbeats keep arriving", async () => {
+    const calls: string[] = [];
+    const written: Uint8Array[] = [];
+    const writer = {
+      output: {} as never,
+      closed: false,
+      start() {},
+      text() {},
+      thinking() {},
+      toolCall() {},
+      done(reason: string) {
+        calls.push(`done:${reason}`);
+        this.closed = true;
+      },
+      error(message: string) {
+        calls.push(`error:${message}`);
+        this.closed = true;
+      },
+    };
+    let onData: (chunk: Buffer) => void = () => {};
+    const bridge = {
+      proc: { kill: () => true },
+      alive: true,
+      lastStderr: () => "",
+      write: (data: Uint8Array) => written.push(data),
+      end: () => {},
+      onData: (cb: (chunk: Buffer) => void) => {
+        onData = cb;
+      },
+      onClose: () => {},
+    };
+    const heartbeatTimer = setInterval(() => {}, 60_000);
+
+    __testInternals.writeNativeStream(
+      bridge,
+      heartbeatTimer,
+      new Map(),
+      [],
+      {} as never,
+      "grok-4.6",
+      "bridge-park",
+      "conv-park",
+      [],
+      { userText: "hi", steps: [] },
+      writer as never,
+      undefined,
+      "req-park",
+      undefined,
+      40,
+    );
+
+    // An exec case this build has no branch for: Cursor waits for a reply forever.
+    onData(
+      frame(
+        toBinary(
+          AgentServerMessageSchema,
+          create(AgentServerMessageSchema, {
+            message: {
+              case: "execServerMessage",
+              value: create(ExecServerMessageSchema, { id: 3, execId: "exec-park" }),
+            },
+          }),
+        ),
+      ),
+    );
+    expect(written).toHaveLength(1);
+
+    // Cursor keeps the connection warm while it waits. Before the park was modelled,
+    // these reset the silence watchdog and the turn hung until the operator noticed.
+    const beats = setInterval(
+      () => onData(updateFrame({ case: "heartbeat", value: create(HeartbeatUpdateSchema, {}) })),
+      10,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    clearInterval(beats);
+    clearInterval(heartbeatTimer);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^error:Cursor parked the turn on exec case/);
   });
 });
 

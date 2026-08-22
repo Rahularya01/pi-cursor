@@ -23,7 +23,9 @@ import {
   DeleteRejectedSchema,
   DeleteResultSchema,
   DiagnosticsResultSchema,
+  ExecClientControlMessageSchema,
   ExecClientMessageSchema,
+  ExecClientThrowSchema,
   FetchErrorSchema,
   FetchResultSchema,
   GetBlobResultSchema,
@@ -66,28 +68,27 @@ import { recordDriftSignal, recordUnknownFields } from "./drift.js";
 import { handleInteractionQuery } from "./interaction-query.js";
 import { decodeMcpArgsMap } from "./request-build.js";
 import {
-  interactionUpdateCountsAsProgress,
+  interactionUpdateProgress,
   MAX_ACTIVE_BLOB_BYTES,
   MAX_ACTIVE_BLOB_ENTRIES,
   MAX_INDIVIDUAL_BLOB_BYTES,
+  type StreamProgress,
 } from "./tuning.js";
 import { markBlobMiss, trimBlobStore } from "./session-state.js";
 import type { PendingExec, StreamState } from "./types.js";
 import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 
 /**
- * Returns true when this message represents forward progress / upstream liveness
- * for the stream idle watchdog:
- *   - non-empty `textDelta` / `thinkingDelta`
- *   - `tokenDelta` (long reasoning often emits only these for minutes)
- *   - `toolCallCompleted`
- *   - any handled `execServerMessage` (MCP exec **or** native-tool reject reply)
- *   - `conversationCheckpointUpdate` with an `onCheckpoint` sink
- *   - handled KV get/set blob round-trips
- *   - handled interaction queries (e.g. WebFetch approval)
+ * Classifies a server message for the stream idle watchdog.
  *
- * Returns false only for empty text deltas, unhandled KV/exec/interaction cases,
- * and other noise. A true hang is silence — not token accounting or reject loops.
+ * `work` — the run is moving: non-empty `textDelta` / `thinkingDelta`,
+ * `tokenDelta` (long reasoning often emits only these for minutes), tool-call
+ * events, any answered `execServerMessage` (MCP exec **or** native-tool reject),
+ * answered interaction queries, KV blob round-trips, checkpoints.
+ *
+ * `liveness` — a heartbeat. The socket is healthy; the turn may still be parked.
+ *
+ * `none` — empty deltas, unanswered exec/KV/interaction cases, other noise.
  */
 export function processServerMessage(
   msg: AgentServerMessage,
@@ -98,7 +99,8 @@ export function processServerMessage(
   onText: (text: string, isThinking?: boolean) => void,
   onMcpExec: (exec: PendingExec) => void,
   onCheckpoint?: (checkpointBytes: Uint8Array) => void,
-): boolean {
+  onExecUnanswerable?: (execCase: string | undefined) => void,
+): StreamProgress {
   const msgCase = msg.message.case;
   debugLog("server_message", { msgCase, msg });
   recordUnknownFields(`AgentServerMessage.${msgCase ?? "none"}`, msg);
@@ -111,21 +113,21 @@ export function processServerMessage(
       const delta = update.message.value.text || "";
       if (delta) {
         onText(delta, false);
-        return interactionUpdateCountsAsProgress(updateCase, true);
+        return interactionUpdateProgress(updateCase, true);
       }
-      return false;
+      return "none";
     }
     if (updateCase === "thinkingDelta") {
       const delta = update.message.value.text || "";
       if (delta) {
         onText(delta, true);
-        return interactionUpdateCountsAsProgress(updateCase, true);
+        return interactionUpdateProgress(updateCase, true);
       }
-      return false;
+      return "none";
     }
     if (updateCase === "tokenDelta") {
       state.outputTokens += update.message.value.tokens ?? 0;
-      return interactionUpdateCountsAsProgress(updateCase);
+      return interactionUpdateProgress(updateCase);
     }
     if (updateCase === "toolCallCompleted") {
       const completed = update.message.value as any;
@@ -148,24 +150,27 @@ export function processServerMessage(
           errorUnknown: value?.$unknown,
         });
       }
-      return interactionUpdateCountsAsProgress(updateCase);
+      return interactionUpdateProgress(updateCase);
     }
     if (updateCase === "turnEnded") {
       // Cursor closes the HTTP/2 connection right after this. Recorded so the close is
       // finalized as a completed turn instead of retried as a failure (upstream #3).
       state.turnEnded = true;
-      return true;
+      return "work";
     }
-    // Liveness cases (heartbeat, toolCallStarted, partialToolCall, ...) are already defined by
-    // interactionUpdateCountsAsProgress; reuse it rather than keeping a second list here.
-    if (interactionUpdateCountsAsProgress(updateCase)) return true;
+    // Remaining cases (heartbeat, toolCallStarted, partialToolCall, ...) are already
+    // classified by interactionUpdateProgress; reuse it rather than keeping a second list.
+    const progress = interactionUpdateProgress(updateCase);
+    if (progress !== "none") return progress;
     // Unrecognized update cases are informational rather than stranding — the
     // stream keeps flowing — but they are the first sign our schema is behind.
     recordDriftSignal("interaction_update", updateCase);
-    return false;
+    return "none";
   }
   if (msgCase === "kvServerMessage") {
-    return handleKvMessage(msg.message.value as KvServerMessage, blobStore, sendFrame);
+    return handleKvMessage(msg.message.value as KvServerMessage, blobStore, sendFrame)
+      ? "work"
+      : "none";
   }
   if (msgCase === "execServerMessage") {
     const execMsg = msg.message.value as ExecServerMessage;
@@ -182,8 +187,9 @@ export function processServerMessage(
     if (!handled) {
       setLastStreamEvent(`exec_unanswered:${String(execCase ?? "unknown")}`);
       recordDriftSignal("exec_message", execCase);
+      onExecUnanswerable?.(execCase);
     }
-    return handled;
+    return handled ? "work" : "none";
   }
   if (msgCase === "interactionQuery") {
     const query = msg.message.value as InteractionQuery;
@@ -214,7 +220,7 @@ export function processServerMessage(
         `Unsupported Cursor interaction query ${result.queryCase ?? "unknown"} was rejected`,
       );
     }
-    return true;
+    return "work";
   }
   if (msgCase === "execServerControlMessage") {
     const control = msg.message.value as { message?: { case?: string } };
@@ -222,7 +228,7 @@ export function processServerMessage(
     debugLog("native.exec_server_control", { controlCase });
     lifecycleLog("exec_server_control", { controlCase });
     // Abort notices are informational; the stream may continue or end separately.
-    return controlCase === "abort";
+    return controlCase === "abort" ? "work" : "none";
   }
   if (msgCase === "conversationCheckpointUpdate") {
     const stateStructure = msg.message.value as ConversationStateStructure;
@@ -231,16 +237,16 @@ export function processServerMessage(
     }
     if (onCheckpoint) {
       onCheckpoint(toBinary(ConversationStateStructureSchema, stateStructure));
-      return true;
+      return "work";
     }
-    return false;
+    return "none";
   }
 
   // Nothing matched: Cursor sent a server message this build has no branch for.
   // Nobody answers it, so if the run was waiting on it the turn will park until
   // the idle watchdog fires — record it so the timeout is explainable.
   recordDriftSignal("server_message", msgCase);
-  return false;
+  return "none";
 }
 
 function sendKvResponse(
@@ -669,11 +675,61 @@ function handleExecMessageInner(
     return true;
   }
 
-  // Fail closed: a guessed result case with an MCP payload is indistinguishable
-  // from a successful reply for a future destructive exec and can strand the run.
-  console.error(`[cursor-provider] UNHANDLED exec case: "${execCase}". Bridge may stall.`);
+  // No result shape is known for an exec case this build has no branch for, and
+  // guessing one is unsafe: a fabricated success is indistinguishable from having
+  // actually performed a destructive operation. But silence is not the alternative
+  // — Cursor parks the run on the unanswered exec id and heartbeats forever.
+  // ExecClientThrow answers any exec by id without claiming a result, so the model
+  // sees a failed tool instead of a dead stream.
+  console.error(`[cursor-provider] UNHANDLED exec case: "${execCase}". Answering with a throw.`);
+  lifecycleLog("exec_unknown_shape", {
+    execCase: execCase ?? "unknown",
+    unknownFields: describeUnknownFields(execMsg),
+  });
   setLastStreamEvent(`unhandled_exec:${String(execCase ?? "unknown")}`);
+  sendExecThrow(
+    execMsg,
+    `Pi's Cursor provider has no handler for exec case "${execCase ?? "unknown"}" ` +
+      `(wire drift: this build's agent.proto is behind Cursor). ${REJECT_REASON}`,
+    sendFrame,
+  );
   return false;
+}
+
+/**
+ * Field numbers, wire types and sizes of protobuf fields our schema lacks — the
+ * only evidence available for identifying a new Cursor exec case, and safe to
+ * keep in the always-on lifecycle log because it carries no payload content.
+ */
+function describeUnknownFields(message: unknown): string {
+  const unknown = (
+    message as { $unknown?: readonly { no: number; wireType: number; data: Uint8Array }[] }
+  ).$unknown;
+  if (!unknown || unknown.length === 0) return "";
+  return unknown
+    .map((field) => `${field.no}:wt${field.wireType}:${field.data?.byteLength ?? 0}b`)
+    .join(",");
+}
+
+/**
+ * The one reply that fits every exec: `ExecClientThrow` is keyed by exec id, not
+ * by exec case, so it releases a parked run whose request we cannot understand.
+ */
+function sendExecThrow(
+  execMsg: ExecServerMessage,
+  error: string,
+  sendFrame: (data: Uint8Array) => void,
+): void {
+  const control = create(ExecClientControlMessageSchema, {
+    message: {
+      case: "throw",
+      value: create(ExecClientThrowSchema, { id: (execMsg as any).id, error }),
+    },
+  });
+  const clientMessage = create(AgentClientMessageSchema, {
+    message: { case: "execClientControlMessage", value: control },
+  });
+  sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
 }
 
 function sendExecResult(
@@ -696,4 +752,5 @@ function sendExecResult(
 export const __testInternals = {
   nativeToolRejectReason,
   handleExecMessageInner,
+  describeUnknownFields,
 };

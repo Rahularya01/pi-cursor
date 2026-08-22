@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { create } from "@bufbuild/protobuf";
+import { create, fromBinary } from "@bufbuild/protobuf";
 import {
+  AgentClientMessageSchema,
   AgentServerMessageSchema,
   ExecServerMessageSchema,
   HeartbeatUpdateSchema,
@@ -11,13 +12,15 @@ import {
   PartialToolCallUpdateSchema,
   SetBlobArgsSchema,
   ToolCallStartedUpdateSchema,
+  type ExecClientControlMessage,
+  type ExecClientThrow,
 } from "../src/proto/agent_pb.js";
 import { processServerMessage } from "../src/stream/server-messages.js";
 import type { StreamState } from "../src/stream/types.js";
 import {
   __testInternals,
   canBlindIdleRestart,
-  interactionUpdateCountsAsProgress,
+  interactionUpdateProgress,
   resolveH2ConnectTimeoutMs,
   resolveH2IdleTimeoutMs,
   resolveResumeIdleTimeoutMs,
@@ -74,9 +77,48 @@ describe("idle progress classification", () => {
         () => {},
         (execution) => executions.push(execution),
       ),
-    ).toBe(true);
+    ).toBe("work");
     expect(frames).toHaveLength(1);
     expect(executions).toHaveLength(0);
+  });
+
+  it("answers an exec case it cannot decode with a throw instead of parking", () => {
+    const message = create(AgentServerMessageSchema, {
+      message: {
+        case: "execServerMessage",
+        value: create(ExecServerMessageSchema, { id: 7, execId: "exec-7" }),
+      },
+    });
+    const state: StreamState = {
+      toolCallIndex: 0,
+      pendingExecs: [],
+      outputTokens: 0,
+      totalTokens: 0,
+      turnEnded: false,
+    };
+    const frames: Uint8Array[] = [];
+    const parked: (string | undefined)[] = [];
+
+    const progress = processServerMessage(
+      message,
+      new Map(),
+      [],
+      (frame) => frames.push(frame),
+      state,
+      () => {},
+      () => {},
+      undefined,
+      (execCase) => parked.push(execCase),
+    );
+
+    expect(progress).toBe("none");
+    expect(parked).toHaveLength(1);
+    expect(frames).toHaveLength(1);
+    const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
+    expect(answer.message.case).toBe("execClientControlMessage");
+    const control = answer.message.value as ExecClientControlMessage;
+    expect(control.message.case).toBe("throw");
+    expect((control.message.value as ExecClientThrow).id).toBe(7);
   });
 
   it("evicts the oldest active blob instead of failing the write at the entry bound", () => {
@@ -116,22 +158,22 @@ describe("idle progress classification", () => {
         () => {},
         () => {},
       ),
-    ).toBe(true);
+    ).toBe("work");
     expect(frames).toHaveLength(1);
     expect(store.size).toBe(MAX_ACTIVE_BLOB_ENTRIES);
     expect(store.has("0000")).toBe(false);
     expect(store.has("ffff")).toBe(true);
   });
 
-  it("treats tokenDelta and toolCallCompleted as watchdog progress", () => {
-    expect(interactionUpdateCountsAsProgress("tokenDelta")).toBe(true);
-    expect(interactionUpdateCountsAsProgress("toolCallCompleted")).toBe(true);
-    expect(interactionUpdateCountsAsProgress("heartbeat")).toBe(true);
-    expect(interactionUpdateCountsAsProgress("thinkingCompleted")).toBe(true);
-    expect(interactionUpdateCountsAsProgress("toolCallStarted")).toBe(true);
+  it("separates real work from a heartbeat that only proves the socket", () => {
+    expect(interactionUpdateProgress("tokenDelta")).toBe("work");
+    expect(interactionUpdateProgress("toolCallCompleted")).toBe("work");
+    expect(interactionUpdateProgress("thinkingCompleted")).toBe("work");
+    expect(interactionUpdateProgress("toolCallStarted")).toBe("work");
+    expect(interactionUpdateProgress("heartbeat")).toBe("liveness");
   });
 
-  it("resets the watchdog for liveness updates the dispatcher receives", () => {
+  it("classifies the liveness updates the dispatcher receives", () => {
     const liveness = [
       { case: "heartbeat" as const, value: create(HeartbeatUpdateSchema, {}) },
       { case: "toolCallStarted" as const, value: create(ToolCallStartedUpdateSchema, {}) },
@@ -151,7 +193,7 @@ describe("idle progress classification", () => {
           value: create(InteractionUpdateSchema, { message }),
         },
       });
-      const madeProgress = processServerMessage(
+      const progress = processServerMessage(
         serverMessage,
         new Map(),
         [],
@@ -160,15 +202,18 @@ describe("idle progress classification", () => {
         () => {},
         () => {},
       );
-      expect([message.case, madeProgress]).toEqual([message.case, true]);
+      expect([message.case, progress]).toEqual([
+        message.case,
+        message.case === "heartbeat" ? "liveness" : "work",
+      ]);
     }
   });
 
   it("requires non-empty text for text/thinking deltas", () => {
-    expect(interactionUpdateCountsAsProgress("textDelta", true)).toBe(true);
-    expect(interactionUpdateCountsAsProgress("textDelta", false)).toBe(false);
-    expect(interactionUpdateCountsAsProgress("thinkingDelta", true)).toBe(true);
-    expect(interactionUpdateCountsAsProgress("thinkingDelta", false)).toBe(false);
+    expect(interactionUpdateProgress("textDelta", true)).toBe("work");
+    expect(interactionUpdateProgress("textDelta", false)).toBe("none");
+    expect(interactionUpdateProgress("thinkingDelta", true)).toBe("work");
+    expect(interactionUpdateProgress("thinkingDelta", false)).toBe("none");
   });
 
   it("blocks blind restarts once user-visible content was streamed", () => {
@@ -225,6 +270,21 @@ describe("disabled idle watchdog", () => {
 });
 
 describe("stream idle watchdog", () => {
+  it("re-arms on a shorter deadline once a park shortens it", async () => {
+    let fired = 0;
+    const watchdog = __testInternals.createStreamIdleWatchdog({
+      timeoutMs: 10_000,
+      onTimeout: () => {
+        fired += 1;
+      },
+    });
+    watchdog.start();
+    watchdog.setTimeoutMs(30);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    watchdog.clear();
+    expect(fired).toBe(1);
+  });
+
   it("fires after the configured timeout when never reset", async () => {
     let fired = 0;
     const watchdog = __testInternals.createStreamIdleWatchdog({
