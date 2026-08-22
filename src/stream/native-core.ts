@@ -142,8 +142,7 @@ import {
   canBlindIdleRestart,
   canRecoverAfterTransportLoss,
   createStreamIdleWatchdog,
-  DEFAULT_STREAM_PARK_TIMEOUT_MS,
-  interactionUpdateProgress,
+  interactionUpdateCountsAsProgress,
   resolveH2ConnectTimeoutMs,
   resolveH2IdleTimeoutMs,
   resolveMidPauseRebuildMaxAgeMs,
@@ -154,7 +153,7 @@ import {
 export {
   canBlindIdleRestart,
   canRecoverAfterTransportLoss,
-  interactionUpdateProgress,
+  interactionUpdateCountsAsProgress,
   resolveActiveBridgeTtlMs,
   resolveH2ConnectTimeoutMs,
   resolveH2IdleTimeoutMs,
@@ -267,7 +266,7 @@ export const __testInternals = {
   discardStaleCheckpointIfNeeded,
   fingerprintCompletedTurns,
   getOrHydrateConversation,
-  interactionUpdateProgress,
+  interactionUpdateCountsAsProgress,
   redactForDebug,
   resolveH2ConnectTimeoutMs,
   resolveH2IdleTimeoutMs,
@@ -910,14 +909,6 @@ function writeNativeStream(
   // rest, so the pause is deferred until the whole chunk has been parsed.
   let pauseRequested = false;
   let cachedHistoryFingerprint: string | undefined;
-  // An exec Cursor asked for and we could not answer. The run is waiting on a reply
-  // it will never recognize, so heartbeats stop counting as progress and the watchdog
-  // switches to the shorter park deadline until real work resumes.
-  let parkedExecCase: string | undefined;
-  // A park deadline can only be shorter than the silence deadline, and an explicitly
-  // disabled watchdog stays disabled.
-  const parkTimeoutMs =
-    streamIdleTimeoutMs <= 0 ? 0 : Math.min(streamIdleTimeoutMs, DEFAULT_STREAM_PARK_TIMEOUT_MS);
   // Completed turns are fixed for the life of a stream, so this is hashed at most once.
   const historyFingerprint = () =>
     (cachedHistoryFingerprint ??= fingerprintCompletedTurns(completedTurns));
@@ -948,9 +939,9 @@ function writeNativeStream(
         hasCheckpoint: !!checkpointRef.current,
       });
       setLastIdleTimeout({
-        timeoutMs: parkedExecCase === undefined ? streamIdleTimeoutMs : parkTimeoutMs,
+        timeoutMs: streamIdleTimeoutMs,
         attempt,
-        event: parkedExecCase === undefined ? "idle_timeout" : "park_timeout",
+        event: "idle_timeout",
       });
       persistAbortedConversationState(
         convKey,
@@ -962,13 +953,6 @@ function writeNativeStream(
       );
       cleanupBridge(bridge, heartbeatTimer, bridgeKey);
       options?.signal?.removeEventListener("abort", abort);
-
-      // An unanswered exec is a schema gap, not silence. Retrying the same
-      // request re-issues the exec we still cannot decode.
-      if (parkedExecCase !== undefined) {
-        writer.error(formatStreamParkMessage(parkedExecCase, parkTimeoutMs), "error", state);
-        return;
-      }
 
       // Blind restart is only safe with zero streamed content. Checkpoint
       // continuation is safe even after partial text: Cursor resumes server
@@ -1162,7 +1146,7 @@ function writeNativeStream(
     (messageBytes) => {
       try {
         const serverMessage = fromBinary(AgentServerMessageSchema, messageBytes);
-        const progress = processServerMessage(
+        const madeProgress = processServerMessage(
           serverMessage,
           blobStore,
           mcpTools,
@@ -1240,20 +1224,8 @@ function writeNativeStream(
             checkpointRef.current = checkpointBytes;
             debugLog("native.stream.checkpoint_buffered", { requestId, convKey, checkpointBytes });
           },
-          (execCase) => {
-            parkedExecCase = execCase ?? "unknown";
-            debugLog("native.stream.exec_park", { requestId, bridgeKey, convKey, execCase });
-            idleWatchdog.setTimeoutMs(parkTimeoutMs);
-            idleWatchdog.reset();
-          },
         );
-        if (progress === "work") {
-          if (parkedExecCase !== undefined) {
-            parkedExecCase = undefined;
-            idleWatchdog.setTimeoutMs(streamIdleTimeoutMs);
-          }
-          idleWatchdog.reset();
-        } else if (progress === "liveness" && parkedExecCase === undefined) {
+        if (madeProgress) {
           idleWatchdog.reset();
         }
       } catch (err) {
@@ -1910,14 +1882,6 @@ function formatStreamIdleTimeoutMessage(
   const tunePart =
     " Tune PI_CURSOR_STREAM_IDLE_TIMEOUT_MS / PI_CURSOR_RESUME_IDLE_TIMEOUT_MS if long reasoning turns are expected.";
   return `${base}${retryPart}.${partialPart}${tunePart}`;
-}
-
-function formatStreamParkMessage(execCase: string, timeoutMs: number): string {
-  return (
-    `Cursor parked the turn on exec case "${execCase}", which this build cannot answer ` +
-    `(agent.proto is behind Cursor's wire protocol). The exec was failed with a throw and the ` +
-    `run still did no work for ${timeoutMs}ms. Run /cursor.doctor for the recorded drift signal.`
-  );
 }
 
 function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void {

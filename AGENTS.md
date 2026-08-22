@@ -148,14 +148,14 @@ src/
 
 ## 5. Environment Variables Reference
 
-| Variable                                   | Description                                                                                                                                                          |
-| :----------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CURSOR_ACCESS_TOKEN`                      | Static access token override for Cursor API calls                                                                                                                    |
-| `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | Base URL override for Agent Connect RPC (default: `https://agentn.us.api5.cursor.sh`)                                                                                |
-| `PI_CURSOR_SYSTEM_CREDENTIALS`             | Set to `0` or `false` to disable Keychain / IDE DB credential harvesting                                                                                             |
-| `PI_CURSOR_CLIENT_VERSION`                 | Pin custom `x-cursor-client-version` header sent by `h2-bridge.mjs`                                                                                                  |
-| `PI_CURSOR_PROVIDER_DEBUG`                 | Set to `1` or `true` to enable verbose debug logging to temp file                                                                                                    |
-| `PI_CURSOR_RAW_MODELS`                     | Set to `1` or `true` to disable reasoning effort suffix collapsing in model picker                                                                                   |
-| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables). Heartbeats do not reset it while an exec is unanswered; that path uses a 45s park deadline. |
-| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                                                                                                  |
-| `PI_CURSOR_PROMPT_HISTORY`                 | Set to `0` or `false` to stop publishing system prompt + history as prompt messages                                                                                  |
+| Variable                                   | Description                                                                           |
+| :----------------------------------------- | :------------------------------------------------------------------------------------ |
+| `CURSOR_ACCESS_TOKEN`                      | Static access token override for Cursor API calls                                     |
+| `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | Base URL override for Agent Connect RPC (default: `https://agentn.us.api5.cursor.sh`) |
+| `PI_CURSOR_SYSTEM_CREDENTIALS`             | Set to `0` or `false` to disable Keychain / IDE DB credential harvesting              |
+| `PI_CURSOR_CLIENT_VERSION`                 | Pin custom `x-cursor-client-version` header sent by `h2-bridge.mjs`                   |
+| `PI_CURSOR_PROVIDER_DEBUG`                 | Set to `1` or `true` to enable verbose debug logging to temp file                     |
+| `PI_CURSOR_RAW_MODELS`                     | Set to `1` or `true` to disable reasoning effort suffix collapsing in model picker    |
+| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables)               |
+| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                   |
+| `PI_CURSOR_PROMPT_HISTORY`                 | Set to `0` or `false` to stop publishing system prompt + history as prompt messages   |
