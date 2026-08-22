@@ -1,4 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { fromBinary } from "@bufbuild/protobuf";
+import {
+  AgentClientMessageSchema,
+  type ExecClientControlMessage,
+  type ExecClientThrow,
+} from "../src/proto/agent_pb.js";
 import {
   MAX_MCP_TOOL_RESULT_BYTES,
   MAX_MCP_TOOL_TEXT_BYTES,
@@ -160,18 +166,33 @@ describe("native Cursor exec steering", () => {
     );
   });
 
-  it("does not invent a reply for an unknown native exec", () => {
+  it("throws an unknown native exec instead of inventing a result or parking", () => {
     const frames: Uint8Array[] = [];
     const handled = serverMessageInternals.handleExecMessageInner(
-      { message: { case: "futureDestructiveArgs", value: {} } } as never,
+      { id: 12, execId: "exec-12", message: { case: "futureDestructiveArgs", value: {} } } as never,
       [],
       (frame: Uint8Array) => frames.push(frame),
       () => {
         throw new Error("should not execute");
       },
     );
+    // Unhandled: no result was fabricated for a case whose semantics are unknown.
     expect(handled).toBe(false);
-    expect(frames).toHaveLength(0);
+    // Answered anyway: ExecClientThrow is keyed by exec id, so Cursor stops waiting.
+    expect(frames).toHaveLength(1);
+    const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
+    expect(answer.message.case).toBe("execClientControlMessage");
+    const control = answer.message.value as ExecClientControlMessage;
+    expect(control.message.case).toBe("throw");
+    expect((control.message.value as ExecClientThrow).id).toBe(12);
+  });
+
+  it("reports the field numbers of an exec our schema cannot decode", () => {
+    expect(
+      serverMessageInternals.describeUnknownFields({
+        $unknown: [{ no: 28, wireType: 2, data: new Uint8Array(9) }],
+      }),
+    ).toBe("28:wt2:9b");
   });
 });
 
