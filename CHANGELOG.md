@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.27] - 2026-08-22
+
+### Fixed
+
+- **An undecodable Cursor exec no longer hangs the turn forever.** When `agent.proto` has no branch for an `ExecServerMessage`, the provider logged `UNHANDLED exec case` and sent nothing, so Cursor waited on that exec id. Heartbeats counted as idle-watchdog progress, so the 3-minute silence timer never fired (observed: 90 minutes parked on `grok-4.6`). Unknown execs are now answered with `ExecClientThrow` (keyed by exec id, not a fabricated result), heartbeats are treated as socket liveness rather than turn progress once parked, and the watchdog uses a 45s park deadline. Retry is skipped for this path — the same unknown exec would just be re-issued. Ports [#13](https://github.com/Rahularya01/pi-cursor/pull/13).
+
 ## [1.4.26] - 2026-08-21
 
 ### Fixed
