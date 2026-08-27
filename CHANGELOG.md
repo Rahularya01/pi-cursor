@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.28] - 2026-08-27
+
+### Security
+
+- Republish from restored `main` after an unauthorized force-push on 2026-08-27 rewrote this repository's default branch. npm `1.4.27` was published on 2026-08-22, before that rewrite. Install from npm or this tag, not from a clone taken during the incident.
+
 ## [1.4.27] - 2026-08-22
 
 ### Fixed
