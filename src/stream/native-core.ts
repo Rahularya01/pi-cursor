@@ -82,7 +82,6 @@ export {
 import {
   buildCursorRequest,
   buildMcpSuccessContent,
-  buildMcpToolDefinitions,
   isIdentityConversationalTurn,
   isTrivialConversationalTurn,
   normalizeToolResultForTransport,
@@ -91,13 +90,13 @@ import {
 export {
   buildCursorRequest,
   isIdentityConversationalTurn,
-  isSlimToolsEnabled,
   isTrivialConversationalTurn,
-  slimOpenAIToolsForCursor,
   summarizeRequestSize,
   type BuildCursorRequestOptions,
 } from "./request-build.js";
 import { hashSystemPrompt } from "./root-prompt.js";
+export { isSlimToolsEnabled, slimOpenAIToolsForCursor } from "./tool-schema.js";
+import { buildMcpToolDefinitions } from "./tool-schema.js";
 export {
   buildRootPromptMessages,
   hashSystemPrompt,
