@@ -533,6 +533,8 @@ message ConversationStateStructure {
   repeated string read_paths = 18;
   bytes extra_state = 21;
   string client_name = 22;
+  optional uint64 conversation_started_timestamp_ms = 26;
+  optional string conversation_started_time_zone = 27;
 }
 
 message ThinkingDetails {
@@ -698,6 +700,7 @@ message InteractionUpdate {
     StepStartedUpdate step_started = 16;
     StepCompletedUpdate step_completed = 17;
   }
+  optional uint64 message_started_at_ms = 25;
 }
 
 message InteractionQuery {
@@ -773,6 +776,14 @@ message AgentClientMessage {
   }
 }
 
+message TtftBreakdown {
+  double server_first_token_ms = 1;
+  double pre_stream_setup_ms = 2;
+  double wait_for_first_event_ms = 3;
+  optional double provider_ttft_ms = 4;
+  double slow_pool_wait_ms = 5;
+}
+
 message AgentServerMessage {
   oneof message {
     InteractionUpdate interaction_update = 1;
@@ -782,6 +793,7 @@ message AgentServerMessage {
     KvServerMessage kv_server_message = 4;
     InteractionQuery interaction_query = 7;
   }
+  TtftBreakdown ttft_breakdown = 8;
 }
 
 message NameAgentRequest {
@@ -1464,6 +1476,7 @@ message ExecServerMessage {
   uint32 id = 1;
   string exec_id = 15;
   optional SpanContext span_context = 19;
+  optional bool accept_hook_additional_contexts = 55;
   oneof message {
     ShellArgs shell_args = 2;
     WriteArgs write_args = 3;

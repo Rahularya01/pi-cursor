@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Cursor 3.18.9 additive `agent.v1` fields no longer report as wire-drift.** The desktop client now sends metadata that 1.4.28's schema lacked: `InteractionUpdate.message_started_at_ms` (field 25), `ExecServerMessage.accept_hook_additional_contexts` (field 55), `ConversationStateStructure` start timestamp/timezone (fields 26–27), and `AgentServerMessage.ttft_breakdown` (field 8, not a oneof arm). These are envelope fields, not new exec cases. Recovered from Cursor 3.18.9 (`2ba48ff`).
+
 ## [1.4.28] - 2026-08-27
 
 ### Security
