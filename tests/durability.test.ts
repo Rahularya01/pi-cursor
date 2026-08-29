@@ -2,7 +2,7 @@
  * Failures that used to be permanent: state that, once bad, broke every later turn of a
  * conversation rather than just the turn that produced it.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { parseMessages } from "../src/stream/message-parsing.js";
 import {
   discardStaleCheckpointIfNeeded,

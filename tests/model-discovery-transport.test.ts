@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 
 import type { BridgeHandle } from "../src/client/bridge.js";
 import { setBridgeFactoryForTests } from "../src/stream/bridge-session.js";
@@ -76,7 +76,7 @@ describe("model discovery child-process transport", () => {
         signal: controller.signal,
       }),
     ).resolves.toMatchObject({ exitCode: 1, timedOut: true });
-    expect(harness.kill).toHaveBeenCalledOnce();
+    expect(harness.kill).toHaveBeenCalledTimes(1);
     expect(harness.writes).toHaveLength(0);
   });
 
@@ -93,6 +93,6 @@ describe("model discovery child-process transport", () => {
         timeoutMs: 0,
       }),
     ).resolves.toMatchObject({ exitCode: 1, timedOut: false });
-    expect(harness.kill).toHaveBeenCalledOnce();
+    expect(harness.kill).toHaveBeenCalledTimes(1);
   });
 });

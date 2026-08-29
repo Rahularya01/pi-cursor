@@ -15,7 +15,7 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

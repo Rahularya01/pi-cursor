@@ -28,11 +28,11 @@ or CLI, it just works — no setup beyond installing the package.
 
 ## Requirements
 
-|                             |                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------- |
-| **Pi Coding Agent / Pi AI** | version `0.80.0` or later                                                             |
-| **Node.js**                 | version `22.19.0` or later (needed for native HTTP/2 streaming and credential lookup) |
-| **A Cursor account**        | with model access — signed in via the Cursor app, Cursor CLI, or browser login below  |
+|                             |                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| **Pi Coding Agent / Pi AI** | version `0.80.0` or later                                                            |
+| **Bun**                     | version `1.4.0` or later — the only supported runtime                                |
+| **A Cursor account**        | with model access — signed in via the Cursor app, Cursor CLI, or browser login below |
 
 ## Install
 
@@ -175,11 +175,11 @@ Usage statistics are fetched directly from Cursor's native Connect period usage 
 
 ```text
 Pi Coding Agent  →  streamSimple (cursor-native)
-                      → h2-bridge.mjs (Node.js HTTP/2 child process)
+                      → h2-session.ts (in-process HTTP/2 client)
                       → agent.v1.AgentService/Run (Connect + Protobuf over HTTP/2)
 ```
 
-- **Transport:** Native Connect/protobuf streaming over HTTP/2 via `h2-bridge.mjs`.
+- **Transport:** Native Connect/protobuf streaming over HTTP/2, in-process via `h2-session.ts` — no subprocess.
 - **Infrastructure Context Normalization:** Side-channel user messages (context-mode routing, post-compaction `<session_state>`, and explicit `[pi-lens automated … not a user request]` notices) are safely normalized into the system prompt so Cursor models stay focused on your primary task.
 - **Context-Efficient Tools:** MCP schemas are compacted without changing callable constraints, and exact conversational-only turns (`hi`, `thanks`, etc.) omit tools entirely. Actionable prompts always retain tools.
 - **Cross-Platform:** Tested and fully compatible with macOS, Linux, Windows, and WSL.
@@ -204,7 +204,7 @@ for tuning timeouts, debugging, and edge-case overrides.
 | `CURSOR_USAGE_SESSION_TOKEN`               | Optional `WorkosCursorSessionToken` fallback cookie for `/cursor.usage`.                                                                                                                                                                                                                                                                                                                                             |
 | `PI_OFFLINE`                               | Skip live model discovery entirely; always use the bundled fallback catalog.                                                                                                                                                                                                                                                                                                                                         |
 | `PI_CURSOR_CACHE_DIR`                      | Where the model catalog and refresh back-off are cached (default: `$XDG_CACHE_HOME/pi-cursor` or `~/.cache/pi-cursor`). Delete it to force a full rediscovery.                                                                                                                                                                                                                                                       |
-| `PI_CURSOR_UNARY_BRIDGE`                   | `1` forces unary RPCs (model discovery) through the h2-bridge subprocess instead of the in-process HTTP/2 client. Diagnostic escape hatch.                                                                                                                                                                                                                                                                           |
+| `PI_CURSOR_UNARY_BRIDGE`                   | `1` forces unary RPCs (model discovery) through the general-purpose bridge transport instead of the dedicated one-shot in-process HTTP/2 client. Diagnostic escape hatch.                                                                                                                                                                                                                                            |
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Silence safety net: ms with **no upstream work** before recover/retry/error. **Default `180000` (3 min)**; `0` disables (turns run unbounded). Text/thinking/token deltas, tool-call events, and answered execs/queries reset it; heartbeats only prove the socket and do not hide an unanswered exec. It is paused during tool execution. On timeout, recovery continues from checkpoint even after partial output. |
 | `PI_CURSOR_RESUME_IDLE_TIMEOUT_MS`         | Same silence safety net after tool-result resume. **Default `180000` (3 min)**; `0` disables.                                                                                                                                                                                                                                                                                                                        |
 | `PI_CURSOR_STREAM_IDLE_MAX_RETRIES`        | Auto-recovery attempts after silence/transport loss. Blind restart is skipped once text/thinking streamed unless a checkpoint is available for continuation. **Default `5`**; `0` disables.                                                                                                                                                                                                                          |
@@ -258,12 +258,14 @@ catalog bundled in `src/models/catalog.json` on a first-ever launch. Live discov
 through pi's `refreshModels` hook — off the critical path, in the background, and again
 whenever `/model` is opened — then persists its result for the next launch.
 
-Unary RPCs (both discovery calls) use an in-process `node:http2` client. The h2-bridge
-subprocess is still used for the bidirectional chat stream, where Bun's `node:http2` is
-unusable, and remains the automatic fallback if the in-process client fails.
+All Cursor HTTP/2 transport runs in-process via `node:http2`, which Bun implements natively — no
+subprocess is spawned. Unary RPCs (both discovery calls) use a dedicated one-shot client
+(`h2-unary.ts`); the bidirectional chat stream uses a persistent session (`h2-session.ts`) that
+survives across turns. Unary calls fall back to the general-purpose bridge transport if the
+one-shot client fails.
 
 `src/proto/agent_pb.ts` is a large generated Connect/protobuf surface used by the wire
-layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
+layer. Never hand-edit it — regenerate with `bun run proto:gen` (see
 [`proto/README.md`](proto/README.md)) when Cursor changes the agent schema.
 
 </details>
@@ -273,27 +275,47 @@ layer. Never hand-edit it — regenerate with `npm run proto:gen` (see
 - **`No API provider registered for api: cursor-native`:** Update to the latest `pi-cursor` (`pi update npm:@rahularya01/pi-cursor`) and restart Pi (or `/reload`). This means the Agent tried to stream via Pi's global `streamSimple` dispatcher before the Cursor transport was registered there. Current builds register `cursor-native` on that registry during extension load.
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
-- **Wire-protocol drift:** Cursor can change `agent.v1` at any time. Unrecognized server messages and unknown protobuf fields are no longer skipped silently — they are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` under `wireDrift`. `wireDriftStranding=yes` means an unanswered message could have parked the turn, which is the difference between "our schema is a bit behind" and "this is why it hung". Run `CURSOR_ACCESS_TOKEN=... npm run smoke:wire` to check the handshake and schema against the live endpoint without starting a chat turn, then see [`proto/README.md`](proto/README.md) to resync the schema.
+- **Wire-protocol drift:** Cursor can change `agent.v1` at any time. Unrecognized server messages and unknown protobuf fields are no longer skipped silently — they are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` under `wireDrift`. `wireDriftStranding=yes` means an unanswered message could have parked the turn, which is the difference between "our schema is a bit behind" and "this is why it hung". Run `CURSOR_ACCESS_TOKEN=... bun run smoke:wire` to check the handshake and schema against the live endpoint without starting a chat turn, then see [`proto/README.md`](proto/README.md) to resync the schema.
 - **Stuck / dies after a few minutes of work:** Cursor `InteractionQuery` prompts are answered so the stream does not park. Web/search and unnamed proto fields are rejected (use Pi tools instead). Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
 - **WSL credential detection:** Set `USERPROFILE` or `USERNAME` so the Windows home directory is known, and ensure `/mnt/c/Users/<you>/AppData/...` is readable. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
 - **Slow startup:** Activation should be a few milliseconds. `/cursor.doctor` reports `catalogCache` (`none(using bundled fallback)` means every launch is starting cold — check that `catalogCacheDir` is writable) and `unaryTransport`. A stale Cursor CLI keychain entry no longer blocks startup: a refresh token that fails is remembered for 10 minutes so it is not retried on the next launch, and any valid locally stored token is always preferred over a network exchange.
 - **Model list looks stale:** It is the last successfully discovered catalog. Open `/model` to trigger a background refresh, or delete `PI_CURSOR_CACHE_DIR` to force full rediscovery.
 
+## Runtime
+
+`pi-cursor` targets **Bun only** — no Node.js binary is required or spawned at any point. All
+Cursor HTTP/2 transport (the bidirectional chat stream and the unary discovery RPCs) runs
+in-process via `node:http2`, which Bun implements natively.
+
+Earlier versions proxied the chat stream through a short-lived Node subprocess, because Bun's
+`node:http2` client was believed unable to carry a bidirectional Connect stream reliably. That
+subprocess is gone: [oh-my-pi](https://github.com/can1357/oh-my-pi), a Bun-hosted fork of Pi that
+talks to the same Cursor RPC, demonstrates the same bidirectional pattern working fine in-process
+under Bun. Its only documented Bun/H2 caveat is ALPN negotiation failing behind an
+ALPN-stripping TLS-intercepting proxy (e.g. Zscaler) — an environment issue, not a
+bidirectional-streaming bug — and `/cursor.doctor`'s `lastStderr`/lifecycle log will name that
+explicitly if it happens.
+
+`/cursor.doctor` reports the runtime as `runtime=bun <version>`.
+
 ## Development
 
+The toolchain is Bun — package manager, script runner, test runner, and bundler. `tsc` still does
+the typechecking, and ESLint and Prettier are unchanged.
+
 ```bash
-npm install
-npm run check
+bun install
+bun run check
 ```
 
-`npm run check` runs TypeScript typechecking, ESLint, Prettier format verification, security checks, the protobuf staleness check, and unit tests.
+`bun run check` runs TypeScript typechecking, ESLint, Prettier format verification, security checks, the protobuf staleness check, and unit tests.
 
 | Script                | Purpose                                                                           |
 | --------------------- | --------------------------------------------------------------------------------- |
-| `npm run proto:gen`   | Regenerate `src/proto/agent_pb.ts` from `proto/agent.proto`.                      |
-| `npm run proto:sync`  | Rebuild `proto/agent.proto` from an updated generated file obtained upstream.     |
-| `npm run proto:check` | Fail if the generated protobuf is stale or hand-edited (part of `npm run check`). |
+| `bun run proto:gen`   | Regenerate `src/proto/agent_pb.ts` from `proto/agent.proto`.                      |
+| `bun run proto:sync`  | Rebuild `proto/agent.proto` from an updated generated file obtained upstream.     |
+| `bun run proto:check` | Fail if the generated protobuf is stale or hand-edited (part of `bun run check`). |
 
 ## Attributions
 

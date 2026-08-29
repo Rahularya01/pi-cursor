@@ -3,8 +3,6 @@ export {
   createConnectFrameParser,
   frameConnectMessage,
   parseConnectEndStream,
-  lpEncode,
-  STREAM_DONE_MAGIC,
   type BridgeHandle,
   type BridgeFactory,
   type SpawnBridgeOptions,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { mkdirSync, mkdtempSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,7 +79,7 @@ describe("transport loss recovery policy", () => {
 describe("transport failure classification", () => {
   it("treats GOAWAY / exit 2 as retryable", () => {
     const failure = classifyBridgeExit({ exitCode: 2, stderr: "GOAWAY errorCode=0" });
-    expect(failure.kind).toBe("goaway");
+    expect<string>(failure.kind).toBe("goaway");
     expect(failure.retryable).toBe(true);
     expect(formatTransportFailure(failure)).toMatch(/GOAWAY/i);
   });
@@ -89,7 +89,7 @@ describe("transport failure classification", () => {
       exitCode: 1,
       stderr: "Cursor HTTP 401: unauthorized token expired",
     });
-    expect(failure.kind).toBe("authentication");
+    expect<string>(failure.kind).toBe("authentication");
     expect(failure.retryable).toBe(true);
     expect(failure.refreshAuth).toBe(true);
   });
@@ -99,7 +99,7 @@ describe("transport failure classification", () => {
       exitCode: 1,
       stderr: "stream error: ECONNRESET",
     });
-    expect(failure.kind).toBe("connection_reset");
+    expect<string>(failure.kind).toBe("connection_reset");
     expect(failure.retryable).toBe(true);
   });
 

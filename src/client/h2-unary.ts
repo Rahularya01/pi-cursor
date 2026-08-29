@@ -1,12 +1,9 @@
 /**
  * In-process HTTP/2 transport for Cursor's unary Connect RPCs.
  *
- * Streaming still goes through the h2-bridge child process — Bun's node:http2
- * is broken for the bidirectional case, which is why that bridge exists. Unary
- * calls have no such constraint on Node, and paying a process spawn plus a
- * fresh TLS/H2 handshake (and the bridge's 100ms stdout flush before exit) for
- * a single request/response round-trip cost roughly 1.5s across the two model
- * discovery calls.
+ * Streaming uses the same in-process approach now (see `h2-session.ts`); this module predates
+ * that and stays separate since unary calls have a genuinely simpler flow — one write, then read
+ * to completion, no persistent-session reuse or GOAWAY-driven retry semantics to manage.
  *
  * `fetch` is not an option: both api2.cursor.sh and the agent hosts speak HTTP/2
  * only, and undici rejects the h2 preface with an HTTPParserError.
@@ -36,17 +33,15 @@ export interface UnaryH2Result {
 /** True when node:http2 client sessions are usable in this runtime. */
 export function supportsInProcessH2(): boolean {
   if (process.env.PI_CURSOR_UNARY_BRIDGE === "1") return false;
-  // Bun's node:http2 client cannot carry these requests reliably.
-  if (typeof (globalThis as { Bun?: unknown }).Bun !== "undefined") return false;
   return typeof http2?.connect === "function";
 }
 
 /**
  * Perform one unary Connect RPC over an in-process HTTP/2 session.
  *
- * Rejects on transport failure so callers can fall back to the child-process
- * bridge; a non-2xx response resolves normally with the status for the caller
- * to interpret.
+ * Rejects on transport failure so callers can fall back to the general-purpose
+ * bridge transport (h2-session.ts); a non-2xx response resolves normally with
+ * the status for the caller to interpret.
  */
 export function callUnaryOverH2(options: UnaryH2Options): Promise<UnaryH2Result> {
   const origin = options.url ?? CURSOR_API_URL;

@@ -9,7 +9,7 @@ Unlike OpenAI or Anthropic API providers that use standard REST/SSE endpoints, C
 ```text
 Pi Coding Agent (Extension)
     ↓ (streamSimple)
-h2-bridge.mjs (Child Process)
+h2-session.ts (in-process HTTP/2 client)
     ↓ (HTTP/2 POST with Connect framing & Protobuf payloads)
 https://agentn.us.api5.cursor.sh / https://api2.cursor.sh
 ```
@@ -53,9 +53,9 @@ To prevent Cursor models from being derailed by side-channel injections:
 2. `normalizeMessagesForCursor()` folds side-channel messages into the `system` prompt framed inside `<provider_context source="context-mode">`.
 3. The user's actual prompt is preserved as `userText` for the active turn.
 
-## Bridge Architecture (`h2-bridge.mjs`)
+## Transport Architecture (`h2-session.ts`)
 
-Because Node.js HTTP/2 client sessions require persistent stream handling, `pi-cursor` spawns a lightweight child process (`h2-bridge.mjs`) to manage the HTTP/2 connection.
+`pi-cursor` opens the HTTP/2 connection in-process via `node:http2`, which Bun implements natively — no subprocess is spawned. `h2-session.ts` owns a persistent `http2.ClientHttp2Session` that survives across turns, reopening a Connect stream on it (`openStream()`) instead of paying a fresh TLS/H2 handshake each time.
 
 - **Request:** Serialized `AgentClientMessage` binary frame.
 - **Headers:** `x-cursor-client-version` (default: `cli-2026.05.01-eea359f`), `authorization: Bearer <token>`, `connect-protocol-version: 1`.
@@ -79,5 +79,8 @@ Silent retries (`PI_CURSOR_STREAM_IDLE_MAX_RETRIES`, default `5`) recover from s
 
 Adapted from MIT community research and lineage docs:
 
-- [ephraimduncan/opencode-cursor](https://github.com/ephraimduncan/opencode-cursor)
 - [@pi-stef/cursor](https://www.npmjs.com/package/@pi-stef/cursor)
+
+The in-process HTTP/2 transport (`h2-session.ts`) follows the same bidirectional-streaming pattern
+demonstrated by [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)'s
+`packages/ai/src/providers/cursor.ts`.

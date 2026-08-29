@@ -1,0 +1,28 @@
+# Bun runtime + test-runner configuration.
+#
+# Replaces vitest.config.ts. Two deliberate differences from the vitest setup:
+#   - Bun has no branch-coverage metric, so the old `branches: 60` threshold has
+#     no equivalent here; line/function/statement thresholds are carried over.
+#   - The per-test timeout lives on the `test` script (--timeout=15000) because
+#     bunfig has no [test] timeout key.
+
+[install]
+# Fail rather than silently reaching for a different registry.
+registry = "https://registry.npmjs.org"
+exact = false
+
+[test]
+root = "tests"
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+# Mirrors vitest's coverage.exclude: generated protobuf bindings, barrel files,
+# and type-only modules are not meaningful coverage targets.
+coveragePathIgnorePatterns = [
+  "src/proto/**",
+  "src/**/index.ts",
+  "src/stream/types.ts",
+]
+
+
+

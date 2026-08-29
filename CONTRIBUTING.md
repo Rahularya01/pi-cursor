@@ -10,18 +10,22 @@ Thanks for improving `pi-cursor`.
 
 ## Development setup
 
+Requires [Bun](https://bun.com) >= 1.4.0 (package manager, script runner, test runner, bundler).
+No Node.js binary is needed — all HTTP/2 transport runs in-process via `node:http2`, which Bun
+implements natively.
+
 ```bash
-npm install
-npm run check
+bun install
+bun run check
 ```
 
-`npm run check` runs TypeScript, ESLint, Prettier, the repository security checks, the
+`bun run check` runs TypeScript, ESLint, Prettier, the repository security checks, the
 protobuf staleness check, and the unit tests. Run it before opening a pull request.
 
 ## Generated code
 
 `src/proto/agent_pb.ts` is generated from `proto/agent.proto` — never edit it by hand.
-Change the `.proto` and run `npm run proto:gen`; `npm run proto:check` fails the build if
+Change the `.proto` and run `bun run proto:gen`; `bun run proto:check` fails the build if
 the two drift apart. See [`proto/README.md`](proto/README.md), which also covers how to
 recover the `.proto` when you only have an updated generated file from upstream.
 
@@ -31,7 +35,7 @@ recover the `.proto` when you only have an updated generated file from upstream.
 2. Keep changes small and explain their user impact.
 3. Add or update tests when behavior changes.
 4. Update documentation when commands, authentication, configuration, or models change.
-5. Ensure `npm run check` passes.
+5. Ensure `bun run check` passes.
 
 Do not include credentials, access tokens, refresh tokens, OAuth client secrets, or private account data in commits, issues, pull requests, or logs.
 

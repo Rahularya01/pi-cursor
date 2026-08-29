@@ -11,7 +11,6 @@ import { getCursorAgentUrl, getCursorClientVersion } from "../stream/config.js";
 import { resolveSystemCredentialPolicy } from "../auth/consent.js";
 import { getLifecycleLogPath } from "../stream/debug-log.js";
 import { redactSecrets } from "../utils/security.js";
-import { supportsInProcessH2 } from "../client/h2-unary.js";
 import { formatCursorUsage, getCursorUsageSummary } from "../usage.js";
 import { ProviderConstant, type CredentialSource } from "../types/enums.js";
 import type { ProcessedModel } from "../models/processing.js";
@@ -134,7 +133,8 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
         `lifecycleLog=${getLifecycleLogPath()}`,
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
-        `unaryTransport=${supportsInProcessH2() ? "in-process-h2" : "bridge-subprocess"}`,
+        "unaryTransport=in-process-h2",
+        `runtime=bun ${process.versions.bun ?? "?"}`,
         "runtimeCli=not-used",
         "proxyPath=removed",
         "commands=/cursor.models /cursor.usage /cursor.doctor",

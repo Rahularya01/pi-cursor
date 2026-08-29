@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import { assertSafeCursorBaseUrl, redactSecrets } from "../src/utils/security.js";
 import { sanitizeForDebug } from "../src/stream/debug-log.js";

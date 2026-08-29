@@ -1,14 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { resolve as pathResolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { ConnectFlag } from "../types/enums.js";
+import { createInProcessBridge } from "./h2-session.js";
 
-const CURSOR_API_URL = "https://api2.cursor.sh";
 const CONNECT_END_STREAM_FLAG = ConnectFlag.EndStream;
 export const MAX_BRIDGE_MESSAGE_BYTES = 64 * 1024 * 1024;
 export const MAX_CONNECT_MESSAGE_BYTES = 64 * 1024 * 1024;
-const BRIDGE_PATH = pathResolve(dirname(fileURLToPath(import.meta.url)), "h2-bridge.mjs");
 
 export interface SpawnBridgeOptions {
   accessToken: string;
@@ -27,13 +22,17 @@ export interface SpawnBridgeOptions {
   idleTimeoutMs?: number;
 }
 
-/** Sentinel the persistent h2-bridge writes when a Connect stream ends but the process stays up. */
-export const STREAM_DONE_MAGIC = Buffer.from("PI_CURSOR_STREAM_DONE");
+/** Minimal shape a `BridgeHandle` needs for forceful teardown — no longer literally a child
+ *  process now that the transport runs in-process, but kept `.kill()`-shaped since every call
+ *  site only ever calls it and never inspects anything else. */
+export interface BridgeProcessHandle {
+  kill(): boolean;
+}
 
 export interface BridgeHandle {
-  proc: Pick<ChildProcess, "kill">;
+  proc: BridgeProcessHandle;
   readonly alive: boolean;
-  /** Trailing stderr from the child process (for diagnostics / recovery). */
+  /** Trailing transport diagnostics (HTTP/2 errors, GOAWAY, non-2xx bodies). */
   lastStderr(): string;
   write(data: Uint8Array): void;
   end(): void;
@@ -44,7 +43,7 @@ export interface BridgeHandle {
    * (unary / test) handles.
    */
   openStream?(accessToken: string): void;
-  /** Fires when a persistent child reports the current stream ended. */
+  /** Fires when a persistent bridge reports the current stream ended. */
   onStreamDone?(cb: () => void): void;
 }
 
@@ -52,23 +51,6 @@ export type BridgeFactory = (options: SpawnBridgeOptions) => BridgeHandle;
 export type BridgeDebugLog = (event: string, data?: Record<string, unknown>) => void;
 
 function noopDebugLog(): void {}
-
-type BridgeChildProcess = Pick<ChildProcess, "kill"> & {
-  on(event: string | symbol, listener: (...args: any[]) => void): unknown;
-  stdin?: NodeJS.WritableStream | null;
-  stdout?: NodeJS.ReadableStream | null;
-  stderr?: NodeJS.ReadableStream | null;
-};
-
-export function lpEncode(data: Uint8Array): Buffer {
-  if (data.byteLength > MAX_BRIDGE_MESSAGE_BYTES) {
-    throw new Error(`Bridge message exceeds ${MAX_BRIDGE_MESSAGE_BYTES} bytes`);
-  }
-  const buf = Buffer.alloc(4 + data.length);
-  buf.writeUInt32BE(data.length, 0);
-  buf.set(data, 4);
-  return buf;
-}
 
 /**
  * Accumulates incoming chunks for length-prefixed frame parsing without re-concatenating the
@@ -149,301 +131,22 @@ export function frameConnectMessage(data: Uint8Array, flags = 0): Buffer {
   return frame;
 }
 
+/**
+ * Opens a `BridgeHandle` for one Cursor Connect RPC (streaming or unary), backed directly by an
+ * in-process HTTP/2 session — see `h2-session.ts` for the transport implementation and why no
+ * subprocess is needed.
+ */
 export function spawnBridge(
   options: SpawnBridgeOptions,
   debugLog: BridgeDebugLog = noopDebugLog,
 ): BridgeHandle {
   debugLog("bridge.spawn", {
     rpcPath: options.rpcPath,
-    url: options.url ?? CURSOR_API_URL,
+    url: options.url,
     unary: options.unary ?? false,
-    cursorClientVersion: process.env.PI_CURSOR_CLIENT_VERSION || "cli-2026.05.01-eea359f",
   });
-  const proc = spawn(process.execPath, [BRIDGE_PATH], {
-    // Capture stderr so bridge deaths (HTTP/2 errors, panics) are diagnosable.
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  return createBridgeHandleForChild(proc, options, debugLog);
+  return createInProcessBridge(options, debugLog);
 }
-
-function createBridgeHandleForChild(
-  proc: BridgeChildProcess,
-  options: SpawnBridgeOptions,
-  debugLog: BridgeDebugLog = noopDebugLog,
-): BridgeHandle {
-  const stdin = proc.stdin;
-  const stdout = proc.stdout;
-  const stderr = proc.stderr;
-
-  const cbs = {
-    data: null as ((chunk: Buffer) => void) | null,
-    close: null as ((code: number) => void) | null,
-    streamDone: null as (() => void) | null,
-  };
-  const queuedData: Buffer[] = [];
-  let queuedDataBytes = 0;
-  let queuedStreamDone = false;
-
-  let stderrBuf = "";
-  let stderrTail = "";
-  stderr?.on?.("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf8");
-    stderrTail = `${stderrTail}${text}`.slice(-8_000);
-    stderrBuf += text;
-    if (stderrBuf.length > 8_000) stderrBuf = stderrBuf.slice(-8_000);
-    const lines = stderrBuf.split("\n");
-    // Keep incomplete trailing line in the buffer.
-    stderrBuf = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed) debugLog("bridge.stderr", { line: trimmed.slice(0, 500) });
-    }
-  });
-
-  let exited = false;
-  let exitCode = 1;
-  let stdinClosed = !stdin;
-  const markStdinClosed = (err?: unknown): void => {
-    stdinClosed = true;
-    if (err) {
-      debugLog("bridge.stdin_error", {
-        code:
-          typeof err === "object" && err !== null && "code" in err
-            ? String((err as { code?: unknown }).code)
-            : undefined,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  };
-  stdin?.on?.("error", markStdinClosed);
-  stdin?.on?.("close", () => markStdinClosed());
-  stdin?.on?.("finish", () => markStdinClosed());
-
-  const invokeClose = (): void => {
-    try {
-      cbs.close?.(exitCode);
-    } catch (error) {
-      debugLog("bridge.close_callback_error", {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-  const finalizeExit = (code: number): void => {
-    if (exited) return;
-    exited = true;
-    exitCode = code;
-    invokeClose();
-  };
-  const deliverData = (payload: Buffer): boolean => {
-    if (payload.equals(STREAM_DONE_MAGIC)) {
-      if (!cbs.streamDone) {
-        queuedStreamDone = true;
-        return true;
-      }
-      try {
-        cbs.streamDone();
-        return true;
-      } catch (error) {
-        debugLog("bridge.stream_done_callback_error", {
-          message: error instanceof Error ? error.message : String(error),
-        });
-        try {
-          proc.kill();
-        } catch {
-          // The process may already have exited.
-        }
-        finalizeExit(1);
-        return false;
-      }
-    }
-    if (!cbs.data) {
-      queuedDataBytes += payload.byteLength;
-      if (queuedDataBytes > MAX_BRIDGE_MESSAGE_BYTES) {
-        debugLog("bridge.prelistener_buffer_limit", { queuedDataBytes });
-        try {
-          proc.kill();
-        } catch {
-          // The process may already have exited.
-        }
-        finalizeExit(1);
-        return false;
-      }
-      queuedData.push(payload);
-      return true;
-    }
-    try {
-      cbs.data(payload);
-      return true;
-    } catch (error) {
-      debugLog("bridge.data_callback_error", {
-        message: error instanceof Error ? error.message : String(error),
-      });
-      try {
-        proc.kill();
-      } catch {
-        // The process may already have exited.
-      }
-      finalizeExit(1);
-      return false;
-    }
-  };
-
-  proc.on("error", (error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    stderrTail = `${stderrTail}\n[bridge process error] ${message}`.slice(-8_000);
-    markStdinClosed(error);
-    debugLog("bridge.process_error", {
-      code:
-        typeof error === "object" && error !== null && "code" in error
-          ? String((error as { code?: unknown }).code)
-          : undefined,
-      message,
-    });
-    finalizeExit(1);
-  });
-  stdout?.on?.("error", (error) => {
-    debugLog("bridge.stdout_error", {
-      message: error instanceof Error ? error.message : String(error),
-    });
-    try {
-      proc.kill();
-    } catch {
-      // The process may already have exited.
-    }
-    finalizeExit(1);
-  });
-  stderr?.on?.("error", (error) => {
-    debugLog("bridge.stderr_error", {
-      message: error instanceof Error ? error.message : String(error),
-    });
-  });
-
-  const safeWrite = (data: Uint8Array): void => {
-    if (!stdin || stdinClosed) return;
-    try {
-      const framed = lpEncode(data);
-      const queuedBytes = (stdin as NodeJS.WritableStream & { writableLength?: number })
-        .writableLength;
-      if ((queuedBytes ?? 0) + framed.byteLength > MAX_BRIDGE_MESSAGE_BYTES) {
-        markStdinClosed(new Error("Bridge stdin backpressure limit exceeded"));
-        proc.kill();
-        return;
-      }
-      stdin.write(framed);
-    } catch (err) {
-      markStdinClosed(err);
-    }
-  };
-
-  const safeEnd = (): void => {
-    if (!stdin || stdinClosed) return;
-    try {
-      stdin.end();
-      stdinClosed = true;
-    } catch (err) {
-      markStdinClosed(err);
-    }
-  };
-
-  const config = JSON.stringify({
-    accessToken: options.accessToken,
-    url: options.url ?? CURSOR_API_URL,
-    path: options.rpcPath,
-    unary: options.unary ?? false,
-    persistent: options.persistent === true,
-    connectTimeoutMs: options.connectTimeoutMs,
-    idleTimeoutMs: options.idleTimeoutMs,
-  });
-  safeWrite(new TextEncoder().encode(config));
-
-  const pending = new FrameAccumulator();
-  stdout?.on("data", (chunk: Buffer) => {
-    pending.push(chunk);
-    while (pending.length >= 4) {
-      const len = pending.peek(4).readUInt32BE(0);
-      if (len > MAX_BRIDGE_MESSAGE_BYTES) {
-        pending.reset();
-        proc.kill();
-        return;
-      }
-      if (pending.length < 4 + len) break;
-      pending.consume(4);
-      const payload = pending.consume(len);
-      if (!deliverData(Buffer.from(payload))) return;
-    }
-  });
-
-  proc.on("exit", (code) => {
-    const resolvedCode = code ?? 1;
-    debugLog("bridge.exit", { rpcPath: options.rpcPath, exitCode: resolvedCode });
-    finalizeExit(resolvedCode);
-  });
-
-  return {
-    proc,
-    get alive() {
-      return !exited;
-    },
-    lastStderr() {
-      return stderrTail.trim();
-    },
-    write(data: Uint8Array) {
-      safeWrite(data);
-    },
-    openStream(accessToken: string) {
-      safeWrite(
-        new TextEncoder().encode(
-          JSON.stringify({ cmd: "open", accessToken: accessToken || options.accessToken }),
-        ),
-      );
-    },
-    end() {
-      safeWrite(new Uint8Array(0));
-      safeEnd();
-    },
-    onData(cb: (chunk: Buffer) => void) {
-      cbs.data = cb;
-      while (queuedData.length > 0 && !exited) {
-        const payload = queuedData.shift()!;
-        queuedDataBytes -= payload.byteLength;
-        if (!deliverData(payload)) break;
-      }
-    },
-    onStreamDone(cb: () => void) {
-      cbs.streamDone = cb;
-      if (queuedStreamDone && !exited) {
-        queuedStreamDone = false;
-        try {
-          cb();
-        } catch (error) {
-          debugLog("bridge.stream_done_callback_error", {
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    },
-    onClose(cb: (code: number) => void) {
-      if (exited) {
-        queueMicrotask(() => {
-          try {
-            cb(exitCode);
-          } catch (error) {
-            debugLog("bridge.close_callback_error", {
-              message: error instanceof Error ? error.message : String(error),
-            });
-          }
-        });
-      } else {
-        cbs.close = cb;
-      }
-    },
-  };
-}
-
-export const __testInternals = {
-  createBridgeHandleForChild,
-};
 
 /** Attached to the error thrown for a declared-length overflow so callers can log forensics
  *  (behind PI_CURSOR_PROVIDER_DEBUG) without needing to re-derive parser-internal state. */

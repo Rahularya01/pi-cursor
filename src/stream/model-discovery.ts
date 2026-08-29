@@ -2,9 +2,9 @@
  * Live model discovery over Connect unary RPCs.
  *
  * Cursor exposes the account's usable models through `GetUsableModels` plus a
- * parameterized-metadata variant. Both go over the same child-process bridge as
- * streaming, just without the bidirectional half, so responses arrive as a
- * single length-prefixed Connect frame that `decodeConnectUnaryBody` unwraps.
+ * parameterized-metadata variant. Both run over an in-process HTTP/2 client, just
+ * without the bidirectional half, so responses arrive as a single length-prefixed
+ * Connect frame that `decodeConnectUnaryBody` unwraps.
  *
  * Results are memoized per access token: a token hash keys the cache so a
  * re-login or account switch invalidates it without a manual reset.
@@ -45,9 +45,8 @@ export async function callCursorUnaryRpc(options: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<{ body: Uint8Array; exitCode: number; timedOut: boolean }> {
-  // Prefer the in-process HTTP/2 client: it skips a child-process spawn, a
-  // second TLS handshake and the bridge's exit flush. Any transport failure
-  // falls through to the bridge, which remains the only path on Bun.
+  // Prefer the dedicated one-shot in-process HTTP/2 client (h2-unary.ts). Any transport failure
+  // falls through to the general-purpose in-process bridge (h2-session.ts) as a retry.
   if (supportsInProcessH2()) {
     try {
       const result = await callUnaryOverH2({
@@ -62,7 +61,7 @@ export async function callCursorUnaryRpc(options: {
       return { body: result.body, exitCode: ok ? 0 : 1, timedOut: false };
     } catch {
       if (options.signal?.aborted) return { body: new Uint8Array(0), exitCode: 1, timedOut: true };
-      // Fall back to the child-process bridge below.
+      // Fall back to the general-purpose bridge transport below.
     }
   }
 

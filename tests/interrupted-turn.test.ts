@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { fromBinary } from "@bufbuild/protobuf";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import {

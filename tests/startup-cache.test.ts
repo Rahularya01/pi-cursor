@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";

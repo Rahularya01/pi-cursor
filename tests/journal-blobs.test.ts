@@ -5,7 +5,7 @@
  * persist everything the live store is allowed to hold, and refuse to resume
  * from a checkpoint whose blobs did not survive.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { __testInternals } from "../src/stream/run-journal.js";
 import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
 import type { StoredConversation } from "../src/stream/types.js";

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.29] - 2026-08-30
+
+### Changed
+
+- **Bun is now the only supported runtime — Node.js is no longer required, anywhere.** The chat stream previously ran through a short-lived Node.js child process (`h2-bridge.mjs`) because Bun's `node:http2` client was believed unable to carry a bidirectional Connect stream reliably. It no longer does: all Cursor HTTP/2 transport (the streaming `Run` RPC and the unary discovery RPCs) now runs in-process via `node:http2`, which Bun implements natively — following the same pattern demonstrated by [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi). `package.json` engines, `/cursor.doctor`, and the docs no longer claim or require a Node.js host.
+- Toolchain migrated from npm/tsup/vitest to Bun end-to-end: `bun.lock` replaces `package-lock.json`, `scripts/build.ts` replaces `tsup.config.ts`, and `bun test` replaces `vitest.config.ts`.
+
+### Internal
+
+- `src/client/h2-session.ts` replaces the subprocess bridge with a `BridgeHandle` implementation backed directly by an `http2.ClientHttp2Session`, reproducing the exact same exit-code/retry contract (`classifyBridgeExit()`) so the downstream recovery logic in `native-core.ts` needed no changes.
+
 ## [1.4.28] - 2026-08-27
 
 ### Security

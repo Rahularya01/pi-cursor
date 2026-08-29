@@ -3,7 +3,7 @@
  * protobuf/HTTP2 Connect protocol.
  *
  * Based on https://github.com/ephraimduncan/opencode-cursor by Ephraim Duncan.
- * Uses Node's http2 via a child process bridge (h2-bridge.mjs).
+ * Uses an in-process node:http2 client (src/client/h2-session.ts) — no subprocess.
  */
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {

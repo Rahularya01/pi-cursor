@@ -65,5 +65,16 @@ export default tseslint.config(
       "no-empty": ["error", { allowEmptyCatch: true }],
     },
   },
+  {
+    // bun:test types `.rejects` / `.resolves` matcher calls as returning void
+    // (they return undefined at runtime; the runner tracks the assertion and
+    // still fails the test). The `await` is kept because it is a harmless
+    // no-op that documents the async assertion and stays correct under any
+    // runner that does return a promise — so this rule has nothing to catch here.
+    files: ["tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/await-thenable": "off",
+    },
+  },
   eslintConfigPrettier,
 );

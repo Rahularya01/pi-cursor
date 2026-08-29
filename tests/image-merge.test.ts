@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { imageKey, mergeImages } from "../src/stream/images.js";
 import type { ParsedImageContent } from "../src/stream/types.js";
