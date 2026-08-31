@@ -5,6 +5,7 @@
 import type { CursorModel } from "../stream/model-discovery.js";
 import type { CursorNativeModelRouting } from "../stream/model-routing.js";
 import { estimateModelCost } from "./cost.js";
+import { clampCursorContextWindow } from "./limits.js";
 import { ProviderConstant, type PiThinkingLevel } from "../types/enums.js";
 
 export type CursorModelRouting = CursorNativeModelRouting;
@@ -270,6 +271,7 @@ export function processModels(raw: CursorModel[]): ProcessedModel[] {
       result.push({
         ...rep,
         id,
+        contextWindow: clampCursorContextWindow(id, rep.name, rep.contextWindow),
         supportsEffort: true,
         effortMap,
         rawModelByEffort,
@@ -278,7 +280,11 @@ export function processModels(raw: CursorModel[]): ProcessedModel[] {
     } else {
       // Keep single entries as-is (base model without effort variants)
       for (const model of g.efforts.values()) {
-        result.push({ ...model, supportsEffort: false });
+        result.push({
+          ...model,
+          contextWindow: clampCursorContextWindow(model.id, model.name, model.contextWindow),
+          supportsEffort: false,
+        });
       }
     }
   }
