@@ -17,6 +17,14 @@ describe("inferCursorContextWindow", () => {
     expect(inferCursorContextWindow("gpt-5.5-high", "GPT-5.5 272K High")).toBe(272_000);
     expect(inferCursorContextWindow("composer-2", "Composer 2")).toBe(200_000);
   });
+
+  it("treats Cursor Grok 4.5/4.6 as 256K and leaves Grok 4.20 at 200K", () => {
+    expect(inferCursorContextWindow("cursor-grok-4.6-high", "Cursor Grok 4.6")).toBe(256_000);
+    expect(inferCursorContextWindow("grok-4.6", "Cursor Grok 4.6 Medium")).toBe(256_000);
+    expect(inferCursorContextWindow("cursor-grok-4.5-medium", "Cursor Grok 4.5")).toBe(256_000);
+    expect(inferCursorContextWindow("gpt-5.6-luna", "GPT-5.6 Luna 256K")).toBe(256_000);
+    expect(inferCursorContextWindow("grok-4-20", "Grok 4.20")).toBe(200_000);
+  });
 });
 
 describe("inferCursorMaxOutputTokens", () => {
