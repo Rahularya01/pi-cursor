@@ -28,7 +28,6 @@ import {
   McpSuccessSchema,
   McpTextContentSchema,
   McpToolCallSchema,
-  McpToolDefinitionSchema,
   McpToolErrorSchema,
   McpToolResultSchema,
   McpToolResultContentItemSchema,
@@ -52,6 +51,11 @@ import {
   isPromptHistoryEnabled,
   systemPromptRootMessage,
 } from "./root-prompt.js";
+export {
+  buildMcpToolDefinitions,
+  isSlimToolsEnabled,
+  slimOpenAIToolsForCursor,
+} from "./tool-schema.js";
 import type {
   CursorRequestPayload,
   OpenAIToolDef,
@@ -116,18 +120,6 @@ export function normalizeToolResultForTransport(
     isError: result.isError === true,
     ...(images.length > 0 && { images }),
   };
-}
-
-/**
- * Whether to truncate verbose tool descriptions/parameter docs before sending
- * them to Cursor. Default ON — full Pi/MCP prose often costs tens of thousands
- * of tokens per turn without improving tool selection. Set
- * PI_CURSOR_SLIM_TOOLS=0 to keep original schemas verbatim.
- */
-export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS): boolean {
-  const raw = envValue?.trim().toLowerCase();
-  if (!raw) return true;
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
 /**
@@ -207,107 +199,6 @@ export function isTrivialConversationalTurn(text: string): boolean {
 export function isIdentityConversationalTurn(text: string): boolean {
   const normalized = normalizeConversationalTurn(text);
   return normalized.length <= 40 && IDENTITY_CONVERSATIONAL_TURNS.has(normalized);
-}
-
-const SCHEMA_ANNOTATION_KEYS = new Set([
-  "description",
-  "title",
-  "examples",
-  "default",
-  "$comment",
-  "$schema",
-  "$id",
-  "deprecated",
-  "readOnly",
-  "writeOnly",
-]);
-
-/**
- * Remove prose-only JSON Schema annotations while preserving the executable
- * contract: property names, types, required fields, unions, enums and numeric /
- * string constraints. Parameter descriptions are the dominant MCP token cost;
- * the function-level description still tells the model when to choose a tool.
- */
-function slimJsonSchema(value: unknown, depth = 0): unknown {
-  if (value == null || depth > 12) return value;
-  if (Array.isArray(value)) return value.map((item) => slimJsonSchema(item, depth + 1));
-  if (typeof value !== "object") return value;
-
-  const input = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(input)) {
-    if (SCHEMA_ANNOTATION_KEYS.has(key) || child === undefined) continue;
-    if (key === "additionalProperties" && child === true) continue;
-    if (key === "required" && Array.isArray(child) && child.length === 0) continue;
-    out[key] = slimJsonSchema(child, depth + 1);
-  }
-  return out;
-}
-
-function conciseToolDescription(description: string): string {
-  const normalized = description.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 120) return normalized;
-  const firstSentence = normalized.match(/^.{24,117}?[.!?](?:\s|$)/)?.[0]?.trim();
-  return firstSentence || `${normalized.slice(0, 117)}...`;
-}
-
-/** Compact tool prose/schemas for the Cursor MCP tool surface. */
-export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[] {
-  if (!isSlimToolsEnabled()) return tools;
-  return tools.map((tool) => {
-    const fn = tool.function;
-    const parameters =
-      fn.parameters && typeof fn.parameters === "object"
-        ? (slimJsonSchema(fn.parameters) as Record<string, unknown>)
-        : fn.parameters;
-    return {
-      ...tool,
-      function: {
-        ...fn,
-        description: conciseToolDescription(fn.description || ""),
-        ...(parameters ? { parameters } : {}),
-      },
-    };
-  });
-}
-
-// Pi typically hands the provider the same `tools` array reference turn after turn within a
-// session. Slimming (recursive schema walk + description regex) and protobuf-encoding every
-// tool's schema is pure work over that array, so cache the result by array identity to skip it
-// when the tool set has not changed since the last call. Keyed on isSlimToolsEnabled() too since
-// that env-driven toggle can change between calls (e.g. tests, debug tooling).
-const mcpToolDefinitionsCache = new WeakMap<OpenAIToolDef[], Map<boolean, McpToolDefinition[]>>();
-
-export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefinition[] {
-  const slimEnabled = isSlimToolsEnabled();
-  const byMode = mcpToolDefinitionsCache.get(tools);
-  const cached = byMode?.get(slimEnabled);
-  if (cached) return cached;
-  const prepared = slimOpenAIToolsForCursor(tools);
-  const result = prepared.map((t) => {
-    const fn = t.function;
-    const jsonSchema: JsonValue =
-      fn.parameters && typeof fn.parameters === "object"
-        ? (fn.parameters as JsonValue)
-        : { type: "object", properties: {}, required: [] };
-    // Cursor CLI's current schema uses google.protobuf.Value for
-    // McpToolDefinition.input_schema. The committed generated schema still
-    // exposes that field as bytes, but the outer wire encoding is identical
-    // for bytes and message fields (length-delimited field #3), so place the
-    // serialized Value bytes here.
-    const inputSchema = toBinary(ValueSchema, fromJson(ValueSchema, jsonSchema));
-    return create(McpToolDefinitionSchema, {
-      name: fn.name,
-      description: fn.description || "",
-      providerIdentifier: "pi",
-      toolName: fn.name,
-      inputSchema,
-    });
-  });
-  const modes = byMode ?? new Map<boolean, McpToolDefinition[]>();
-  modes.set(slimEnabled, result);
-  mcpToolDefinitionsCache.set(tools, modes);
-  return result;
 }
 
 export function summarizeRequestSize(input: {
