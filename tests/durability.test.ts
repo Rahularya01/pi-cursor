@@ -5,12 +5,14 @@
 import { describe, expect, it } from "bun:test";
 import { parseMessages } from "../src/stream/message-parsing.js";
 import {
+  commitStoredCheckpoint,
   discardStaleCheckpointIfNeeded,
   fingerprintCompletedTurns,
   mergeBlobStore,
   trimBlobStore,
 } from "../src/stream/session-state.js";
-import type { OpenAIMessage, StoredConversation } from "../src/stream/types.js";
+import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
+import type { OpenAIMessage, ParsedTurn, StoredConversation } from "../src/stream/types.js";
 
 const PNG_HEADER = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -165,5 +167,79 @@ describe("blob store eviction order", () => {
     expect(store.has("b0")).toBe(false);
     expect(store.has("b1")).toBe(false);
     expect(store.has("b4")).toBe(true);
+  });
+});
+
+/**
+ * Restoring from the journal already refuses to pair a checkpoint with an incomplete blob set
+ * (`journal.checkpoint_dropped_incomplete_blobs`), because Cursor answers a missing blob with an
+ * empty result and the turn comes back blank rather than failing. Committing a checkpoint has to
+ * hold the same line: the entry bound evicts oldest-first on a conversation that outgrows it, and
+ * keeping the checkpoint anyway hands Cursor references we can no longer serve.
+ */
+describe("checkpoint durability across blob eviction", () => {
+  const turn: ParsedTurn = { userText: "do the thing", steps: [] };
+
+  it("drops a checkpoint whose blobs the entry bound just evicted", () => {
+    const stored = storedConversation();
+    const blobStore = new Map<string, Uint8Array>();
+    for (let i = 0; i <= MAX_ACTIVE_BLOB_ENTRIES; i++) {
+      blobStore.set(`blob-${i}`, new Uint8Array(8).fill(i % 256));
+    }
+
+    commitStoredCheckpoint(stored, new Uint8Array([1, 2, 3, 4]), blobStore, [], turn);
+
+    expect(stored.blobStore.size).toBe(MAX_ACTIVE_BLOB_ENTRIES);
+    expect(stored.blobStore.has("blob-0")).toBe(false);
+    expect(stored.checkpoint).toBeNull();
+    expect(stored.checkpointTurnCount).toBeUndefined();
+    expect(stored.checkpointHistoryFingerprint).toBeUndefined();
+  });
+
+  it("keeps the checkpoint when the whole blob set survived", () => {
+    const stored = storedConversation();
+    const checkpoint = new Uint8Array([1, 2, 3, 4]);
+
+    commitStoredCheckpoint(stored, checkpoint, new Map([["blob-0", new Uint8Array(8)]]), [], turn);
+
+    expect(stored.checkpoint).toBe(checkpoint);
+    expect(stored.checkpointTurnCount).toBe(1);
+  });
+
+  it("drops an earlier checkpoint when a merge that writes no checkpoint evicts blobs", () => {
+    const stored = storedConversation({
+      checkpoint: new Uint8Array([9, 9, 9, 9]),
+      checkpointSource: "upstream",
+      checkpointTurnCount: 3,
+      checkpointHistoryFingerprint: "fp-3",
+    });
+    const blobStore = new Map<string, Uint8Array>();
+    for (let i = 0; i <= MAX_ACTIVE_BLOB_ENTRIES; i++) {
+      blobStore.set(`blob-${i}`, new Uint8Array(8).fill(i % 256));
+    }
+
+    const { evicted } = mergeBlobStore(stored, blobStore);
+
+    expect(evicted).toBeGreaterThan(0);
+    expect(stored.checkpoint).toBeNull();
+    expect(stored.checkpointSource).toBeUndefined();
+    expect(stored.checkpointTurnCount).toBeUndefined();
+    expect(stored.checkpointHistoryFingerprint).toBeUndefined();
+  });
+
+  it("leaves an earlier checkpoint alone when a merge evicts nothing", () => {
+    const checkpoint = new Uint8Array([9, 9, 9, 9]);
+    const stored = storedConversation({
+      checkpoint,
+      checkpointSource: "upstream",
+      checkpointTurnCount: 3,
+      checkpointHistoryFingerprint: "fp-3",
+    });
+
+    const { evicted } = mergeBlobStore(stored, new Map([["blob-0", new Uint8Array(8)]]));
+
+    expect(evicted).toBe(0);
+    expect(stored.checkpoint).toBe(checkpoint);
+    expect(stored.checkpointTurnCount).toBe(3);
   });
 });
