@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **GetUsableModels `cursor-*` rows no longer keep a guessed 200K window when Cursor already published `contextTokenLimit`.** Parameterized discovery lists `grok-4.6` at 256K, but Pi also registers `cursor-grok-4.6` from GetUsableModels with `inferCursorContextWindow` (default 200K). Different ids meant both survived catalog merge, so compaction used the 200K alias. The parameterized window is now copied onto the `cursor-` prefixed twin. `inferCursorContextWindow` also treats Grok 4.5/4.6 as 256K when metadata is missing.
+
 ## [1.4.29] - 2026-08-30
 
 ### Changed

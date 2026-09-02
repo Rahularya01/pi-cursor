@@ -392,6 +392,7 @@ export function augmentCursorModels(
   const metadataRows =
     modelsFromParameterizedMetadata(parameterizedModels).map(normalizeDisplayModel);
   for (const model of metadataRows) byId.set(model.id, model);
+  overlayParameterizedContextWindows(byId, metadataRows);
 
   // Fallback for static/offline discovery. Cursor exposes GPT-5.5 context as
   // parameters (272K vs 1M), not distinct backend model IDs.
@@ -400,6 +401,25 @@ export function augmentCursorModels(
   }
 
   return [...byId.values()];
+}
+
+/**
+ * GetUsableModels ids are `cursor-<serverModel>-<effort>`. Parameterized
+ * AvailableModels rows use `<serverModel>-<effort>` and carry Cursor's real
+ * `contextTokenLimit`. Different ids meant both survived catalog merge, so Pi
+ * kept a 200K inferred twin (`cursor-grok-4.6`) next to the 256K metadata row
+ * (`grok-4.6`) and compaction used the guessed window.
+ */
+function overlayParameterizedContextWindows(
+  byId: Map<string, CursorModel>,
+  metadataRows: CursorModel[],
+): void {
+  for (const row of metadataRows) {
+    if (row.id.startsWith("cursor-")) continue;
+    const existing = byId.get(`cursor-${row.id}`);
+    if (!existing || existing.contextWindow === row.contextWindow) continue;
+    byId.set(`cursor-${row.id}`, { ...existing, contextWindow: row.contextWindow });
+  }
 }
 
 // The bundled catalog is a snapshot of a live discovery response, so its derived

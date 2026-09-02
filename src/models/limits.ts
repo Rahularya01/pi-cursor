@@ -1,9 +1,12 @@
 /**
  * Context-window and output-token ceilings for Cursor models.
  *
- * Cursor's `ModelDetails` carries neither number, so both are inferred from the
- * model id and display name. Kept in a dependency-free module because the model
- * catalog needs it at startup and must not drag the transport stack in with it.
+ * GetUsableModels `ModelDetails` carries neither number, so both are inferred
+ * from the model id and display name. AvailableModels parameterized metadata
+ * *does* send `contextTokenLimit`; prefer that at catalog-merge time and treat
+ * this helper as the GetUsableModels-only fallback. Kept in a dependency-free
+ * module because the model catalog needs it at startup and must not drag the
+ * transport stack in with it.
  */
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -13,6 +16,11 @@ export function inferCursorContextWindow(id: string, name: string): number {
   const text = `${id} ${name}`.toLowerCase();
   if (/\b1\s*m\b|(?:^|-)1m(?:-|$)/.test(text)) return 1_000_000;
   if (/\b272\s*k\b|(?:^|-)272k(?:-|$)/.test(text)) return 272_000;
+  if (/\b256\s*k\b|(?:^|-)256k(?:-|$)/.test(text)) return 256_000;
+  // Cursor Grok 4.5 / 4.6 advertise 256K via contextTokenLimit; the display
+  // name has no "256K" suffix, so GetUsableModels rows would otherwise stay at
+  // the 200K default. Do not match Grok 4.20 (`grok-4-20`).
+  if (/grok[- ]4\.[56](?:\b|-)/.test(text)) return 256_000;
   return DEFAULT_CONTEXT_WINDOW;
 }
 
