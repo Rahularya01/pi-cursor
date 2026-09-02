@@ -15,7 +15,8 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node", "bun"]
+    "types": ["node", "bun"],
+    "allowJs": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/prepare.mjs"]
 }
