@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A transient Cursor `internal` or `unavailable` end-stream error no longer kills the turn.** These arrive as an end-stream frame with `exitCode: 0`, so `classifyBridgeExit` matched no bucket, fell through to `Unknown` with `retryable: false`, and the end-stream path called `writer.error()` without ever reaching `onClose` — failing a turn that an identical bridge exit would have recovered. A new `upstream_internal` failure kind covers `internal`, `unavailable`, and `deadline_exceeded`, classified after the protocol-drift check so a wire mismatch Cursor wraps in `internal` stays terminal. The end-stream handler now stages the error and kills the bridge so the existing `onClose` recovery owns the retry budget and checkpoint rules; `canRecoverAfterTransportLoss` and the idle-retry budget are unchanged.
+
 ## [1.4.30] - 2026-09-02
 
 ### Fixed
