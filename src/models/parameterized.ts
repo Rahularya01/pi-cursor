@@ -9,7 +9,11 @@ import type {
   CursorParameterizedVariant,
 } from "../client/cursor-wire.js";
 import type { CursorModel } from "../stream/model-discovery.js";
-import { inferCursorContextWindow, inferCursorMaxOutputTokens } from "./limits.js";
+import {
+  clampCursorContextWindow,
+  inferCursorContextWindow,
+  inferCursorMaxOutputTokens,
+} from "./limits.js";
 import { supportsReasoningModelId } from "./processing.js";
 
 export const GPT55_VARIANTS = [
@@ -245,11 +249,15 @@ export function buildParameterizedRowsFromGroup(options: {
     options.requestedMaxMode,
     hasEffortParameter,
   );
-  const contextWindow = contextWindowFromParameter(
-    context,
-    options.requestedMaxMode
-      ? (options.model.contextTokenLimitForMaxMode ?? options.model.contextTokenLimit ?? 200_000)
-      : (options.model.contextTokenLimit ?? 200_000),
+  const contextWindow = clampCursorContextWindow(
+    options.model.name,
+    options.model.clientDisplayName || options.model.name,
+    contextWindowFromParameter(
+      context,
+      options.requestedMaxMode
+        ? (options.model.contextTokenLimitForMaxMode ?? options.model.contextTokenLimit ?? 200_000)
+        : (options.model.contextTokenLimit ?? 200_000),
+    ),
   );
 
   return options.variants.flatMap((variant) => {

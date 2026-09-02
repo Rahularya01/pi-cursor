@@ -1,10 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  GPT56_DEFAULT_CONTEXT_WINDOW,
+  GPT56_MAX_PROMPT_TOKENS,
+  clampCursorContextWindow,
   inferCursorContextWindow,
   inferCursorMaxOutputTokens,
 } from "../src/models/limits.js";
-import { FALLBACK_MODELS } from "../src/models/parameterized.js";
+import { FALLBACK_MODELS, modelsFromParameterizedMetadata } from "../src/models/parameterized.js";
+import { processModels } from "../src/models/processing.js";
+import type { CursorParameterizedModel } from "../src/client/cursor-wire.js";
 
 describe("inferCursorContextWindow", () => {
   it("reads the 1M marker from either the id or the display name", () => {
@@ -22,8 +27,51 @@ describe("inferCursorContextWindow", () => {
     expect(inferCursorContextWindow("cursor-grok-4.6-high", "Cursor Grok 4.6")).toBe(256_000);
     expect(inferCursorContextWindow("grok-4.6", "Cursor Grok 4.6 Medium")).toBe(256_000);
     expect(inferCursorContextWindow("cursor-grok-4.5-medium", "Cursor Grok 4.5")).toBe(256_000);
-    expect(inferCursorContextWindow("gpt-5.6-luna", "GPT-5.6 Luna 256K")).toBe(256_000);
+    expect(inferCursorContextWindow("composer-2", "Composer 2 256K")).toBe(256_000);
     expect(inferCursorContextWindow("grok-4-20", "Grok 4.20")).toBe(200_000);
+  });
+
+  it("does not treat GPT-5.6 display-name 1M as a 1M window", () => {
+    // Cursor's GetUsableModels labels the 272k default "GPT-5.6 Luna 1M High".
+    expect(inferCursorContextWindow("gpt-5.6-luna-high", "GPT-5.6 Luna 1M High")).toBe(
+      GPT56_DEFAULT_CONTEXT_WINDOW,
+    );
+    expect(inferCursorContextWindow("gpt-5.6-luna-medium", "GPT-5.6 Luna 1M")).toBe(
+      GPT56_DEFAULT_CONTEXT_WINDOW,
+    );
+    expect(inferCursorContextWindow("gpt-5.6-sol-high", "GPT-5.6 Sol 1M High")).toBe(
+      GPT56_DEFAULT_CONTEXT_WINDOW,
+    );
+    expect(inferCursorContextWindow("gpt-5.6-luna-high-fast", "GPT-5.6 Luna High Fast")).toBe(
+      GPT56_DEFAULT_CONTEXT_WINDOW,
+    );
+    expect(inferCursorContextWindow("gpt-5.6-luna", "GPT-5.6 Luna 256K")).toBe(
+      GPT56_DEFAULT_CONTEXT_WINDOW,
+    );
+  });
+
+  it("caps GPT-5.6 -1m ids at the 500k OpenAI prompt limit", () => {
+    expect(inferCursorContextWindow("gpt-5.6-luna-1m-high", "GPT-5.6 Luna 1M High")).toBe(
+      GPT56_MAX_PROMPT_TOKENS,
+    );
+    expect(inferCursorContextWindow("gpt-5.6-terra-1m-medium", "GPT-5.6 Terra 1M")).toBe(
+      GPT56_MAX_PROMPT_TOKENS,
+    );
+  });
+});
+
+describe("clampCursorContextWindow", () => {
+  it("caps GPT-5.6 1M parameterized windows at 500k and leaves Claude 1M alone", () => {
+    expect(clampCursorContextWindow("gpt-5.6-luna", "GPT-5.6 Luna", 1_000_000)).toBe(
+      GPT56_MAX_PROMPT_TOKENS,
+    );
+    expect(clampCursorContextWindow("gpt-5.6-luna-1m", "GPT-5.6 Luna 1M", 1_000_000)).toBe(
+      GPT56_MAX_PROMPT_TOKENS,
+    );
+    expect(clampCursorContextWindow("claude-4.6-opus-high", "Opus 4.6 1M", 1_000_000)).toBe(
+      1_000_000,
+    );
+    expect(clampCursorContextWindow("gpt-5.6-luna-high", "GPT-5.6 Luna", 272_000)).toBe(272_000);
   });
 });
 
@@ -70,5 +118,64 @@ describe("bundled fallback catalog", () => {
     const oneMillion = FALLBACK_MODELS.filter((m) => /\b1M\b/.test(m.name));
     expect(oneMillion.length).toBeGreaterThan(0);
     for (const model of oneMillion) expect(model.contextWindow).toBe(1_000_000);
+  });
+});
+
+describe("GPT-5.6 Luna parameterized catalog", () => {
+  const luna: CursorParameterizedModel = {
+    name: "gpt-5.6-luna",
+    clientDisplayName: "GPT-5.6 Luna",
+    supportsMaxMode: true,
+    contextTokenLimit: 272_000,
+    contextTokenLimitForMaxMode: 1_000_000,
+    variants: [
+      {
+        isMaxMode: false,
+        parameters: [
+          { id: "context", value: "272k" },
+          { id: "reasoning", value: "high" },
+          { id: "fast", value: "false" },
+        ],
+      },
+      {
+        isMaxMode: true,
+        parameters: [
+          { id: "context", value: "1m" },
+          { id: "reasoning", value: "high" },
+          { id: "fast", value: "false" },
+        ],
+      },
+    ],
+  };
+
+  it("registers the 272k default and caps the 1m variant at 500k", () => {
+    const rows = modelsFromParameterizedMetadata([luna]);
+    const defaultHigh = rows.find((m) => m.id === "gpt-5.6-luna-high");
+    const oneMHigh = rows.find((m) => m.id === "gpt-5.6-luna-1m-high");
+    expect(defaultHigh?.contextWindow).toBe(GPT56_DEFAULT_CONTEXT_WINDOW);
+    expect(oneMHigh?.contextWindow).toBe(GPT56_MAX_PROMPT_TOKENS);
+  });
+
+  it("grouped Pi model ids inherit the 500k cap so auto-compaction fires in time", () => {
+    const processed = processModels(modelsFromParameterizedMetadata([luna]));
+    const grouped1m = processed.find((m) => m.id === "gpt-5.6-luna-1m");
+    const groupedDefault = processed.find((m) => m.id === "gpt-5.6-luna");
+    expect(groupedDefault?.contextWindow).toBe(GPT56_DEFAULT_CONTEXT_WINDOW);
+    expect(grouped1m?.contextWindow).toBe(GPT56_MAX_PROMPT_TOKENS);
+  });
+
+  it("caps a cached 1M raw Luna row even when parameterized discovery is empty", () => {
+    const processed = processModels([
+      {
+        id: "gpt-5.6-luna-high",
+        name: "GPT-5.6 Luna 1M High",
+        reasoning: true,
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+    ]);
+    expect(processed).toHaveLength(1);
+    expect(processed[0]?.id).toBe("gpt-5.6-luna");
+    expect(processed[0]?.contextWindow).toBe(GPT56_MAX_PROMPT_TOKENS);
   });
 });
