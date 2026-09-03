@@ -901,6 +901,8 @@ function writeNativeStream(
   let cancelled = false;
   let frameParseFailed = false;
   let streamError: Error | null = null;
+  /** Set when a Cursor end-stream error is being retried through the `onClose` path. */
+  let retriableEndError: string | null = null;
   let emittedUserVisibleContent = false;
   // Only execs the client was actually told about may be recorded as pending: recovery matches the
   // snapshot against the tool results the client sends back, and it can only send back what it saw.
@@ -1293,7 +1295,40 @@ function writeNativeStream(
         // A tool pause staged earlier in this same chunk wins: the client needs the tool call to
         // continue, and `streamError` still routes the close through mid-pause snapshotting so the
         // returning results land in recovery rather than on a bridge nobody is holding.
-        if (!pauseRequested) writer.error(enhanced, "error", state);
+        if (pauseRequested) return;
+
+        // A transient upstream failure arrives here rather than as a bridge exit, so failing the
+        // turn now would bypass the recovery the exit path already implements. Killing the bridge
+        // routes it through `onClose` — which owns the retry budget and checkpoint rules — the same
+        // way a frame desync does. `persistent` streams never close themselves, so the kill is what
+        // guarantees `onClose` runs at all.
+        const endFailure = classifyBridgeExit({
+          exitCode: 0,
+          endErrorMessage: endError.message,
+        });
+        const recoverable =
+          endFailure.retryable &&
+          !!idleRetry &&
+          idleRetry.currentAttempt <= idleRetry.maxRetries &&
+          canRecoverAfterTransportLoss({
+            emittedUserVisibleContent,
+            hasCheckpoint: !!checkpointRef.current,
+          });
+        if (recoverable) {
+          retriableEndError = endError.message;
+          debugLog("native.stream.cursor_error_retriable", {
+            requestId,
+            failureKind: endFailure.kind,
+            attempt: idleRetry?.currentAttempt,
+          });
+          try {
+            bridge.proc.kill();
+          } catch {
+            // Process may already be exiting; `onClose` still runs.
+          }
+          return;
+        }
+        writer.error(enhanced, "error", state);
       }
     },
   );
@@ -1365,7 +1400,9 @@ function writeNativeStream(
 
     if (cancelled) return;
     const stored = conversationStates.get(convKey);
-    if (streamError) {
+    // A staged retriable end-stream error deliberately falls through to the transport-loss path
+    // below, which owns restart-vs-fail. Anything else already reported the failure to the client.
+    if (streamError && !retriableEndError) {
       if (mcpExecReceived) {
         const midPauseResult = handleBridgeCloseMidPause({
           stored,
@@ -1400,6 +1437,8 @@ function writeNativeStream(
       const failure = classifyBridgeExit({
         exitCode: code,
         stderr: typeof bridge.lastStderr === "function" ? bridge.lastStderr() : "",
+        // Cursor's own end-stream error names the failure far better than the exit code does.
+        ...(retriableEndError ? { endErrorMessage: retriableEndError } : {}),
       });
       const allowRestart =
         failure.retryable &&
