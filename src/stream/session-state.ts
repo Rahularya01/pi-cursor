@@ -238,10 +238,27 @@ export function trimBlobStore(
   return { removed, totalBytes };
 }
 
+/**
+ * Clear the upstream checkpoint bytes and their metadata, leaving mid-pause metadata and the blob
+ * store untouched. A dropped checkpoint falls back to a full-history rebuild, and that rebuild
+ * reads both.
+ */
+function clearCheckpointBytesOnly(stored: StoredConversation): void {
+  stored.checkpoint = null;
+  delete stored.checkpointSource;
+  delete stored.checkpointTurnCount;
+  delete stored.checkpointHistoryFingerprint;
+}
+
+/**
+ * Merge a stream's blobs into the retained per-conversation store, trimming to the byte and entry
+ * bounds. Returns how many blobs the trim evicted, which decides whether a checkpoint may be kept:
+ * see the eviction note below.
+ */
 export function mergeBlobStore(
   stored: StoredConversation,
   blobStore: Map<string, Uint8Array>,
-): void {
+): { evicted: number } {
   // Delete-then-set moves each still-referenced blob to the end of the insertion order, which is
   // what `trimBlobStore` treats as newest. Plain `set` leaves an existing key in place, so the
   // system-prompt blob — written first on every build, and pointed at by `rootPromptMessagesJson`
@@ -263,8 +280,19 @@ export function mergeBlobStore(
       maxBytes: MAX_CONVERSATION_BLOB_BYTES,
       maxEntries: MAX_ACTIVE_BLOB_ENTRIES,
     });
+    // Cursor answers a request for an evicted blob with an empty result rather than an error, so a
+    // checkpoint that outlived its blobs replays with those turns silently blank. Drop it and take
+    // the full-history rebuild, same as `journal.checkpoint_dropped_incomplete_blobs` at restore.
+    debugLog("conversation.checkpoint_dropped_evicted_blobs", {
+      conversationId: stored.conversationId,
+      hadCheckpoint: !!stored.checkpoint,
+      evicted: trimmed.removed,
+      entries: stored.blobStore.size,
+    });
+    clearCheckpointBytesOnly(stored);
   }
   stored.lastAccessMs = Date.now();
+  return { evicted: trimmed.removed };
 }
 
 export function commitStoredCheckpoint(
@@ -276,11 +304,13 @@ export function commitStoredCheckpoint(
   convKey?: string,
 ): void {
   const completedHistory = [...completedTurns, currentTurn];
-  mergeBlobStore(stored, blobStore);
-  stored.checkpoint = checkpointBytes;
-  stored.checkpointSource = "upstream";
-  stored.checkpointTurnCount = completedHistory.length;
-  stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedHistory);
+  const { evicted } = mergeBlobStore(stored, blobStore);
+  if (evicted === 0) {
+    stored.checkpoint = checkpointBytes;
+    stored.checkpointSource = "upstream";
+    stored.checkpointTurnCount = completedHistory.length;
+    stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedHistory);
+  }
   clearStoredMidPauseMetadata(stored);
   stored.lastAccessMs = Date.now();
   if (convKey) persistJournal(convKey, stored);
@@ -324,11 +354,13 @@ export function persistAbortedConversationState(
   // makes the next tool-continuation / idle-retry treat a still-valid checkpoint
   // as stale. Keep the checkpoint keyed to the completed history only.
   if (latestCheckpoint) {
-    mergeBlobStore(stored, blobStore);
-    stored.checkpoint = latestCheckpoint;
-    stored.checkpointSource = "upstream";
-    stored.checkpointTurnCount = completedTurns.length;
-    stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
+    const { evicted } = mergeBlobStore(stored, blobStore);
+    if (evicted === 0) {
+      stored.checkpoint = latestCheckpoint;
+      stored.checkpointSource = "upstream";
+      stored.checkpointTurnCount = completedTurns.length;
+      stored.checkpointHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
+    }
     stored.lastAccessMs = Date.now();
     persistJournal(convKey, stored);
   } else {
@@ -355,10 +387,11 @@ export function commitStoredCheckpointMidPause(
   pendingToolCalls: Array<{ toolCallId: string; toolName: string }>,
   convKey?: string,
 ): void {
-  mergeBlobStore(stored, blobStore);
+  const { evicted } = mergeBlobStore(stored, blobStore);
   const completedHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
-  if (checkpointBytes) {
-    stored.checkpoint = checkpointBytes;
+  const usableCheckpoint = evicted === 0 ? checkpointBytes : null;
+  if (usableCheckpoint) {
+    stored.checkpoint = usableCheckpoint;
     stored.checkpointSource = "upstream";
     stored.checkpointTurnCount = completedTurns.length;
     stored.checkpointHistoryFingerprint = completedHistoryFingerprint;
