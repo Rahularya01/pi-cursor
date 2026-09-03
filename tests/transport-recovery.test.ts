@@ -14,6 +14,7 @@ import {
   type InteractionUpdate,
 } from "../src/proto/agent_pb.js";
 import { frameConnectMessage, MAX_CONNECT_MESSAGE_BYTES } from "../src/client/bridge.js";
+import { ConnectFlag } from "../src/types/enums.js";
 import { __testInternals } from "../src/stream/native-core.js";
 import {
   canBlindIdleRestart,
@@ -547,5 +548,137 @@ describe("idle HTTP/2 bridge reuse", () => {
     expect(spawned).toEqual([]);
     expect(opens).toEqual(["tok-2"]);
     expect(started.bridge).toBe(handle);
+  });
+});
+
+describe("retriable Cursor end-stream errors", () => {
+  function endStreamErrorFrame(code: string, message: string): Buffer {
+    const payload = Buffer.from(JSON.stringify({ error: { code, message } }), "utf8");
+    const frame = Buffer.alloc(5 + payload.length);
+    frame[0] = ConnectFlag.EndStream;
+    frame.writeUInt32BE(payload.length, 1);
+    payload.copy(frame, 5);
+    return frame;
+  }
+
+  function setup() {
+    const calls: string[] = [];
+    const restarts: number[] = [];
+    let killCalls = 0;
+    let onData: (chunk: Buffer) => void = () => {};
+    let onClose: (code: number) => void = () => {};
+    const bridge = {
+      proc: {
+        kill: () => {
+          killCalls++;
+          // The real in-process transport turns kill() into onClose(1) synchronously.
+          onClose(1);
+          return true;
+        },
+      },
+      alive: true,
+      lastStderr: () => "",
+      write: () => {},
+      end: () => {},
+      onData: (cb: (chunk: Buffer) => void) => {
+        onData = cb;
+      },
+      onClose: (cb: (code: number) => void) => {
+        onClose = cb;
+      },
+    };
+    const writer = {
+      output: {} as never,
+      closed: false,
+      start() {},
+      text() {},
+      thinking() {},
+      toolCall() {},
+      done(reason: string) {
+        calls.push(`done:${reason}`);
+        this.closed = true;
+      },
+      error(message: string) {
+        calls.push(`error:${message}`);
+        this.closed = true;
+      },
+    };
+    const idleRetry = {
+      currentAttempt: 1,
+      maxRetries: 5,
+      recoverBeforeRetry: true,
+      restart(nextAttempt: number) {
+        restarts.push(nextAttempt);
+        return true;
+      },
+    };
+    const heartbeatTimer = setInterval(() => {}, 60_000);
+    __testInternals.writeNativeStream(
+      bridge,
+      heartbeatTimer,
+      new Map(),
+      [],
+      {} as never,
+      "claude-4.5-sonnet",
+      "bridge-endstream",
+      "conv-endstream",
+      [],
+      { userText: "hi", steps: [] },
+      writer as never,
+      undefined,
+      "req-endstream",
+      idleRetry as never,
+      0,
+    );
+    return {
+      calls,
+      restarts,
+      get killCalls() {
+        return killCalls;
+      },
+      onData,
+      heartbeatTimer,
+    };
+  }
+
+  // A transient upstream `internal` is the most common mid-session failure, and it arrives as an
+  // end-stream frame rather than a bridge exit. Failing the turn on it strands work the retry
+  // machinery could have finished.
+  it("restarts the stream on a transient internal error instead of failing the turn", () => {
+    const harness = setup();
+
+    harness.onData(endStreamErrorFrame("internal", "Error"));
+    clearInterval(harness.heartbeatTimer);
+
+    expect(harness.restarts).toEqual([2]);
+    expect(harness.calls).toEqual([]);
+  });
+
+  // The transport reports GOAWAY as a retriable end-stream frame *and* exit 2. The frame arrives
+  // first, so the exit-2 retry path was unreachable.
+  it("restarts the stream when GOAWAY arrives as an end-stream frame", () => {
+    const harness = setup();
+
+    harness.onData(
+      endStreamErrorFrame(
+        "unavailable",
+        "Cursor GOAWAY (errorCode=0): upstream connection closed, retriable",
+      ),
+    );
+    clearInterval(harness.heartbeatTimer);
+
+    expect(harness.restarts).toEqual([2]);
+    expect(harness.calls).toEqual([]);
+  });
+
+  // Retrying a rejected request would just re-fail, so a permanent error must stay terminal.
+  it("still fails the turn on a non-retriable end-stream error", () => {
+    const harness = setup();
+
+    harness.onData(endStreamErrorFrame("invalid_argument", "model does not exist"));
+    clearInterval(harness.heartbeatTimer);
+
+    expect(harness.restarts).toEqual([]);
+    expect(harness.calls[0]).toMatch(/^error:Connect error invalid_argument: model does not exist/);
   });
 });

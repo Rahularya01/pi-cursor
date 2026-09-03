@@ -78,6 +78,7 @@ export enum TransportFailureKind {
   Goaway = "goaway",
   BridgeCrash = "bridge_crash",
   UpstreamSilence = "upstream_silence",
+  UpstreamInternal = "upstream_internal",
   Authentication = "authentication",
   RateLimit = "rate_limit",
   ProtocolDrift = "protocol_drift",

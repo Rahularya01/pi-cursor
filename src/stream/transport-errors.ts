@@ -30,6 +30,11 @@ const GOAWAY_RE = /\bGOAWAY\b/i;
 const RESET_RE = /\b(ECONNRESET|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|connection reset)\b/i;
 const TIMEOUT_RE = /\b(ETIMEDOUT|timed? ?out|timeout)\b/i;
 const PROTOCOL_RE = /\b(protocol|protobuf|wire drift|invalid argument|failed_precondition)\b/i;
+// Upstream statuses that say "this attempt failed" rather than "this request is wrong". Cursor
+// reports these mid-turn with an empty message surprisingly often, so they must stay retriable.
+// Tested after PROTOCOL_RE: Cursor wraps a wire mismatch in `internal`, and re-sending a request
+// the schema cannot decode just burns the retry budget on a deterministic failure.
+const TRANSIENT_RE = /\b(internal|unavailable|deadline_exceeded)\b/i;
 
 export function classifyBridgeExit(input: {
   exitCode: number;
@@ -103,6 +108,17 @@ export function classifyBridgeExit(input: {
       retryable: false,
       refreshAuth: false,
       message: combined || "Cursor protocol mismatch.",
+      exitCode: input.exitCode,
+      stderr: stderr || undefined,
+    };
+  }
+
+  if (TRANSIENT_RE.test(combined)) {
+    return {
+      kind: TransportFailureKind.UpstreamInternal,
+      retryable: true,
+      refreshAuth: false,
+      message: combined || "Cursor reported a transient upstream failure.",
       exitCode: input.exitCode,
       stderr: stderr || undefined,
     };
