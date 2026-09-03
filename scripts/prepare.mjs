@@ -14,15 +14,32 @@ if (!bunVersion) {
 }
 
 const win = process.platform === "win32";
-const bunHome = join(process.env.BUN_INSTALL || join(homedir(), ".bun"), "bin", win ? "bun.exe" : "bun");
+const bunHome = join(
+  process.env.BUN_INSTALL || join(homedir(), ".bun"),
+  "bin",
+  win ? "bun.exe" : "bun",
+);
 
 function run(command, args, opts = {}) {
   return spawnSync(command, args, { stdio: "inherit", cwd: root, ...opts });
 }
 
+function isSupportedBun(cmd) {
+  try {
+    const res = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+    if (res.status !== 0 || !res.stdout) return false;
+    const version = res.stdout.trim().replace(/^v/, "");
+    const [major, minor] = version.split(".").map(Number);
+    if (!Number.isFinite(major) || !Number.isFinite(minor)) return false;
+    return major > 1 || (major === 1 && minor >= 4);
+  } catch {
+    return false;
+  }
+}
+
 function findBun() {
-  if (spawnSync("bun", ["--version"], { encoding: "utf8" }).status === 0) return "bun";
-  if (existsSync(bunHome) && spawnSync(bunHome, ["--version"], { encoding: "utf8" }).status === 0) {
+  if (isSupportedBun("bun")) return "bun";
+  if (existsSync(bunHome) && isSupportedBun(bunHome)) {
     return bunHome;
   }
   return null;
