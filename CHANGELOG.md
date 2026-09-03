@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A checkpoint whose blobs the entry bound evicted is no longer kept and replayed with blank history.** The 512-entry blob store evicts oldest-first, but a checkpoint addresses its history by blob id and Cursor answers a request for a blob we no longer hold with an empty result rather than an error, so the conversation came back structurally intact with the evicted turns silently blank. `markBlobMiss` only caught this one turn late, after Cursor had already asked. `mergeBlobStore` now drops the checkpoint whenever its trim evicts anything — the same call `journal.checkpoint_dropped_incomplete_blobs` already makes at restore time — which also covers the merge paths that write no new checkpoint but can still evict blobs an earlier turn's checkpoint references. Costs one full-history rebuild from pi's transcript.
+
 ## [1.4.30] - 2026-09-02
 
 ### Fixed
