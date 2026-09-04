@@ -113,7 +113,7 @@ describe("request build root prompt wiring", () => {
     expect(JSON.stringify(messages)).toContain("my favourite color is black");
   });
 
-  it("re-publishes the system prompt onto a checkpoint only when asked", () => {
+  it("always overlays Pi history onto a checkpoint so empty server placeholders are not the prompt", () => {
     const checkpoint = toBinary(
       ConversationStateStructureSchema,
       create(ConversationStateStructureSchema, { clientName: "cli" }),
@@ -126,22 +126,15 @@ describe("request build root prompt wiring", () => {
       conversationId: "conv-1",
       checkpoint,
     });
-    // A checkpoint already holds the rendered history; nothing is republished.
-    expect(rootPromptMessages(pinned)).toHaveLength(0);
-
-    const refreshed = buildCursorRequest({
-      modelId: "cursor-grok-4.6-low",
-      systemPrompt: "UPDATED PI PROMPT",
-      userText: "next",
-      turns: [historyTurn],
-      conversationId: "conv-1",
-      checkpoint,
-      refreshSystemPrompt: true,
-    });
-    const messages = rootPromptMessages(refreshed);
-    expect(messages).toHaveLength(1);
-    expect((messages[0] as { role: string }).role).toBe("user");
+    const messages = rootPromptMessages(pinned);
     expect(JSON.stringify(messages)).toContain("UPDATED PI PROMPT");
+    expect(JSON.stringify(messages)).toContain("my favourite color is black");
+    const runRequest = fromBinary(AgentClientMessageSchema, pinned.requestBytes).message.value as {
+      customSystemPrompt?: string;
+      modelDetails?: { modelId?: string };
+    };
+    expect(runRequest.customSystemPrompt).toBeUndefined();
+    expect(runRequest.modelDetails?.modelId).toBe("cursor-grok-4.6-low");
   });
 });
 

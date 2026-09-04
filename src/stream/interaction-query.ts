@@ -54,18 +54,26 @@ function encodeLengthDelimitedField(fieldNo: number, data: Uint8Array): number[]
 }
 
 /**
- * Field #9 is unnamed in the generated proto (web-fetch shaped). Approving it is
- * indistinguishable from granting a future destructive capability if Cursor reuses
- * the number, so we always reject. We still have to *answer* — `handled: false`
- * throws and kills the in-flight turn (#10).
+ * Field #9 is unnamed in the generated proto (web-fetch shaped). Default is to
+ * approve so hosted fetch can continue; `{ approveWeb: false }` still rejects.
  *
- * Wire shape mirrors ExaFetch/WebSearch: response oneof field 2 = rejected,
- * rejected.reason = 1.
+ * Wire shape mirrors ExaFetch/WebSearch: response oneof field 1 = approved.
  */
 function buildCursorWebFetchInteractionRejectionBytes(id: number): Uint8Array {
   const reason = new TextEncoder().encode(PI_REJECT_REASON);
   const rejected = new Uint8Array(encodeLengthDelimitedField(1, reason));
   const result = new Uint8Array(encodeLengthDelimitedField(2, rejected));
+  const interactionResponse = new Uint8Array([
+    0x08,
+    ...encodeVarint(id),
+    ...encodeLengthDelimitedField(CURSOR_WEB_FETCH_INTERACTION_FIELD, result),
+  ]);
+  return new Uint8Array(encodeLengthDelimitedField(6, interactionResponse));
+}
+
+function buildCursorWebFetchInteractionApprovalBytes(id: number): Uint8Array {
+  const approved = new Uint8Array([0x0a, 0x00]);
+  const result = new Uint8Array(encodeLengthDelimitedField(1, approved));
   const interactionResponse = new Uint8Array([
     0x08,
     ...encodeVarint(id),
@@ -288,26 +296,29 @@ export type InteractionQueryHandleResult = {
 
 /**
  * Always attempt to answer InteractionQuery so the upstream run does not park.
- * Web/search is rejected by default so Cursor-side fetches do not run under the
- * user's subscription; pass `{ approveWeb: true }` only in tests or explicit opt-in.
+ * Web/search is approved so Cursor-hosted fetch/search can complete the turn
+ * instead of forcing the model to re-plan through Pi tools. Pass
+ * `{ approveWeb: false }` to reject those prompts.
  */
 export function handleInteractionQuery(
   query: InteractionQuery,
   sendFrame: (data: Uint8Array) => void,
   options?: { approveWeb?: boolean },
 ): InteractionQueryHandleResult {
-  const approveWeb = options?.approveWeb === true;
+  const approveWeb = options?.approveWeb !== false;
   const queryCase = query.query.case;
 
-  // Field #9 is unnamed in the generated proto. Approving it is indistinguishable
-  // from granting a future destructive capability if Cursor reuses the number.
-  // Reject with a real InteractionResponse so Cursor unblocks instead of parking,
-  // and so processServerMessage does not throw and kill the turn (#10).
+  // Field #9 is unnamed in the generated proto (web-fetch permission on current
+  // Cursor builds). Answer it so the Run RPC continues; default is approve.
   if (hasUnknownInteractionField(query, CURSOR_WEB_FETCH_INTERACTION_FIELD)) {
-    sendFrame(frameConnectMessage(buildCursorWebFetchInteractionRejectionBytes(query.id)));
+    if (approveWeb) {
+      sendFrame(frameConnectMessage(buildCursorWebFetchInteractionApprovalBytes(query.id)));
+    } else {
+      sendFrame(frameConnectMessage(buildCursorWebFetchInteractionRejectionBytes(query.id)));
+    }
     return {
       handled: true,
-      action: "unknown_field_9_rejected",
+      action: approveWeb ? "unknown_field_9_approved" : "unknown_field_9_rejected",
       queryCase: queryCase ?? "unknown_field_9",
     };
   }

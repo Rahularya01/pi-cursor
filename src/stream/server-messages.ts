@@ -4,9 +4,8 @@
  * Three families arrive interleaved with assistant output and each needs a reply
  * on the same stream or the server parks waiting:
  *   - `kvServerMessage`   blob get/set against the local blob store
- *   - `execServerMessage`  tool execution — MCP calls are handed to the caller,
- *     Cursor's own native tools (shell/read/write/...) get an explicit reject so
- *     the model re-plans instead of stalling
+ *   - `execServerMessage`  tool execution — MCP calls are handed to the caller;
+ *     Cursor-native tools (read/write/ls/grep/shell/fetch) run on this stream
  *   - `interactionQuery`  permission prompts, answered by ./interaction-query.ts
  *
  * Every handler returns whether it made forward progress, which is what feeds
@@ -20,28 +19,15 @@ import {
   ComputerUseErrorSchema,
   ComputerUseResultSchema,
   ConversationStateStructureSchema,
-  DeleteRejectedSchema,
-  DeleteResultSchema,
-  DiagnosticsResultSchema,
   ExecClientControlMessageSchema,
   ExecClientMessageSchema,
   ExecClientThrowSchema,
-  FetchErrorSchema,
-  FetchResultSchema,
   GetBlobResultSchema,
-  GrepErrorSchema,
-  GrepResultSchema,
   KvClientMessageSchema,
-  ListMcpResourcesExecResultSchema,
-  ListMcpResourcesRejectedSchema,
-  LsRejectedSchema,
-  LsResultSchema,
   McpResultSchema,
   McpToolNotFoundSchema,
   ReadMcpResourceExecResultSchema,
   ReadMcpResourceRejectedSchema,
-  ReadRejectedSchema,
-  ReadResultSchema,
   RecordScreenFailureSchema,
   RecordScreenResultSchema,
   RequestContextResultSchema,
@@ -49,10 +35,6 @@ import {
   RequestContextSuccessSchema,
   SetBlobResultSchema,
   ShellRejectedSchema,
-  ShellResultSchema,
-  ShellStreamSchema,
-  WriteRejectedSchema,
-  WriteResultSchema,
   WriteShellStdinErrorSchema,
   WriteShellStdinResultSchema,
   type AgentServerMessage,
@@ -65,6 +47,7 @@ import {
 import { frameConnectMessage } from "../client/bridge.js";
 import { debugLog, lifecycleLog } from "./debug-log.js";
 import { recordDriftSignal, recordUnknownFields } from "./drift.js";
+import { dispatchNativeExec, type NativeExecFrame } from "./exec-native.js";
 import { handleInteractionQuery } from "./interaction-query.js";
 import { decodeMcpArgsMap } from "./request-build.js";
 import {
@@ -83,7 +66,7 @@ import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
  *
  * `work` — the run is moving: non-empty `textDelta` / `thinkingDelta`,
  * `tokenDelta` (long reasoning often emits only these for minutes), tool-call
- * events, any answered `execServerMessage` (MCP exec **or** native-tool reject),
+ * events, any answered `execServerMessage` (MCP exec **or** native-tool result),
  * answered interaction queries, KV blob round-trips, checkpoints.
  *
  * `liveness` — a heartbeat. The socket is healthy; the turn may still be parked.
@@ -100,6 +83,7 @@ export function processServerMessage(
   onMcpExec: (exec: PendingExec) => void,
   onCheckpoint?: (checkpointBytes: Uint8Array) => void,
   onExecUnanswerable?: (execCase: string | undefined) => void,
+  onLocalWork?: (work: Promise<void>) => void,
 ): StreamProgress {
   const msgCase = msg.message.case;
   debugLog("server_message", { msgCase, msg });
@@ -175,7 +159,7 @@ export function processServerMessage(
   if (msgCase === "execServerMessage") {
     const execMsg = msg.message.value as ExecServerMessage;
     const execCase = (execMsg as { message?: { case?: string } }).message?.case;
-    const handled = handleExecMessage(execMsg, mcpTools, sendFrame, onMcpExec);
+    const handled = handleExecMessage(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
     // execServerMessage was previously invisible in the lifecycle log — the exact
     // blind spot behind unexplained mid-run stalls. Record the exec case and whether
     // we answered it, so a parked stream can be diagnosed from the sanitized log
@@ -193,7 +177,7 @@ export function processServerMessage(
   }
   if (msgCase === "interactionQuery") {
     const query = msg.message.value as InteractionQuery;
-    const result = handleInteractionQuery(query, sendFrame);
+    const result = handleInteractionQuery(query, sendFrame, { approveWeb: true });
     lifecycleLog("interaction_query", {
       id: query.id,
       queryCase: result.queryCase,
@@ -233,7 +217,9 @@ export function processServerMessage(
   if (msgCase === "conversationCheckpointUpdate") {
     const stateStructure = msg.message.value as ConversationStateStructure;
     if ((stateStructure as any).tokenDetails) {
-      state.totalTokens = (stateStructure as any).tokenDetails.usedTokens;
+      const used = (stateStructure as any).tokenDetails.usedTokens;
+      state.totalTokens = used;
+      state.contextTokens = used;
     }
     if (onCheckpoint) {
       onCheckpoint(toBinary(ConversationStateStructureSchema, stateStructure));
@@ -332,17 +318,16 @@ function handleKvMessage(
 
 /**
  * Returns true when this `execServerMessage` was handled (MCP exec **or** a
- * native-tool reject/response). Handled round-trips count as idle-watchdog
- * progress so Cursor-native tool reject loops cannot stall for minutes and
- * then trip the idle timer.
+ * native-tool result). Handled round-trips count as idle-watchdog progress.
  */
 function handleExecMessage(
   execMsg: ExecServerMessage,
   mcpTools: McpToolDefinition[],
   sendFrame: (data: Uint8Array) => void,
   onMcpExec: (exec: PendingExec) => void,
+  onLocalWork?: (work: Promise<void>) => void,
 ): boolean {
-  return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec);
+  return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
 }
 
 // mcpTools is fixed for the life of a stream but `mcpArgs` exec messages can arrive many times
@@ -391,6 +376,7 @@ function handleExecMessageInner(
   mcpTools: McpToolDefinition[],
   sendFrame: (data: Uint8Array) => void,
   onMcpExec: (exec: PendingExec) => void,
+  onLocalWork?: (work: Promise<void>) => void,
 ): boolean {
   const execCase = (execMsg as any).message.case;
   const REJECT_REASON = nativeToolRejectReason(execCase ?? "", mcpTools);
@@ -443,118 +429,32 @@ function handleExecMessageInner(
     return true;
   }
 
-  // Reject native Cursor tools so model falls back to MCP tools
-  if (execCase === "readArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "readResult",
-      create(ReadResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ReadRejectedSchema, { path: args.path, reason: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
+  const nativeArgs = ((execMsg as any).message?.value ?? {}) as Record<string, unknown>;
+  const native = dispatchNativeExec(execCase ?? "", nativeArgs);
+  if (native?.kind === "sync") {
+    sendNativeFrame(execMsg, native.frame, sendFrame);
     return true;
   }
-  if (execCase === "lsArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "lsResult",
-      create(LsResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(LsRejectedSchema, { path: args.path, reason: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
+  if (native?.kind === "async") {
+    const work = native
+      .run()
+      .then((frame) => sendNativeFrame(execMsg, frame, sendFrame))
+      .catch((error) => {
+        sendExecThrow(execMsg, error instanceof Error ? error.message : String(error), sendFrame);
+      });
+    onLocalWork?.(work);
     return true;
   }
-  if (execCase === "grepArgs") {
-    sendExecResult(
-      execMsg,
-      "grepResult",
-      create(GrepResultSchema, {
-        result: { case: "error", value: create(GrepErrorSchema, { error: REJECT_REASON }) },
-      }),
-      sendFrame,
-    );
+  if (native?.kind === "stream") {
+    const work = native
+      .run((frame) => sendNativeFrame(execMsg, frame, sendFrame))
+      .catch((error) => {
+        sendExecThrow(execMsg, error instanceof Error ? error.message : String(error), sendFrame);
+      });
+    onLocalWork?.(work);
     return true;
   }
-  if (execCase === "writeArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "writeResult",
-      create(WriteResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(WriteRejectedSchema, { path: args.path, reason: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "deleteArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "deleteResult",
-      create(DeleteResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(DeleteRejectedSchema, { path: args.path, reason: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "shellArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "shellResult",
-      create(ShellResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ShellRejectedSchema, {
-            command: args.command ?? "",
-            workingDirectory: args.workingDirectory ?? "",
-            reason: REJECT_REASON,
-            isReadonly: false,
-          }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "shellStreamArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "shellStream",
-      create(ShellStreamSchema, {
-        event: {
-          case: "rejected",
-          value: create(ShellRejectedSchema, {
-            command: args.command ?? "",
-            workingDirectory: args.workingDirectory ?? "",
-            reason: REJECT_REASON,
-            isReadonly: false,
-          }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
+
   if (execCase === "backgroundShellSpawnArgs") {
     const args = (execMsg as any).message.value;
     sendExecResult(
@@ -583,40 +483,6 @@ function handleExecMessageInner(
         result: {
           case: "error",
           value: create(WriteShellStdinErrorSchema, { error: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "fetchArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "fetchResult",
-      create(FetchResultSchema, {
-        result: {
-          case: "error",
-          value: create(FetchErrorSchema, { url: args.url ?? "", error: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "diagnosticsArgs") {
-    sendExecResult(execMsg, "diagnosticsResult", create(DiagnosticsResultSchema, {}), sendFrame);
-    return true;
-  }
-
-  if (execCase === "listMcpResourcesExecArgs") {
-    sendExecResult(
-      execMsg,
-      "listMcpResourcesExecResult",
-      create(ListMcpResourcesExecResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ListMcpResourcesRejectedSchema, { reason: REJECT_REASON }),
         },
       }),
       sendFrame,
@@ -749,8 +615,17 @@ function sendExecResult(
   sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
 }
 
+function sendNativeFrame(
+  execMsg: ExecServerMessage,
+  frame: NativeExecFrame,
+  sendFrame: (data: Uint8Array) => void,
+): void {
+  sendExecResult(execMsg, frame.resultCase, frame.value, sendFrame);
+}
+
 export const __testInternals = {
   nativeToolRejectReason,
   handleExecMessageInner,
   describeUnknownFields,
+  dispatchNativeExec,
 };

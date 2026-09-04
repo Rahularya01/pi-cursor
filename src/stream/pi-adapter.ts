@@ -340,7 +340,13 @@ export function resolveToolsForToolChoice(
 
 export function computeUsage(state: StreamState) {
   const completion_tokens = state.outputTokens;
-  const total_tokens = state.totalTokens || completion_tokens;
-  const prompt_tokens = Math.max(0, total_tokens - completion_tokens);
-  return { prompt_tokens, completion_tokens, total_tokens };
+  const contextTokens = state.contextTokens ?? 0;
+  const total_tokens = state.totalTokens || Math.max(contextTokens, completion_tokens);
+  const prompt_tokens =
+    contextTokens > 0 ? Math.max(0, contextTokens) : Math.max(0, total_tokens - completion_tokens);
+  return {
+    prompt_tokens,
+    completion_tokens,
+    total_tokens: Math.max(total_tokens, prompt_tokens + completion_tokens),
+  };
 }

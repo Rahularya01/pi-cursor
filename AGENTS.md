@@ -131,9 +131,11 @@ src/
   Pi's system prompt must ride a `user` message (`<rules>…</rules>`), the way Cursor frames its own.
 - Historic tool activity replays as `tool-call` / `tool-result` content parts with names in
   Cursor's `mcp_pi_<tool>` form.
-- All of this lives in `src/stream/root-prompt.ts` and applies only when a request is built
-  _without_ an upstream checkpoint. A checkpoint already carries the server-rendered history; only
-  a changed system prompt is appended to it (`refreshSystemPrompt`).
+- All of this lives in `src/stream/root-prompt.ts`. Every request overlays a fresh prompt from
+  Pi's transcript onto `root_prompt_messages_json`, even when a checkpoint exists — checkpoints
+  keep Cursor's state (todos, file state) but their historical user entries are often empty.
+  Do not set `customSystemPrompt`; Cursor maps that field to a `--system-prompt` CLI option this
+  client path rejects.
 
 ### 6. Transport: In-Process HTTP/2, Streaming and Unary
 
@@ -158,15 +160,16 @@ src/
 
 ## 5. Environment Variables Reference
 
-| Variable                                   | Description                                                                                                                                                          |
-| :----------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CURSOR_ACCESS_TOKEN`                      | Static access token override for Cursor API calls                                                                                                                    |
-| `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | Base URL override for Agent Connect RPC (default: `https://agentn.us.api5.cursor.sh`)                                                                                |
-| `PI_CURSOR_SYSTEM_CREDENTIALS`             | Set to `0` or `false` to disable Keychain / IDE DB credential harvesting                                                                                             |
-| `PI_CURSOR_CLIENT_VERSION`                 | Pin custom `x-cursor-client-version` header sent by the HTTP/2 transport                                                                                             |
-| `PI_CURSOR_UNARY_BRIDGE`                   | Set to `1` to force unary RPCs through the general-purpose bridge transport instead of the dedicated one-shot in-process client (diagnostic escape hatch)            |
-| `PI_CURSOR_PROVIDER_DEBUG`                 | Set to `1` or `true` to enable verbose debug logging to temp file                                                                                                    |
-| `PI_CURSOR_RAW_MODELS`                     | Set to `1` or `true` to disable reasoning effort suffix collapsing in model picker                                                                                   |
-| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`         | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables). Heartbeats do not reset it while an exec is unanswered; that path uses a 45s park deadline. |
-| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`             | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                                                                                                  |
-| `PI_CURSOR_PROMPT_HISTORY`                 | Set to `0` or `false` to stop publishing system prompt + history as prompt messages                                                                                  |
+| Variable                                       | Description                                                                                                                                                          |
+| :--------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CURSOR_ACCESS_TOKEN`                          | Static access token override for Cursor API calls                                                                                                                    |
+| `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL`     | Base URL override for Agent Connect RPC (default: `https://agentn.us.api5.cursor.sh`)                                                                                |
+| `PI_CURSOR_SYSTEM_CREDENTIALS`                 | Set to `0` or `false` to disable Keychain / IDE DB credential harvesting                                                                                             |
+| `PI_CURSOR_CLIENT_VERSION`                     | Pin custom `x-cursor-client-version` header sent by the HTTP/2 transport                                                                                             |
+| `PI_PROXY_CURSOR` / `PI_PROXY` / `HTTPS_PROXY` | HTTP CONNECT proxy for Cursor HTTP/2 (optional)                                                                                                                      |
+| `PI_CURSOR_UNARY_BRIDGE`                       | Set to `1` to force unary RPCs through the general-purpose bridge transport instead of the dedicated one-shot in-process client (diagnostic escape hatch)            |
+| `PI_CURSOR_PROVIDER_DEBUG`                     | Set to `1` or `true` to enable verbose debug logging to temp file                                                                                                    |
+| `PI_CURSOR_RAW_MODELS`                         | Set to `1` or `true` to disable reasoning effort suffix collapsing in model picker                                                                                   |
+| `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`             | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables). Heartbeats do not reset it while an exec is unanswered; that path uses a 45s park deadline. |
+| `PI_CURSOR_H2_IDLE_TIMEOUT_MS`                 | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                                                                                                  |
+| `PI_CURSOR_PROMPT_HISTORY`                     | Set to `0` or `false` to stop publishing system prompt + history as prompt messages                                                                                  |

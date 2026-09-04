@@ -61,6 +61,7 @@ import {
   handleBridgeCloseMidPause,
   mergeBlobStore,
   persistAbortedConversationState,
+  rotateConversationAfterRateLimit,
   trimBlobStore,
   withSessionLock,
 } from "./session-state.js";
@@ -166,6 +167,7 @@ import {
   classifyBridgeExit,
   formatTransportFailure,
 } from "./transport-errors.js";
+import { TransportFailureKind } from "../types/enums.js";
 export {
   CHECKPOINT_CONTINUATION_PROMPT,
   classifyBridgeExit,
@@ -477,24 +479,12 @@ async function handleCursorNativeRequest(
   // full prompt for anything actionable, for identity/capability questions the
   // prompt itself answers, and whenever it carries folded session/compaction
   // memory.
-  const PI_MCP_TOOLS_ONLY =
-    "You are running inside Pi, not the Cursor IDE. " +
-    "Cursor-native tools (read, write, ls, grep, shell, fetch, delete) are not available. " +
-    "Use only the MCP tools listed in this request. " +
-    "Do not re-list the workspace or re-read files to recover context unless the latest user message asks you to.";
-  // Even a dropped prompt leaves this much behind: without it the model answers
-  // a greeting as Cursor's IDE assistant.
   const PI_IDENTITY_ONLY = "You are running inside Pi, not the Cursor IDE.";
   const dropSystemPrompt =
     omitToolsForTrivialTurn &&
     !isIdentityConversationalTurn(userText) &&
     !systemPromptHasSessionMemory(systemPrompt);
-  let effectiveSystemPrompt = dropSystemPrompt ? PI_IDENTITY_ONLY : systemPrompt;
-  if (selectedTools.length > 0) {
-    effectiveSystemPrompt = effectiveSystemPrompt
-      ? `${effectiveSystemPrompt}\n\n${PI_MCP_TOOLS_ONLY}`
-      : PI_MCP_TOOLS_ONLY;
-  }
+  const effectiveSystemPrompt = dropSystemPrompt ? PI_IDENTITY_ONLY : systemPrompt;
   if (omitToolsForTrivialTurn) {
     setLastStreamEvent("tools_omitted_trivial_turn");
     lifecycleLog("tools_omitted", {
@@ -1247,6 +1237,12 @@ function writeNativeStream(
             idleWatchdog.setTimeoutMs(parkTimeoutMs);
             idleWatchdog.reset();
           },
+          (work) => {
+            idleWatchdog.pause();
+            void work.finally(() => {
+              if (!cancelled && !writer.closed) idleWatchdog.resume();
+            });
+          },
         );
         if (progress === "work") {
           if (parkedExecCase !== undefined) {
@@ -1462,6 +1458,18 @@ function writeNativeStream(
             emittedUserVisibleContent,
           });
           setLastStreamEvent(`transport_retry:${failure.kind}`);
+          if (failure.kind === TransportFailureKind.RateLimit) {
+            const stored = conversationStates.get(convKey);
+            if (stored) {
+              rotateConversationAfterRateLimit(stored);
+              checkpointRef.current = null;
+              debugLog("native.stream.conversation_rotated", {
+                requestId,
+                convKey,
+                conversationId: stored.conversationId,
+              });
+            }
+          }
           persistAbortedConversationState(
             convKey,
             checkpointRef.current,

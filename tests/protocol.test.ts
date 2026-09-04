@@ -11,6 +11,9 @@ describe("protocol helpers", () => {
     expect(isAuthErrorMessage("Connect error unauthenticated: bad token")).toBe(true);
     expect(isAuthErrorMessage("normal failure")).toBe(false);
     expect(isProtocolMismatchMessage("Failed to parse Connect end stream")).toBe(true);
+    expect(
+      isProtocolMismatchMessage("Connect error invalid_argument: unknown option '--system-prompt'"),
+    ).toBe(false);
   });
 
   it("enhances auth/protocol errors with hints", () => {
@@ -20,6 +23,10 @@ describe("protocol helpers", () => {
     const proto = enhanceCursorStreamError("Failed to parse Connect end stream");
     expect(proto).toMatch(/protocol-hint/);
     expect(proto).toMatch(/PI_CURSOR_CLIENT_VERSION/);
+    const invalidArg = enhanceCursorStreamError(
+      "Connect error invalid_argument: unknown option '--system-prompt'",
+    );
+    expect(invalidArg).not.toMatch(/protocol-hint/);
   });
 
   it("parses connect end-stream errors", () => {

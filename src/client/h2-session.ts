@@ -3,11 +3,10 @@
  *
  * Replaces the old h2-bridge.mjs Node child process. That subprocess existed because Bun's
  * `node:http2` client was believed unable to carry a bidirectional Connect stream reliably.
- * oh-my-pi (github.com/can1357/oh-my-pi, packages/ai/src/providers/cursor.ts) demonstrates the
- * same bidirectional Connect-stream pattern working directly in-process under Bun — writes
+ * The same bidirectional Connect-stream pattern now runs directly in-process under Bun — writes
  * (heartbeats, interaction responses, exec results) interleaved with reads throughout the
- * stream's life, no subprocess. Its only documented Bun/H2 caveat is ALPN negotiation failing
- * behind an ALPN-stripping TLS proxy (ported below as `describeH2TransportError`) — an
+ * stream's life, no subprocess. The documented Bun/H2 caveat is ALPN negotiation failing
+ * behind an ALPN-stripping TLS proxy (see `describeH2TransportError`) — an
  * environment issue, not a bidirectional-streaming bug.
  *
  * This module reproduces h2-bridge.mjs's exact externally observable protocol — the same
@@ -29,6 +28,7 @@ import {
   type BridgeHandle,
   type SpawnBridgeOptions,
 } from "./bridge.js";
+import { connectProxiedSocket, resolveCursorProxyUrl } from "./h2-proxy.js";
 
 const CURSOR_API_URL = "https://api2.cursor.sh";
 const MAX_ERROR_BODY_BYTES = 1024 * 1024;
@@ -58,7 +58,7 @@ function connectEndStreamErrorFrame(code: string, message: string): Buffer {
 /**
  * Maps an opaque HTTP/2 negotiation failure into an actionable diagnostic message.
  *
- * Ported from oh-my-pi's `mapH2TransportError`: an ALPN-stripping TLS-intercepting proxy (e.g.
+ * Ported ALPN diagnostic: an ALPN-stripping TLS-intercepting proxy (e.g.
  * Zscaler) causes the TLS handshake to negotiate no `h2` protocol, and the HTTP/2 client throws
  * `ERR_HTTP2_ERROR: h2 is not supported`. Cursor's RPCs are HTTP/2-only, so there is no h1
  * fallback — the call simply cannot proceed. Non-ALPN errors pass through untouched.
@@ -466,8 +466,97 @@ export function createInProcessBridge(
   debugLog: BridgeDebugLog,
 ): BridgeHandle {
   const baseUrl = options.url ?? CURSOR_API_URL;
-  const session = http2.connect(baseUrl) as unknown as H2Session;
-  return createBridgeHandleForSession(session, options, debugLog);
+  const proxy = resolveCursorProxyUrl();
+  if (!proxy) {
+    const session = http2.connect(baseUrl) as unknown as H2Session;
+    return createBridgeHandleForSession(session, options, debugLog);
+  }
+  return createProxiedBridge(baseUrl, proxy, options, debugLog);
+}
+
+function createProxiedBridge(
+  baseUrl: string,
+  proxy: URL,
+  options: SpawnBridgeOptions,
+  debugLog: BridgeDebugLog,
+): BridgeHandle {
+  let inner: BridgeHandle | undefined;
+  let failed = false;
+  let ended = false;
+  const pendingWrites: Uint8Array[] = [];
+  let onDataCb: ((chunk: Buffer) => void) | undefined;
+  let onCloseCb: ((code: number) => void) | undefined;
+  let onStreamDoneCb: (() => void) | undefined;
+  const stderr: string[] = [];
+
+  const fail = (error: Error) => {
+    if (failed) return;
+    failed = true;
+    stderr.push(`[h2-session] proxy tunnel failed: ${error.message}`);
+    debugLog("bridge.proxy_failed", { message: error.message });
+    onCloseCb?.(1);
+  };
+
+  void connectProxiedSocket(proxy, baseUrl)
+    .then((socket) => {
+      if (ended || failed) {
+        socket.destroy();
+        return;
+      }
+      const session = http2.connect(baseUrl, {
+        createConnection: () => socket,
+      }) as unknown as H2Session;
+      inner = createBridgeHandleForSession(session, options, debugLog);
+      if (onDataCb) inner.onData(onDataCb);
+      if (onStreamDoneCb) inner.onStreamDone?.(onStreamDoneCb);
+      if (onCloseCb) inner.onClose(onCloseCb);
+      for (const chunk of pendingWrites) inner.write(chunk);
+      pendingWrites.length = 0;
+      if (ended) inner.end();
+    })
+    .catch(fail);
+
+  return {
+    proc: {
+      kill: () => {
+        ended = true;
+        inner?.proc.kill();
+        if (!inner) fail(new Error("Proxy tunnel cancelled"));
+        return true;
+      },
+    },
+    get alive() {
+      if (failed) return false;
+      return inner ? inner.alive : true;
+    },
+    lastStderr() {
+      return [stderr.join("\n"), inner?.lastStderr() ?? ""].filter(Boolean).join("\n");
+    },
+    write(data: Uint8Array) {
+      if (inner) inner.write(data);
+      else pendingWrites.push(data);
+    },
+    openStream(accessToken: string) {
+      inner?.openStream?.(accessToken);
+    },
+    end() {
+      ended = true;
+      inner?.end();
+    },
+    onData(cb) {
+      onDataCb = cb;
+      inner?.onData(cb);
+    },
+    onStreamDone(cb) {
+      onStreamDoneCb = cb;
+      inner?.onStreamDone?.(cb);
+    },
+    onClose(cb) {
+      onCloseCb = cb;
+      if (failed) queueMicrotask(() => cb(1));
+      else inner?.onClose(cb);
+    },
+  };
 }
 
 export const __testInternals = {

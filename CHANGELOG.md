@@ -2,8 +2,19 @@
 
 ## [Unreleased]
 
+## [1.4.31] - 2026-09-04
+
+### Changed
+
+- **Cursor-native tools now run on the open stream** (read, ls, grep, write, delete, shell, fetch) instead of being rejected back to MCP. The model keeps generating on the same Run RPC; Pi MCP tools remain for anything called that way. Paths stay inside the workspace.
+- **Prompt history is always rebuilt from Pi's transcript**, even when a checkpoint exists, so empty server-side placeholders cannot wipe earlier turns. Pi's system prompt stays on `root_prompt_messages_json` (`<rules>`). `customSystemPrompt` is not sent — Cursor maps that field to a `--system-prompt` CLI option this client path rejects (`invalid_argument: unknown option '--system-prompt'`).
+- **Hosted web search / fetch permission prompts are approved by default** so those turns complete instead of forcing a re-plan. Pass `approveWeb: false` to reject.
+- Default `x-cursor-client-version` is `cli-2026.07.23-e383d2b`. Client heartbeats go out every 5s. HTTP CONNECT proxy support via `PI_PROXY_CURSOR` / `PI_PROXY` / `HTTPS_PROXY`.
+
 ### Fixed
 
+- **A Connect `invalid_argument` is no longer labeled as wire-protocol drift.** The protocol-hint used to match any `Connect error`, so a rejected `--system-prompt` option told people to bump `PI_CURSOR_CLIENT_VERSION`.
+- **`resource_exhausted` no longer retries the same dead conversation id.** The conversation is rotated before the next attempt.
 - **A transient Cursor `internal` or `unavailable` end-stream error no longer kills the turn.** These arrive as an end-stream frame with `exitCode: 0`, so `classifyBridgeExit` matched no bucket, fell through to `Unknown` with `retryable: false`, and the end-stream path called `writer.error()` without ever reaching `onClose` — failing a turn that an identical bridge exit would have recovered. A new `upstream_internal` failure kind covers `internal`, `unavailable`, and `deadline_exceeded`, classified after the protocol-drift check so a wire mismatch Cursor wraps in `internal` stays terminal. The end-stream handler now stages the error and kills the bridge so the existing `onClose` recovery owns the retry budget and checkpoint rules; `canRecoverAfterTransportLoss` and the idle-retry budget are unchanged.
 - **A checkpoint whose blobs the entry bound evicted is no longer kept and replayed with blank history.** The 512-entry blob store evicts oldest-first, but a checkpoint addresses its history by blob id and Cursor answers a request for a blob we no longer hold with an empty result rather than an error, so the conversation came back structurally intact with the evicted turns silently blank. `markBlobMiss` only caught this one turn late, after Cursor had already asked. `mergeBlobStore` now drops the checkpoint whenever its trim evicts anything — the same call `journal.checkpoint_dropped_incomplete_blobs` already makes at restore time — which also covers the merge paths that write no new checkpoint but can still evict blobs an earlier turn's checkpoint references. Costs one full-history rebuild from pi's transcript.
 

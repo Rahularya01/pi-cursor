@@ -168,13 +168,12 @@ export function startBridge(
     bridge.write(frameConnectMessage(requestBytes));
   }
   // Keep heartbeats referenced so long tool pauses do not look idle to the process.
-  // 15s interval: frequent enough to prevent mid-pause idle kills, low enough to
-  // avoid flooding a quiet stream with IPC chatter. Also slides the parked-bridge
-  // TTL so multi-round tool chains are not killed by the original park timestamp.
+  // 5s interval matches Cursor CLI liveness; also slides the parked-bridge TTL so
+  // multi-round tool chains are not killed by the original park timestamp.
   const heartbeatTimer = setInterval(() => {
     bridge.write(makeHeartbeatBytes());
     if (options?.bridgeKey) touchActiveBridge(options.bridgeKey);
-  }, 15_000);
+  }, 5_000);
   return { bridge, heartbeatTimer };
 }
 

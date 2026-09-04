@@ -8,7 +8,7 @@ const AUTH_ERROR_RE =
   /\b(unauthenticated|unauthorized|permission[_ ]?denied|auth(?:entication)?[_ ]?failed|invalid[_ ]?token|expired[_ ]?token|401)\b/i;
 
 const PROTOCOL_ERROR_RE =
-  /\b(failed to parse|decode|invalid wire|protocol|connect error|unknown field|premature eof)\b/i;
+  /\b(failed to parse|decode|invalid wire|protocol mismatch|unknown field|premature eof)\b/i;
 
 export function isAuthErrorMessage(message: string): boolean {
   return AUTH_ERROR_RE.test(message);

@@ -58,7 +58,7 @@ To prevent Cursor models from being derailed by side-channel injections:
 `pi-cursor` opens the HTTP/2 connection in-process via `node:http2`, which Bun implements natively — no subprocess is spawned. `h2-session.ts` owns a persistent `http2.ClientHttp2Session` that survives across turns, reopening a Connect stream on it (`openStream()`) instead of paying a fresh TLS/H2 handshake each time.
 
 - **Request:** Serialized `AgentClientMessage` binary frame.
-- **Headers:** `x-cursor-client-version` (default: `cli-2026.05.01-eea359f`), `authorization: Bearer <token>`, `connect-protocol-version: 1`.
+- **Headers:** `x-cursor-client-version` (default: `cli-2026.07.23-e383d2b`), `authorization: Bearer <token>`, `connect-protocol-version: 1`.
 - **Response:** Streaming binary Connect frames parsed via `@bufbuild/protobuf` `fromBinary()`.
 - **Idle safety net:** Connect timeout defaults to 30s (handshake only). **Activity idle is disabled by default** so long agent turns are not killed. Parent heartbeats every 5s reset the activity timer when it is enabled via `PI_CURSOR_H2_IDLE_TIMEOUT_MS`.
 

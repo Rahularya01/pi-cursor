@@ -109,6 +109,21 @@ export function clearStoredCheckpoint(stored: StoredConversation, clearBlobStore
 }
 
 /**
+ * Cursor can pin a `resource_exhausted` rejection to one conversation id.
+ * Rotate so the next attempt starts a fresh conversation instead of retrying
+ * a conversation the backend will keep refusing.
+ */
+export function rotateConversationAfterRateLimit(stored: StoredConversation): void {
+  const previousId = stored.conversationId;
+  stored.conversationId = randomUUID();
+  clearStoredCheckpoint(stored, false);
+  debugLog("conversation.rotated_rate_limit", {
+    previousId,
+    conversationId: stored.conversationId,
+  });
+}
+
+/**
  * A live KV blob miss means Cursor asked for history we no longer hold.
  * Drop the checkpoint and rotate the conversation id so the next turn rebuilds
  * from Pi's transcript instead of replaying holes.

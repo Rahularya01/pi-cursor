@@ -217,6 +217,8 @@ export interface StreamState {
   pendingExecs: PendingExec[];
   outputTokens: number;
   totalTokens: number;
+  /** Input/context tokens from the last checkpoint `tokenDetails.usedTokens`. */
+  contextTokens?: number;
   /** Set once Cursor reported `turnEnded`; a connection close after it is a completed turn. */
   turnEnded: boolean;
 }

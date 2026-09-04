@@ -32,6 +32,7 @@ import {
   McpToolResultSchema,
   McpToolResultContentItemSchema,
   McpToolsSchema,
+  ModelDetailsSchema,
   RequestedModelSchema,
   RequestedModel_ModelParameterbytesSchema,
   SelectedContextSchema,
@@ -49,7 +50,6 @@ import {
   buildRootPromptMessages,
   encodeRootPromptMessage,
   isPromptHistoryEnabled,
-  systemPromptRootMessage,
 } from "./root-prompt.js";
 export {
   buildMcpToolDefinitions,
@@ -560,50 +560,44 @@ export function buildCursorRequestFromParts(
   const systemBlobId = storeAsBlob(systemBytes, blobStore);
   const selectedCtxBlob = storeAsBlob(buildSelectedContextBlob([systemBlobId], "pi"), blobStore);
 
+  const turnBlobIds: Uint8Array[] = [];
+  for (const turn of turns) {
+    const userMsg = createUserMessage(turn.userText, selectedCtxBlob, turn.userImages ?? []);
+    const userMsgBlobId = storeAsBlob(toBinary(UserMessageSchema, userMsg), blobStore);
+    const stepBlobIds = turn.steps.map((s) => storeAsBlob(buildTurnStepBytes(s), blobStore));
+
+    const agentTurn = create(AgentConversationTurnStructureSchema, {
+      userMessage: userMsgBlobId,
+      steps: stepBlobIds,
+      requestId: crypto.randomUUID(),
+    });
+    const turnStructure = create(ConversationTurnStructureSchema, {
+      turn: { case: "agentConversationTurn", value: agentTurn },
+    });
+    turnBlobIds.push(
+      storeAsBlob(toBinary(ConversationTurnStructureSchema, turnStructure), blobStore),
+    );
+  }
+
+  // `turns` is state, not prompt: Cursor's server never renders it back into
+  // model messages. The prompt it actually reads is this list. Always overlay
+  // a fresh prompt from Pi's transcript — a checkpoint's historical user
+  // entries are often empty placeholders.
+  const promptBlobIds = isPromptHistoryEnabled()
+    ? buildRootPromptMessages(systemPrompt, turns).map((message) =>
+        storeAsBlob(encodeRootPromptMessage(message), blobStore),
+      )
+    : [];
+  const rootPromptMessagesJson = [systemBlobId, ...promptBlobIds];
+
   let conversationState;
   if (checkpoint) {
     conversationState = fromBinary(ConversationStateStructureSchema, checkpoint);
-    // A checkpoint froze the instructions recorded when the conversation began.
-    // Pi rewrites its system prompt as a session evolves — context-mode folds
-    // session memory into it — so a changed prompt is re-published here instead
-    // of being silently pinned to whatever turn one happened to say.
-    if (refreshSystemPrompt && isPromptHistoryEnabled() && systemPrompt.trim()) {
-      conversationState.rootPromptMessagesJson = [
-        ...conversationState.rootPromptMessagesJson,
-        storeAsBlob(encodeRootPromptMessage(systemPromptRootMessage(systemPrompt)), blobStore),
-      ];
-    }
+    conversationState.rootPromptMessagesJson = rootPromptMessagesJson;
+    conversationState.turns = turnBlobIds;
   } else {
-    const turnBlobIds: Uint8Array[] = [];
-    for (const turn of turns) {
-      const userMsg = createUserMessage(turn.userText, selectedCtxBlob, turn.userImages ?? []);
-      const userMsgBlobId = storeAsBlob(toBinary(UserMessageSchema, userMsg), blobStore);
-      const stepBlobIds = turn.steps.map((s) => storeAsBlob(buildTurnStepBytes(s), blobStore));
-
-      const agentTurn = create(AgentConversationTurnStructureSchema, {
-        userMessage: userMsgBlobId,
-        steps: stepBlobIds,
-        requestId: crypto.randomUUID(),
-      });
-      const turnStructure = create(ConversationTurnStructureSchema, {
-        turn: { case: "agentConversationTurn", value: agentTurn },
-      });
-      turnBlobIds.push(
-        storeAsBlob(toBinary(ConversationTurnStructureSchema, turnStructure), blobStore),
-      );
-    }
-
-    // `turns` is state, not prompt: Cursor's server never renders it back into
-    // model messages. The prompt it actually reads is this list, so the system
-    // prompt and every completed turn are replayed here — see ./root-prompt.ts.
-    const promptBlobIds = isPromptHistoryEnabled()
-      ? buildRootPromptMessages(systemPrompt, turns).map((message) =>
-          storeAsBlob(encodeRootPromptMessage(message), blobStore),
-        )
-      : [];
-
     conversationState = create(ConversationStateStructureSchema, {
-      rootPromptMessagesJson: [systemBlobId, ...promptBlobIds],
+      rootPromptMessagesJson,
       turns: turnBlobIds,
       todos: [],
       pendingToolCalls: [],
@@ -624,22 +618,36 @@ export function buildCursorRequestFromParts(
   const action = create(ConversationActionSchema, {
     action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
   });
-  // Cursor's newer request path uses requestedModel instead of legacy modelDetails.
-  // Some Cursor models (for example GPT-5.5) use requestedModel.parameters
-  // for context/reasoning/fast instead of encoding everything in the model ID.
+  // Send both requestedModel (parameterized variants) and modelDetails (CLI
+  // path still reads the legacy field). Some Cursor models (for example
+  // GPT-5.5) use requestedModel.parameters for context/reasoning/fast instead
+  // of encoding everything in the model ID.
   // Max Mode is routed from model metadata for parameterized variants.
   debugLog("cursor_request.requested_model", {
     modelId,
     maxMode,
     parameters: cursorModelParameters,
+    refreshSystemPrompt,
   });
   const parameters = cursorModelParameters.map((parameter) =>
     create(RequestedModel_ModelParameterbytesSchema, parameter),
   );
   const requestedModel = create(RequestedModelSchema, { modelId, maxMode, parameters });
+  const modelDetails = create(ModelDetailsSchema, {
+    modelId,
+    displayModelId: modelId,
+    displayName: modelId,
+    ...(maxMode ? { maxMode: true } : {}),
+  });
+  // Do not set customSystemPrompt. Cursor's agent maps that field onto a
+  // `--system-prompt` CLI option; this client path rejects it as unknown.
+  // Pi's prompt already rides root_prompt_messages_json as a <rules> user
+  // message (see root-prompt.ts). Overlay already publishes the current prompt,
+  // so refreshSystemPrompt does not append a second copy.
   const runRequest = create(AgentRunRequestSchema, {
     conversationState,
     action,
+    modelDetails,
     requestedModel,
     conversationId,
     mcpTools: create(McpToolsSchema, { mcpTools }),

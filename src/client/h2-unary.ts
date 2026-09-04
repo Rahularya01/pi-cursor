@@ -12,6 +12,7 @@ import http2 from "node:http2";
 import { randomUUID } from "node:crypto";
 
 import { getCursorClientVersion } from "../config/index.js";
+import { connectProxiedSocket, resolveCursorProxyUrl } from "./h2-proxy.js";
 
 const CURSOR_API_URL = "https://api2.cursor.sh";
 export const MAX_UNARY_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -99,48 +100,58 @@ export function callUnaryOverH2(options: UnaryH2Options): Promise<UnaryH2Result>
       timer.unref?.();
     }
 
-    try {
-      session = http2.connect(origin);
-    } catch (err) {
-      fail(err instanceof Error ? err : new Error(String(err)));
+    const startSession = (sessionToUse: http2.ClientHttp2Session) => {
+      session = sessionToUse;
+      session.on("error", (err) => fail(err));
+
+      const request = session.request({
+        ":method": "POST",
+        ":path": options.rpcPath,
+        // Unary uses raw protobuf, matching the h2-bridge's `unary: true` mode.
+        "content-type": "application/proto",
+        "connect-protocol-version": "1",
+        te: "trailers",
+        authorization: `Bearer ${options.accessToken}`,
+        "x-ghost-mode": "true",
+        "x-cursor-client-version": getCursorClientVersion(),
+        "x-cursor-client-type": "cli",
+        "x-request-id": randomUUID(),
+      });
+
+      const chunks: Buffer[] = [];
+      let responseBytes = 0;
+      let status = 0;
+
+      request.on("response", (headers) => {
+        status = Number(headers[":status"] ?? 0);
+      });
+      request.on("data", (chunk: Buffer) => {
+        responseBytes += chunk.byteLength;
+        if (responseBytes > MAX_UNARY_RESPONSE_BYTES) {
+          request.close(http2.constants.NGHTTP2_CANCEL);
+          fail(new Error(`Cursor unary response exceeds ${MAX_UNARY_RESPONSE_BYTES} bytes`));
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      request.on("error", (err) => fail(err));
+      request.on("end", () => succeed({ status, body: Buffer.concat(chunks) }));
+
+      request.end(Buffer.from(options.requestBody));
+    };
+
+    const proxy = resolveCursorProxyUrl();
+    if (proxy) {
+      void connectProxiedSocket(proxy, origin, { signal: options.signal, timeoutMs })
+        .then((socket) => startSession(http2.connect(origin, { createConnection: () => socket })))
+        .catch((err) => fail(err instanceof Error ? err : new Error(String(err))));
       return;
     }
 
-    session.on("error", (err) => fail(err));
-
-    const request = session.request({
-      ":method": "POST",
-      ":path": options.rpcPath,
-      // Unary uses raw protobuf, matching the h2-bridge's `unary: true` mode.
-      "content-type": "application/proto",
-      "connect-protocol-version": "1",
-      te: "trailers",
-      authorization: `Bearer ${options.accessToken}`,
-      "x-ghost-mode": "true",
-      "x-cursor-client-version": getCursorClientVersion(),
-      "x-cursor-client-type": "cli",
-      "x-request-id": randomUUID(),
-    });
-
-    const chunks: Buffer[] = [];
-    let responseBytes = 0;
-    let status = 0;
-
-    request.on("response", (headers) => {
-      status = Number(headers[":status"] ?? 0);
-    });
-    request.on("data", (chunk: Buffer) => {
-      responseBytes += chunk.byteLength;
-      if (responseBytes > MAX_UNARY_RESPONSE_BYTES) {
-        request.close(http2.constants.NGHTTP2_CANCEL);
-        fail(new Error(`Cursor unary response exceeds ${MAX_UNARY_RESPONSE_BYTES} bytes`));
-        return;
-      }
-      chunks.push(Buffer.from(chunk));
-    });
-    request.on("error", (err) => fail(err));
-    request.on("end", () => succeed({ status, body: Buffer.concat(chunks) }));
-
-    request.end(Buffer.from(options.requestBody));
+    try {
+      startSession(http2.connect(origin));
+    } catch (err) {
+      fail(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 }

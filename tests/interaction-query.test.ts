@@ -10,7 +10,7 @@ import {
 import { handleInteractionQuery } from "../src/stream/interaction-query.js";
 
 describe("handleInteractionQuery", () => {
-  it("rejects web search by default so Cursor-side fetches do not run", () => {
+  it("rejects web search when explicitly disabled", () => {
     const frames: Uint8Array[] = [];
     const query = create(InteractionQuerySchema, {
       id: 7,
@@ -19,13 +19,15 @@ describe("handleInteractionQuery", () => {
         value: create(WebSearchRequestQuerySchema, {}),
       },
     });
-    const result = handleInteractionQuery(query, (frame) => frames.push(frame));
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
+      approveWeb: false,
+    });
     expect(result.handled).toBe(true);
     expect(result.action).toBe("web_search_rejected");
     expect(frames).toHaveLength(1);
   });
 
-  it("still answers web search when explicitly approved", () => {
+  it("approves web search by default so hosted fetch can complete the turn", () => {
     const frames: Uint8Array[] = [];
     const query = create(InteractionQuerySchema, {
       id: 8,
@@ -34,9 +36,7 @@ describe("handleInteractionQuery", () => {
         value: create(WebSearchRequestQuerySchema, {}),
       },
     });
-    const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
-      approveWeb: true,
-    });
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame));
     expect(result.handled).toBe(true);
     expect(result.action).toBe("web_search_approved");
     expect(frames).toHaveLength(1);
@@ -74,17 +74,15 @@ describe("handleInteractionQuery", () => {
     expect(frames).toHaveLength(1);
   });
 
-  it("rejects unnamed proto field #9 without killing the turn", () => {
+  it("approves unnamed proto field #9 so hosted web fetch can continue", () => {
     const frames: Uint8Array[] = [];
     const query = create(InteractionQuerySchema, { id: 11 });
     (
       query as unknown as { $unknown: Array<{ no: number; wireType: number; data: Uint8Array }> }
     ).$unknown = [{ no: 9, wireType: 2, data: new Uint8Array([0x0a, 0x00]) }];
-    const result = handleInteractionQuery(query, (frame) => frames.push(frame), {
-      approveWeb: true,
-    });
+    const result = handleInteractionQuery(query, (frame) => frames.push(frame));
     expect(result.handled).toBe(true);
-    expect(result.action).toBe("unknown_field_9_rejected");
+    expect(result.action).toBe("unknown_field_9_approved");
     expect(frames).toHaveLength(1);
     expect(frames[0]!.byteLength).toBeGreaterThan(5);
   });
