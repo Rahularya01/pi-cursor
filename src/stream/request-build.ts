@@ -32,7 +32,6 @@ import {
   McpToolResultSchema,
   McpToolResultContentItemSchema,
   McpToolsSchema,
-  ModelDetailsSchema,
   RequestedModelSchema,
   RequestedModel_ModelParameterbytesSchema,
   SelectedContextSchema,
@@ -618,10 +617,10 @@ export function buildCursorRequestFromParts(
   const action = create(ConversationActionSchema, {
     action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
   });
-  // Send both requestedModel (parameterized variants) and modelDetails (CLI
-  // path still reads the legacy field). Some Cursor models (for example
-  // GPT-5.5) use requestedModel.parameters for context/reasoning/fast instead
-  // of encoding everything in the model ID.
+  // Cursor's current Run path reads requestedModel. Some models use its
+  // parameters for context, reasoning, and fast variants instead of encoding
+  // every option in the model ID. Sending the legacy modelDetails field as
+  // well makes current Cursor reject valid models such as Fable with not_found.
   // Max Mode is routed from model metadata for parameterized variants.
   debugLog("cursor_request.requested_model", {
     modelId,
@@ -633,12 +632,6 @@ export function buildCursorRequestFromParts(
     create(RequestedModel_ModelParameterbytesSchema, parameter),
   );
   const requestedModel = create(RequestedModelSchema, { modelId, maxMode, parameters });
-  const modelDetails = create(ModelDetailsSchema, {
-    modelId,
-    displayModelId: modelId,
-    displayName: modelId,
-    ...(maxMode ? { maxMode: true } : {}),
-  });
   // Do not set customSystemPrompt. Cursor's agent maps that field onto a
   // `--system-prompt` CLI option; this client path rejects it as unknown.
   // Pi's prompt already rides root_prompt_messages_json as a <rules> user
@@ -647,7 +640,6 @@ export function buildCursorRequestFromParts(
   const runRequest = create(AgentRunRequestSchema, {
     conversationState,
     action,
-    modelDetails,
     requestedModel,
     conversationId,
     mcpTools: create(McpToolsSchema, { mcpTools }),

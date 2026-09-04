@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fable requests no longer fail with `Connect error not_found`.** The Run request now sends model selection only through `requested_model`; `model_details` is a legacy alternative, and populating both fields made Cursor reject valid `claude-fable-5-1` requests. Fixes [#23](https://github.com/Rahularya01/pi-cursor/issues/23).
+
 ## [1.4.31] - 2026-09-04
 
 ### Changed
