@@ -1243,6 +1243,7 @@ function writeNativeStream(
               if (!cancelled && !writer.closed) idleWatchdog.resume();
             });
           },
+          convKey,
         );
         if (progress === "work") {
           if (parkedExecCase !== undefined) {

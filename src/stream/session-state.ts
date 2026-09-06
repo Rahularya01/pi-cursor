@@ -127,18 +127,21 @@ export function rotateConversationAfterRateLimit(stored: StoredConversation): vo
  * A live KV blob miss means Cursor asked for history we no longer hold.
  * Drop the checkpoint and rotate the conversation id so the next turn rebuilds
  * from Pi's transcript instead of replaying holes.
+ *
+ * Identity is the conversation key, not the live blob-store Map. Request build
+ * clones `stored.blobStore`, so comparing Map references misses the journaled
+ * conversation and the next turn replays the same holes.
  */
-export function markBlobMiss(blobStore: Map<string, Uint8Array>): void {
-  for (const [convKey, stored] of conversationStates) {
-    if (stored.blobStore !== blobStore) continue;
-    debugLog("conversation.blob_miss_invalidate", {
-      convKey,
-      hadCheckpoint: !!stored.checkpoint,
-    });
-    clearStoredCheckpoint(stored, false);
-    stored.conversationId = randomUUID();
-    persistJournal(convKey, stored);
-  }
+export function markBlobMiss(convKey: string): void {
+  const stored = getOrHydrateConversation(convKey);
+  if (!stored) return;
+  debugLog("conversation.blob_miss_invalidate", {
+    convKey,
+    hadCheckpoint: !!stored.checkpoint,
+  });
+  clearStoredCheckpoint(stored, false);
+  stored.conversationId = randomUUID();
+  persistJournal(convKey, stored);
 }
 
 /**

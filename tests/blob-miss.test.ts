@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { create, fromBinary } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
@@ -7,7 +7,8 @@ import {
   KvServerMessageSchema,
 } from "../src/proto/agent_pb.js";
 import { processServerMessage } from "../src/stream/server-messages.js";
-import type { StreamState } from "../src/stream/types.js";
+import { conversationStates } from "../src/stream/session-state.js";
+import type { StoredConversation, StreamState } from "../src/stream/types.js";
 
 function emptyState(): StreamState {
   return {
@@ -32,6 +33,10 @@ function getBlobMessage(blobId: Uint8Array) {
     },
   });
 }
+
+afterEach(() => {
+  conversationStates.clear();
+});
 
 describe("getBlobArgs miss must not punch holes", () => {
   it("still returns a blob the store holds", () => {
@@ -76,5 +81,41 @@ describe("getBlobArgs miss must not punch holes", () => {
       ),
     ).toThrow(/blob/i);
     expect(frames).toHaveLength(0);
+  });
+
+  it("drops the stored checkpoint when the live blob store is a clone", () => {
+    const original = new Map<string, Uint8Array>([["aa", new Uint8Array([1])]]);
+    const stored: StoredConversation = {
+      conversationId: "conv-1",
+      checkpoint: new Uint8Array([9, 9, 9]),
+      checkpointSource: "upstream",
+      checkpointTurnCount: 3,
+      sessionScoped: true,
+      blobStore: original,
+      lastAccessMs: Date.now(),
+    };
+    conversationStates.set("conv-key", stored);
+    // request-build.ts clones stored.blobStore; the live stream does not share that Map.
+    const live = new Map(original);
+    const frames: Uint8Array[] = [];
+
+    expect(() =>
+      processServerMessage(
+        getBlobMessage(new Uint8Array([0xe3, 0x49])),
+        live,
+        [],
+        (frame) => frames.push(frame),
+        emptyState(),
+        () => {},
+        () => {},
+        undefined,
+        undefined,
+        undefined,
+        "conv-key",
+      ),
+    ).toThrow(/blob/i);
+    expect(frames).toHaveLength(0);
+    expect(stored.checkpoint).toBeNull();
+    expect(stored.conversationId).not.toBe("conv-1");
   });
 });

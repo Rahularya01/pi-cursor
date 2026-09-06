@@ -84,6 +84,7 @@ export function processServerMessage(
   onCheckpoint?: (checkpointBytes: Uint8Array) => void,
   onExecUnanswerable?: (execCase: string | undefined) => void,
   onLocalWork?: (work: Promise<void>) => void,
+  convKey?: string,
 ): StreamProgress {
   const msgCase = msg.message.case;
   debugLog("server_message", { msgCase, msg });
@@ -152,7 +153,7 @@ export function processServerMessage(
     return "none";
   }
   if (msgCase === "kvServerMessage") {
-    return handleKvMessage(msg.message.value as KvServerMessage, blobStore, sendFrame)
+    return handleKvMessage(msg.message.value as KvServerMessage, blobStore, sendFrame, convKey)
       ? "work"
       : "none";
   }
@@ -256,6 +257,7 @@ function handleKvMessage(
   kvMsg: KvServerMessage,
   blobStore: Map<string, Uint8Array>,
   sendFrame: (data: Uint8Array) => void,
+  convKey?: string,
 ): boolean {
   const kvCase = (kvMsg as any).message.case;
   if (kvCase === "getBlobArgs") {
@@ -266,10 +268,15 @@ function handleKvMessage(
       // piece of the replayed conversation is gone. An empty getBlobResult is
       // indistinguishable from an empty blob, so answering continues the turn
       // with silent holes and often dies as Connect `internal`. Refuse, drop the
-      // checkpoint, and fail this generation so the next turn rebuilds from Pi.
-      lifecycleLog("kv_blob_miss", { blobId: blobIdKey.slice(0, 16), storeSize: blobStore.size });
+      // checkpoint by conversation key (the live Map is a clone), and fail this
+      // generation so the next turn rebuilds from Pi.
+      lifecycleLog("kv_blob_miss", {
+        blobId: blobIdKey.slice(0, 16),
+        storeSize: blobStore.size,
+        convKey,
+      });
       setLastStreamEvent("kv_blob_miss");
-      markBlobMiss(blobStore);
+      if (convKey) markBlobMiss(convKey);
       throw new Error(
         `Cursor asked for blob ${blobIdKey.slice(0, 16)} that is not in the local store (${blobStore.size} entries). Refusing to answer empty.`,
       );
