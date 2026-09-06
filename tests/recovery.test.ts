@@ -193,9 +193,9 @@ describe("planRecovery", () => {
       convKey: "c1",
     });
 
-    expect(decision.kind).toBe("skip");
-    if (decision.kind === "skip") {
-      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    expect(decision.kind).toBe("rebuild_full_history");
+    if (decision.kind === "rebuild_full_history") {
+      expect(decision.rebuildReason).toBe("checkpoint_tool_mismatch");
     }
   });
 
@@ -205,6 +205,66 @@ describe("planRecovery", () => {
       checkpoint: new Uint8Array([9]),
       midPauseTurnCount: completedTurns.length,
       midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+      discardStaleCheckpoint: (s) => {
+        s.checkpoint = null;
+      },
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+    if (decision.kind === "rebuild_full_history") {
+      expect(decision.rebuildReason).toBe("stale_checkpoint");
+    }
+  });
+
+  it("rebuilds from the in-flight turn when stale discard also wiped mid-pause", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const stored = storedBase({
+      checkpoint: new Uint8Array([9]),
+      midPauseTurnCount: completedTurns.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(completedTurns),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+      discardStaleCheckpoint: (s) => {
+        s.checkpoint = null;
+        delete s.midPausePendingToolCalls;
+        delete s.midPauseTurnCount;
+        delete s.midPauseHistoryFingerprint;
+        delete s.midPauseRecordedAtMs;
+      },
+    });
+    expect(decision.kind).toBe("rebuild_full_history");
+    if (decision.kind === "rebuild_full_history") {
+      expect(decision.rebuildReason).toBe("stale_checkpoint");
+    }
+  });
+
+  it("rebuilds from the in-flight turn when mid-pause fingerprints rewritten wire history", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const rewritten: ParsedTurn[] = [
+      ...completedTurns,
+      {
+        userText: "do work",
+        steps: [{ kind: "toolCall", toolCallId: "t1", toolName: "read", arguments: {} }],
+      },
+    ];
+    const stored = storedBase({
+      checkpoint: new Uint8Array([9]),
+      midPausePendingToolCalls: [{ toolCallId: "t1", toolName: "read" }],
+      midPauseTurnCount: rewritten.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(rewritten),
     });
     const decision = planRecovery({
       stored,

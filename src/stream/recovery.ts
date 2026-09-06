@@ -343,40 +343,28 @@ export function validatePendingCoveredByReceived(
   return { ok: true };
 }
 
+function midPauseSnapshotMatchesRequest(
+  stored: StoredConversation,
+  completedTurns: ParsedTurn[],
+  nowMs: number,
+  maxAgeMs: number,
+): boolean {
+  if (!stored.midPausePendingToolCalls?.length) return false;
+  if (stored.midPauseTurnCount !== completedTurns.length) return false;
+  const currentHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
+  if (stored.midPauseHistoryFingerprint !== currentHistoryFingerprint) return false;
+  const recordedAtMs = stored.midPauseRecordedAtMs;
+  if (recordedAtMs === undefined || nowMs - recordedAtMs > maxAgeMs) return false;
+  return true;
+}
+
 export function planFullHistoryRebuild(
   input: PlanRecoveryInput & { stored: StoredConversation },
   hadStoredCheckpoint: boolean,
   rebuildReason: FullHistoryRebuildReason,
 ): RecoveryDecision {
-  const pendingToolCalls = input.stored.midPausePendingToolCalls;
-  if (!pendingToolCalls?.length) {
-    return skipRecovery("no_midpause_snapshot", hadStoredCheckpoint);
-  }
-
   if (input.stored.sessionScoped && input.stored.sessionId !== input.sessionId) {
     return skipRecovery("session_mismatch", hadStoredCheckpoint);
-  }
-
-  const currentTurnCount = input.completedTurns.length;
-  if (input.stored.midPauseTurnCount !== currentTurnCount) {
-    clearStoredMidPauseMetadata(input.stored);
-    return skipRecovery("midpause_turn_count_mismatch", hadStoredCheckpoint);
-  }
-
-  const currentHistoryFingerprint = fingerprintCompletedTurns(input.completedTurns);
-  if (input.stored.midPauseHistoryFingerprint !== currentHistoryFingerprint) {
-    clearStoredMidPauseMetadata(input.stored);
-    return skipRecovery("midpause_history_fingerprint_mismatch", hadStoredCheckpoint);
-  }
-
-  const recordedAtMs = input.stored.midPauseRecordedAtMs;
-  const maxAgeMs =
-    input.midPauseRebuildMaxAgeMs ??
-    resolveMidPauseRebuildMaxAgeMs(process.env.PI_CURSOR_MIDPAUSE_REBUILD_MAX_AGE_MS);
-  const now = input.nowMs ?? Date.now();
-  if (recordedAtMs === undefined || now - recordedAtMs > maxAgeMs) {
-    clearStoredMidPauseMetadata(input.stored);
-    return skipRecovery("midpause_metadata_stale", hadStoredCheckpoint);
   }
 
   const strippedInFlightTurn = input.inFlightTurn
@@ -391,18 +379,8 @@ export function planFullHistoryRebuild(
     return skipRecovery("no_inflight_tool_continuation", hadStoredCheckpoint);
   }
 
-  const pendingIds = pendingToolCalls.map((c) => c.toolCallId).filter(identifiableToolCallId);
   const receivedIds = input.toolResults.map((r) => r.toolCallId).filter(identifiableToolCallId);
-  const pendingVsReceived = validatePendingCoveredByReceived(pendingIds, receivedIds);
   const inFlightVsReceived = validateExactToolResultMatch(inFlightToolCallIds, receivedIds);
-  if (!pendingVsReceived.ok) {
-    return skipRecovery(
-      "pending_tool_call_mismatch",
-      hadStoredCheckpoint,
-      pendingVsReceived.expected,
-      pendingVsReceived.received,
-    );
-  }
   if (!inFlightVsReceived.ok) {
     return skipRecovery(
       "pending_tool_call_mismatch",
@@ -410,6 +388,30 @@ export function planFullHistoryRebuild(
       inFlightVsReceived.expected,
       inFlightVsReceived.received,
     );
+  }
+
+  // A matching mid-pause snapshot still has to be covered by the results. A missing,
+  // rewritten, or discarded snapshot must not block rebuild: discardStaleCheckpoint
+  // clears mid-pause along with the checkpoint, and synthesized_after_idle keys the
+  // snapshot to wire history that no longer fingerprints as Pi's completedTurns.
+  // The current request's in-flight turn is the pin.
+  const maxAgeMs =
+    input.midPauseRebuildMaxAgeMs ??
+    resolveMidPauseRebuildMaxAgeMs(process.env.PI_CURSOR_MIDPAUSE_REBUILD_MAX_AGE_MS);
+  const now = input.nowMs ?? Date.now();
+  if (midPauseSnapshotMatchesRequest(input.stored, input.completedTurns, now, maxAgeMs)) {
+    const pendingIds = (input.stored.midPausePendingToolCalls ?? [])
+      .map((c) => c.toolCallId)
+      .filter(identifiableToolCallId);
+    const pendingVsReceived = validatePendingCoveredByReceived(pendingIds, receivedIds);
+    if (!pendingVsReceived.ok) {
+      return skipRecovery(
+        "pending_tool_call_mismatch",
+        hadStoredCheckpoint,
+        pendingVsReceived.expected,
+        pendingVsReceived.received,
+      );
+    }
   }
 
   return {
@@ -458,10 +460,7 @@ export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
   );
 
   if (!input.stored.checkpoint) {
-    // Prefer rebuild over hard fail when mid-pause metadata is still trustworthy.
-    const rebuilt = tryRebuild("stale_checkpoint");
-    if (rebuilt.kind !== "skip") return rebuilt;
-    return skipRecovery("stale_checkpoint", hadStoredCheckpointPreDiscard);
+    return tryRebuild("stale_checkpoint");
   }
 
   const expected = (input.stored.midPausePendingToolCalls ?? [])
