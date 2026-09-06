@@ -132,9 +132,11 @@ describe("request build root prompt wiring", () => {
     const runRequest = fromBinary(AgentClientMessageSchema, pinned.requestBytes).message.value as {
       customSystemPrompt?: string;
       modelDetails?: { modelId?: string };
+      requestedModel?: { modelId?: string };
     };
     expect(runRequest.customSystemPrompt).toBeUndefined();
-    expect(runRequest.modelDetails?.modelId).toBe("cursor-grok-4.6-low");
+    expect(runRequest.modelDetails).toBeUndefined();
+    expect(runRequest.requestedModel?.modelId).toBe("cursor-grok-4.6-low");
   });
 });
 
