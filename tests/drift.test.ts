@@ -102,4 +102,13 @@ describe("drift reporting in stream errors", () => {
     expect(message).toContain("auth-hint");
     expect(message).not.toContain("wire-drift");
   });
+
+  it("does not staple wire-drift onto a Connect internal abort", () => {
+    recordDriftSignal("unknown_fields", "conversationCheckpointUpdate.payload#37");
+    recordDriftSignal("server_message", "unknown");
+    const message = enhanceCursorStreamError("Connect error internal: Error");
+
+    expect(message).toBe("Connect error internal: Error");
+    expect(message).not.toContain("wire-drift");
+  });
 });

@@ -48,6 +48,9 @@ export function appendDriftDiagnostic(message: string): string {
   );
 }
 
+const TRANSIENT_CONNECT_RE =
+  /\b(Connect error (?:internal|unavailable|deadline_exceeded)|GOAWAY)\b/i;
+
 export function enhanceCursorStreamError(message: string): string {
   if (isAuthErrorMessage(message)) {
     return (
@@ -58,6 +61,11 @@ export function enhanceCursorStreamError(message: string): string {
   }
   if (isProtocolMismatchMessage(message)) {
     return appendDriftDiagnostic(formatProtocolMismatchHint(message));
+  }
+  // Informational unknown fields accumulate on long sessions. Stapling them onto a
+  // Connect `internal` abort made a transport retry look like a schema mismatch.
+  if (TRANSIENT_CONNECT_RE.test(message)) {
+    return message;
   }
   return appendDriftDiagnostic(message);
 }

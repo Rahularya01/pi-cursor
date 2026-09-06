@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A missing `getBlobArgs` is no longer answered as an empty blob.** Cursor treats that empty result as valid history, then aborts with Connect `internal: Error`. The provider now refuses the round-trip, invalidates the checkpoint, and fails the generation so the next turn rebuilds from Pi history.
+- **Connect `internal` / `unavailable` / GOAWAY is no longer labeled as wire-drift.** Unknown envelope fields still accumulate on `/cursor.doctor`; they are not stapled onto a transport abort.
+
 ## [1.4.32] - 2026-09-06
 
 ### Fixed
