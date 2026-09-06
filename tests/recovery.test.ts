@@ -283,6 +283,41 @@ describe("planRecovery", () => {
     }
   });
 
+  it("still requires recorded pending execs even when mid-pause fingerprints rewritten history", () => {
+    const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
+    const rewritten: ParsedTurn[] = [
+      ...completedTurns,
+      {
+        userText: "do work",
+        steps: [{ kind: "toolCall", toolCallId: "t1", toolName: "read", arguments: {} }],
+      },
+    ];
+    const stored = storedBase({
+      checkpoint: new Uint8Array([9]),
+      midPausePendingToolCalls: [
+        { toolCallId: "t1", toolName: "read" },
+        { toolCallId: "t2", toolName: "read" },
+      ],
+      midPauseTurnCount: rewritten.length,
+      midPauseHistoryFingerprint: fingerprintCompletedTurns(rewritten),
+    });
+    const decision = planRecovery({
+      stored,
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      completedTurns,
+      inFlightTurn: toolTurn(["t1"]),
+      requestId: "r1",
+      convKey: "c1",
+      discardStaleCheckpoint: (s) => {
+        s.checkpoint = null;
+      },
+    });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toBe("pending_tool_call_mismatch");
+    }
+  });
+
   it("falls back to rebuild when checkpoint tool ids mismatch but mid-pause is valid", () => {
     const completedTurns: ParsedTurn[] = [{ userText: "earlier", steps: [] }];
     const stored = storedBase({

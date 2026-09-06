@@ -343,21 +343,6 @@ export function validatePendingCoveredByReceived(
   return { ok: true };
 }
 
-function midPauseSnapshotMatchesRequest(
-  stored: StoredConversation,
-  completedTurns: ParsedTurn[],
-  nowMs: number,
-  maxAgeMs: number,
-): boolean {
-  if (!stored.midPausePendingToolCalls?.length) return false;
-  if (stored.midPauseTurnCount !== completedTurns.length) return false;
-  const currentHistoryFingerprint = fingerprintCompletedTurns(completedTurns);
-  if (stored.midPauseHistoryFingerprint !== currentHistoryFingerprint) return false;
-  const recordedAtMs = stored.midPauseRecordedAtMs;
-  if (recordedAtMs === undefined || nowMs - recordedAtMs > maxAgeMs) return false;
-  return true;
-}
-
 export function planFullHistoryRebuild(
   input: PlanRecoveryInput & { stored: StoredConversation },
   hadStoredCheckpoint: boolean,
@@ -390,19 +375,14 @@ export function planFullHistoryRebuild(
     );
   }
 
-  // A matching mid-pause snapshot still has to be covered by the results. A missing,
-  // rewritten, or discarded snapshot must not block rebuild: discardStaleCheckpoint
-  // clears mid-pause along with the checkpoint, and synthesized_after_idle keys the
-  // snapshot to wire history that no longer fingerprints as Pi's completedTurns.
-  // The current request's in-flight turn is the pin.
-  const maxAgeMs =
-    input.midPauseRebuildMaxAgeMs ??
-    resolveMidPauseRebuildMaxAgeMs(process.env.PI_CURSOR_MIDPAUSE_REBUILD_MAX_AGE_MS);
-  const now = input.nowMs ?? Date.now();
-  if (midPauseSnapshotMatchesRequest(input.stored, input.completedTurns, now, maxAgeMs)) {
-    const pendingIds = (input.stored.midPausePendingToolCalls ?? [])
-      .map((c) => c.toolCallId)
-      .filter(identifiableToolCallId);
+  // Recorded pending execs must still be covered, even when fingerprint / turn
+  // count / age no longer match Pi's completedTurns (synthesized_after_idle).
+  // Only a wiped snapshot (discardStaleCheckpoint) has no pending list; then
+  // the request's in-flight turn is the pin.
+  const pendingIds = (input.stored.midPausePendingToolCalls ?? [])
+    .map((c) => c.toolCallId)
+    .filter(identifiableToolCallId);
+  if (pendingIds.length > 0) {
     const pendingVsReceived = validatePendingCoveredByReceived(pendingIds, receivedIds);
     if (!pendingVsReceived.ok) {
       return skipRecovery(
