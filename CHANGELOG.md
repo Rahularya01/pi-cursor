@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tool continuation after a stale checkpoint no longer dies with `skipReason=stale_checkpoint`.** `discardStaleCheckpointIfNeeded` clears mid-pause metadata along with the checkpoint, and a `synthesized_after_idle` rebuild keys the next pause to rewritten wire history. Rebuild then required that snapshot and hard-skipped even when Pi's in-flight tool ids matched the results. Full-history rebuild now pins to the current request's in-flight turn when the snapshot was wiped. A recorded pending-exec list is still required to be covered, even if its fingerprint no longer matches.
+
 ## [1.4.32] - 2026-09-06
 
 ### Fixed
