@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **A missing `getBlobArgs` is no longer answered as an empty blob.** Cursor treats that empty result as valid history, then aborts with Connect `internal: Error`. The provider now refuses the round-trip, invalidates the checkpoint, and fails the generation so the next turn rebuilds from Pi history.
+- **Connect `internal` / `unavailable` / `deadline_exceeded` / GOAWAY is no longer labeled as wire-drift.** Unknown envelope fields still accumulate on `/cursor.doctor`; they are not stapled onto a transport abort.
 - **Tool continuation after a stale checkpoint no longer dies with `skipReason=stale_checkpoint`.** `discardStaleCheckpointIfNeeded` clears mid-pause metadata along with the checkpoint, and a `synthesized_after_idle` rebuild keys the next pause to rewritten wire history. Rebuild then required that snapshot and hard-skipped even when Pi's in-flight tool ids matched the results. Full-history rebuild now pins to the current request's in-flight turn when the snapshot was wiped. A recorded pending-exec list is still required to be covered, even if its fingerprint no longer matches.
 
 ## [1.4.32] - 2026-09-06
