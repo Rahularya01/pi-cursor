@@ -129,7 +129,8 @@ function conciseToolDescription(description: string): string {
 export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[] {
   if (!isSlimToolsEnabled()) return tools;
   return tools.map((tool) => {
-    const fn = tool.function;
+    const fn = tool?.function;
+    if (!fn) return tool;
     const parameters =
       fn.parameters && typeof fn.parameters === "object"
         ? (slimJsonSchema(fn.parameters) as Record<string, unknown>)
@@ -157,8 +158,10 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
   if (cached) return cached;
 
   const prepared = slimOpenAIToolsForCursor(tools);
-  const result = prepared.map((tool) => {
-    const fn = tool.function;
+  const result: McpToolDefinition[] = [];
+  for (const tool of prepared) {
+    const fn = tool?.function;
+    if (!fn?.name) continue;
     const jsonSchema: JsonValue =
       fn.parameters && typeof fn.parameters === "object"
         ? (fn.parameters as JsonValue)
@@ -169,14 +172,16 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
     // for bytes and message fields (length-delimited field #3), so place the
     // serialized Value bytes here.
     const inputSchema = toBinary(ValueSchema, fromJson(ValueSchema, jsonSchema));
-    return create(McpToolDefinitionSchema, {
-      name: fn.name,
-      description: fn.description || "",
-      providerIdentifier: "pi",
-      toolName: fn.name,
-      inputSchema,
-    });
-  });
+    result.push(
+      create(McpToolDefinitionSchema, {
+        name: fn.name,
+        description: fn.description || "",
+        providerIdentifier: "pi",
+        toolName: fn.name,
+        inputSchema,
+      }),
+    );
+  }
 
   const modes = byMode ?? new Map<boolean, McpToolDefinition[]>();
   modes.set(slimEnabled, result);
