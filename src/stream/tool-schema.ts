@@ -126,21 +126,27 @@ function conciseToolDescription(description: string): string {
 }
 
 /** Compact tool prose/schemas for the Cursor MCP tool surface. */
+function isObjectRecord(val: unknown): val is Record<string, unknown> {
+  return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
 export function slimOpenAIToolsForCursor(tools: OpenAIToolDef[]): OpenAIToolDef[] {
   if (!isSlimToolsEnabled()) return tools;
   return tools.map((tool) => {
-    const fn = tool?.function;
-    if (!fn) return tool;
-    const parameters =
-      fn.parameters && typeof fn.parameters === "object"
-        ? (slimJsonSchema(fn.parameters) as Record<string, unknown>)
-        : fn.parameters;
+    if (!isObjectRecord(tool)) return tool;
+    const fn = tool.function;
+    if (!isObjectRecord(fn)) return tool;
+    const parameters = isObjectRecord(fn.parameters)
+      ? (slimJsonSchema(fn.parameters) as Record<string, unknown>)
+      : fn.parameters;
+    const description =
+      typeof fn.description === "string" ? conciseToolDescription(fn.description) : "";
     return {
       ...tool,
       function: {
         ...fn,
-        description: conciseToolDescription(fn.description || ""),
-        ...(parameters ? { parameters } : {}),
+        ...(description ? { description } : {}),
+        ...(parameters !== undefined ? { parameters } : {}),
       },
     };
   });
@@ -160,12 +166,15 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
   const prepared = slimOpenAIToolsForCursor(tools);
   const result: McpToolDefinition[] = [];
   for (const tool of prepared) {
-    const fn = tool?.function;
-    if (!fn?.name) continue;
-    const jsonSchema: JsonValue =
-      fn.parameters && typeof fn.parameters === "object"
-        ? (fn.parameters as JsonValue)
-        : { type: "object", properties: {}, required: [] };
+    if (!isObjectRecord(tool)) continue;
+    const fn = tool.function;
+    if (!isObjectRecord(fn)) continue;
+    const name = typeof fn.name === "string" ? fn.name.trim() : "";
+    if (!name) continue;
+    const description = typeof fn.description === "string" ? fn.description : "";
+    const jsonSchema: JsonValue = isObjectRecord(fn.parameters)
+      ? (fn.parameters as JsonValue)
+      : { type: "object", properties: {}, required: [] };
     // Cursor CLI's current schema uses google.protobuf.Value for
     // McpToolDefinition.input_schema. The committed generated schema still
     // exposes that field as bytes, but the outer wire encoding is identical
@@ -174,10 +183,10 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
     const inputSchema = toBinary(ValueSchema, fromJson(ValueSchema, jsonSchema));
     result.push(
       create(McpToolDefinitionSchema, {
-        name: fn.name,
-        description: fn.description || "",
+        name,
+        description,
         providerIdentifier: "pi",
-        toolName: fn.name,
+        toolName: name,
         inputSchema,
       }),
     );

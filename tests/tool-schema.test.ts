@@ -113,8 +113,13 @@ describe("Cursor tool schema encoding", () => {
     (slimMode) => {
       process.env.PI_CURSOR_SLIM_TOOLS = slimMode;
       const mixedTools = [
+        null as any,
+        undefined as any,
+        "invalid-tool-item" as any,
         { type: "web_search" } as any,
         { type: "function" } as any,
+        { type: "function", function: "not-an-object" } as any,
+        { type: "function", function: { name: "   " } } as any,
         {
           type: "function",
           function: {
@@ -127,9 +132,9 @@ describe("Cursor tool schema encoding", () => {
 
       // slimOpenAIToolsForCursor should not crash on non-function tool definitions
       const slimmed = slimOpenAIToolsForCursor(mixedTools);
-      expect(slimmed.length).toBe(3);
-      expect(slimmed[0]).toEqual({ type: "web_search" } as any);
-      expect(slimmed[2]!.function?.name).toBe("valid_tool");
+      expect(slimmed.length).toBe(8);
+      expect(slimmed[3]).toEqual({ type: "web_search" } as any);
+      expect(slimmed[7]!.function?.name).toBe("valid_tool");
 
       // buildMcpToolDefinitions should safely skip non-function tools in all modes
       const mcpTools = buildMcpToolDefinitions(mixedTools);
