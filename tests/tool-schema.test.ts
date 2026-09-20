@@ -1,6 +1,6 @@
 import { fromBinary, toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { buildMcpToolDefinitions, slimOpenAIToolsForCursor } from "../src/stream/tool-schema.js";
 import type { OpenAIToolDef } from "../src/stream/types.js";

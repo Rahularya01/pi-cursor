@@ -1,18 +1,19 @@
-import { afterEach, describe, expect, it, jest, mock, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { registerCursorCommands } from "../src/extension/commands.js";
 import type { ProcessedModel } from "../src/models/processing.js";
 import { CredentialSource } from "../src/types/enums.js";
 import * as usageModule from "../src/usage.js";
 
-// bun:test has no vi.mock factory with importOriginal. mock.module patches the
-// live ESM bindings of modules that already imported usage.js (commands.js
-// above), so spreading the real module keeps every other export intact.
-const getCursorUsageSummary = jest.fn<typeof usageModule.getCursorUsageSummary>();
-await mock.module("../src/usage.js", () => ({
-  ...usageModule,
-  getCursorUsageSummary,
-}));
+vi.mock("../src/usage.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof usageModule>();
+  return {
+    ...actual,
+    getCursorUsageSummary: vi.fn(),
+  };
+});
+
+const getCursorUsageSummary = usageModule.getCursorUsageSummary;
 
 type CommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 
@@ -57,7 +58,7 @@ function headlessContext(): ExtensionCommandContext {
 describe("cursor command output routing", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    getCursorUsageSummary.mockReset();
+    vi.mocked(getCursorUsageSummary).mockReset();
   });
 
   it("sends /cursor.models through notify only when a UI is present", async () => {
@@ -88,7 +89,7 @@ describe("cursor command output routing", () => {
   });
 
   it("sends /cursor.usage through notify only when a UI is present", async () => {
-    getCursorUsageSummary.mockResolvedValue({
+    vi.mocked(getCursorUsageSummary).mockResolvedValue({
       membershipType: "Pro",
     } as Awaited<ReturnType<typeof getCursorUsageSummary>>);
     const handlers = registerHandlers();
@@ -105,7 +106,7 @@ describe("cursor command output routing", () => {
   });
 
   it("sends /cursor.usage errors through notify only when a UI is present", async () => {
-    getCursorUsageSummary.mockRejectedValue(new Error("quota boom"));
+    vi.mocked(getCursorUsageSummary).mockRejectedValue(new Error("quota boom"));
     const handlers = registerHandlers();
     const notify = vi.fn();
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -121,7 +122,7 @@ describe("cursor command output routing", () => {
   });
 
   it("prints /cursor.usage errors to stderr when no UI is present", async () => {
-    getCursorUsageSummary.mockRejectedValue(new Error("quota boom"));
+    vi.mocked(getCursorUsageSummary).mockRejectedValue(new Error("quota boom"));
     const handlers = registerHandlers();
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});

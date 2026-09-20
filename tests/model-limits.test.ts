@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   GPT56_DEFAULT_CONTEXT_WINDOW,

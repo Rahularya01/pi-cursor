@@ -1,5 +1,5 @@
 import { create, fromBinary } from "@bufbuild/protobuf";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { pathToFileURL } from "node:url";
 
 import {

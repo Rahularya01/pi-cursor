@@ -31,7 +31,7 @@ or CLI, it just works — no setup beyond installing the package.
 |                             |                                                                                      |
 | --------------------------- | ------------------------------------------------------------------------------------ |
 | **Pi Coding Agent / Pi AI** | version `0.80.0` or later                                                            |
-| **Bun**                     | version `1.4.0` or later — the only supported runtime                                |
+| **Node.js**                 | version `22` or later — the only supported runtime                                   |
 | **A Cursor account**        | with model access — signed in via the Cursor app, Cursor CLI, or browser login below |
 
 ## Install
@@ -259,14 +259,14 @@ catalog bundled in `src/models/catalog.json` on a first-ever launch. Live discov
 through pi's `refreshModels` hook — off the critical path, in the background, and again
 whenever `/model` is opened — then persists its result for the next launch.
 
-All Cursor HTTP/2 transport runs in-process via `node:http2`, which Bun implements natively — no
-subprocess is spawned. Unary RPCs (both discovery calls) use a dedicated one-shot client
+All Cursor HTTP/2 transport runs in-process via `node:http2` — no subprocess is spawned.
+Unary RPCs (both discovery calls) use a dedicated one-shot client
 (`h2-unary.ts`); the bidirectional chat stream uses a persistent session (`h2-session.ts`) that
 survives across turns. Unary calls fall back to the general-purpose bridge transport if the
 one-shot client fails.
 
 `src/proto/agent_pb.ts` is a large generated Connect/protobuf surface used by the wire
-layer. Never hand-edit it — regenerate with `bun run proto:gen` (see
+layer. Never hand-edit it — regenerate with `yarn proto:gen` (see
 [`proto/README.md`](proto/README.md)) when Cursor changes the agent schema.
 
 </details>
@@ -277,7 +277,7 @@ layer. Never hand-edit it — regenerate with `bun run proto:gen` (see
 - **`No API provider registered for api: cursor-native`:** Update to the latest `pi-cursor` (`pi update npm:@rahularya01/pi-cursor`) and restart Pi (or `/reload`). This means the Agent tried to stream via Pi's global `streamSimple` dispatcher before the Cursor transport was registered there. Current builds register `cursor-native` on that registry during extension load.
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
-- **Wire-protocol drift:** Cursor can change `agent.v1` at any time. Unrecognized server messages and unknown protobuf fields are no longer skipped silently — they are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` under `wireDrift`. `wireDriftStranding=yes` means an unanswered message could have parked the turn, which is the difference between "our schema is a bit behind" and "this is why it hung". Run `CURSOR_ACCESS_TOKEN=... bun run smoke:wire` to check the handshake and schema against the live endpoint without starting a chat turn, then see [`proto/README.md`](proto/README.md) to resync the schema.
+- **Wire-protocol drift:** Cursor can change `agent.v1` at any time. Unrecognized server messages and unknown protobuf fields are no longer skipped silently — they are counted, written to the lifecycle log as `wire_drift`, appended to the failing turn's error message, and listed by `/cursor.doctor` under `wireDrift`. `wireDriftStranding=yes` means an unanswered message could have parked the turn, which is the difference between "our schema is a bit behind" and "this is why it hung". Run `CURSOR_ACCESS_TOKEN=... yarn smoke:wire` to check the handshake and schema against the live endpoint without starting a chat turn, then see [`proto/README.md`](proto/README.md) to resync the schema.
 - **Stuck / dies after a few minutes of work:** Cursor `InteractionQuery` prompts are answered so the stream does not park. Web/search and hosted fetch are approved by default. Inspect `$TMPDIR/pi-cursor-lifecycle.jsonl` for `interaction_query` / `bridge_close` events, and `/cursor.doctor` for `lastStreamEvent`. Full debug: `PI_CURSOR_PROVIDER_DEBUG=1`.
 - **Tool continuation lost:** The provider now prefers full-history rebuild when checkpoints are stale/mismatched. If recovery still skips, `/cursor.doctor` shows `lastRecoverySkipReason`. Retry the turn or start a new chat.
 - **WSL credential detection:** Set `USERPROFILE` or `USERNAME` so the Windows home directory is known, and ensure `/mnt/c/Users/<you>/AppData/...` is readable. Disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0` if undesired.
@@ -286,38 +286,29 @@ layer. Never hand-edit it — regenerate with `bun run proto:gen` (see
 
 ## Runtime
 
-`pi-cursor` targets **Bun only** — no Node.js binary is required or spawned at any point. All
-Cursor HTTP/2 transport (the bidirectional chat stream and the unary discovery RPCs) runs
-in-process via `node:http2`, which Bun implements natively.
+`pi-cursor` targets **Node.js >= 22**. All Cursor HTTP/2 transport (the bidirectional chat
+stream and the unary discovery RPCs) runs in-process via `node:http2` — no subprocess is spawned.
 
-Earlier versions proxied the chat stream through a short-lived Node subprocess, because Bun's
-`node:http2` client was believed unable to carry a bidirectional Connect stream reliably. That
-subprocess is gone: [oh-my-pi](https://github.com/can1357/oh-my-pi), a Bun-hosted fork of Pi that
-talks to the same Cursor RPC, demonstrates the same bidirectional pattern working fine in-process
-under Bun. Its only documented Bun/H2 caveat is ALPN negotiation failing behind an
-ALPN-stripping TLS-intercepting proxy (e.g. Zscaler) — an environment issue, not a
-bidirectional-streaming bug — and `/cursor.doctor`'s `lastStderr`/lifecycle log will name that
-explicitly if it happens.
-
-`/cursor.doctor` reports the runtime as `runtime=bun <version>`.
+`/cursor.doctor` reports the host as `runtime=node <version>` (or `runtime=bun <version>` if the
+extension happens to be loaded under Bun).
 
 ## Development
 
-The toolchain is Bun — package manager, script runner, test runner, and bundler. `tsc` still does
-the typechecking, and ESLint and Prettier are unchanged.
+The toolchain is Yarn 4 + Node.js. `tsc` still does the typechecking; tests run on Vitest;
+`tsup` produces `dist/`.
 
 ```bash
-bun install
-bun run check
+yarn install
+yarn check
 ```
 
-`bun run check` runs TypeScript typechecking, ESLint, Prettier format verification, security checks, the protobuf staleness check, and unit tests.
+`yarn check` runs TypeScript typechecking, ESLint, Prettier format verification, security checks, the protobuf staleness check, and unit tests.
 
-| Script                | Purpose                                                                           |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `bun run proto:gen`   | Regenerate `src/proto/agent_pb.ts` from `proto/agent.proto`.                      |
-| `bun run proto:sync`  | Rebuild `proto/agent.proto` from an updated generated file obtained upstream.     |
-| `bun run proto:check` | Fail if the generated protobuf is stale or hand-edited (part of `bun run check`). |
+| Script             | Purpose                                                                        |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `yarn proto:gen`   | Regenerate `src/proto/agent_pb.ts` from `proto/agent.proto`.                   |
+| `yarn proto:sync`  | Rebuild `proto/agent.proto` from an updated generated file obtained upstream.  |
+| `yarn proto:check` | Fail if the generated protobuf is stale or hand-edited (part of `yarn check`). |
 
 ## Attributions
 

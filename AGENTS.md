@@ -10,50 +10,49 @@ Guidance and repository standards for LLM coding agents working on `@rahularya01
 
 ### Core Stack
 
-- **Runtime:** Bun >= 1.4.0 only (ESM native `"type": "module"`)
+- **Runtime:** Node.js >= 22 (ESM native `"type": "module"`)
 - **Peer Dependencies:** `@earendil-works/pi-ai` (>=0.80.0), `@earendil-works/pi-coding-agent` (>=0.80.0)
 - **Protobuf / RPC:** `@bufbuild/protobuf` v2, `@bufbuild/buf` for schema compilation (`proto/agent.proto`)
 - **Transport:** In-process HTTP/2 (`src/client/h2-session.ts` for streaming, `src/client/h2-unary.ts` for unary RPCs) — no subprocess
-- **Toolchain:** Bun (package manager, script runner, test runner, bundler)
-- **Build & Test:** `bun build` via `scripts/build.ts`, `typescript` (strict ESM, `tsc` still
-  does the typechecking), `bun test`, `eslint`, `prettier`
+- **Toolchain:** Yarn 4 (package manager), Node.js (script runner)
+- **Build & Test:** `tsup`, `typescript` (strict ESM, `tsc` still does the typechecking), `vitest`, `eslint`, `prettier`
 
 ---
 
 ## 2. Key Commands & Validation Workflows
 
-Run `bun run check` before committing or completing any task. It runs the full validation suite:
+Run `yarn check` before committing or completing any task. It runs the full validation suite:
 
 ```bash
 # Run complete validation suite (Typecheck, Lint, Format check, Security check, Proto check, Tests)
-bun run check
+yarn check
 ```
 
 ### Individual Development Commands
 
-| Command                  | Purpose                                                                                               |
-| :----------------------- | :---------------------------------------------------------------------------------------------------- |
-| `bun run typecheck`      | Run TypeScript compiler check without emitting (`tsc --noEmit`)                                       |
-| `bun test`               | Run unit tests (`bun test`)                                                                           |
-| `bun run test:watch`     | Run tests in interactive watch mode                                                                   |
-| `bun run test:legacy`    | Run legacy standalone test scripts (routing, thinking levels, usage, context normalization, CLI auth) |
-| `bun run lint`           | Run ESLint across `src/` and `tests/`                                                                 |
-| `bun run lint:fix`       | Automatically fix ESLint errors                                                                       |
-| `bun run format`         | Format codebase using Prettier                                                                        |
-| `bun run format:check`   | Verify Prettier formatting compliance                                                                 |
-| `bun run build`          | Bundle TypeScript sources with `bun build` into `dist/`                                               |
-| `bun run security-check` | Audit source for credential/token exposure leaks                                                      |
-| `bun run proto:gen`      | Compile `proto/agent.proto` into `src/proto/agent_pb.ts` using `buf`                                  |
-| `bun run proto:check`    | Verify `src/proto/agent_pb.ts` is up-to-date with `proto/agent.proto`                                 |
-| `bun run proto:sync`     | Fetch and update protobuf descriptors from upstream                                                   |
+| Command               | Purpose                                                                                               |
+| :-------------------- | :---------------------------------------------------------------------------------------------------- |
+| `yarn typecheck`      | Run TypeScript compiler check without emitting (`tsc --noEmit`)                                       |
+| `yarn test`           | Run unit tests (`vitest run`)                                                                         |
+| `yarn test:watch`     | Run tests in interactive watch mode                                                                   |
+| `yarn test:legacy`    | Run legacy standalone test scripts (routing, thinking levels, usage, context normalization, CLI auth) |
+| `yarn lint`           | Run ESLint across `src/` and `tests/`                                                                 |
+| `yarn lint:fix`       | Automatically fix ESLint errors                                                                       |
+| `yarn format`         | Format codebase using Prettier                                                                        |
+| `yarn format:check`   | Verify Prettier formatting compliance                                                                 |
+| `yarn build`          | Bundle TypeScript sources with `tsup` into `dist/`                                                    |
+| `yarn security-check` | Audit source for credential/token exposure leaks                                                      |
+| `yarn proto:gen`      | Compile `proto/agent.proto` into `src/proto/agent_pb.ts` using `buf`                                  |
+| `yarn proto:check`    | Verify `src/proto/agent_pb.ts` is up-to-date with `proto/agent.proto`                                 |
+| `yarn proto:sync`     | Fetch and update protobuf descriptors from upstream                                                   |
 
 ### Smoke Testing
 
 ```bash
-bun run smoke:auth    # Smoke test authentication resolution
-bun run smoke:models  # Smoke test model discovery RPC
-bun run smoke:stream  # Smoke test HTTP/2 streaming
-bun run smoke:wire    # Smoke test low-level wire protocol frames
+yarn smoke:auth    # Smoke test authentication resolution
+yarn smoke:models  # Smoke test model discovery RPC
+yarn smoke:stream  # Smoke test HTTP/2 streaming
+yarn smoke:wire    # Smoke test low-level wire protocol frames
 ```
 
 ---
@@ -101,8 +100,8 @@ src/
 ### 2. Protobuf Files & Code Generation
 
 - **Never edit `src/proto/agent_pb.ts` directly.**
-- To modify or update Protobuf schemas, update `proto/agent.proto` and execute `bun run proto:gen`.
-- Verify with `bun run proto:check`.
+- To modify or update Protobuf schemas, update `proto/agent.proto` and execute `yarn proto:gen`.
+- Verify with `yarn proto:check`.
 
 ### 3. Authentication Cascade Policy
 
@@ -139,17 +138,17 @@ src/
 
 ### 6. Transport: In-Process HTTP/2, Streaming and Unary
 
-- Both streaming and unary RPCs run in-process via `node:http2`, which Bun implements natively — no subprocess is spawned anywhere in this codebase.
+- Both streaming and unary RPCs run in-process via `node:http2` — no subprocess is spawned anywhere in this codebase.
 - Streaming (the bidirectional Connect RPC, `agent.v1.AgentService/Run`) goes through `h2-session.ts`, which opens a persistent `http2.ClientHttp2Session` and reuses it across turns (`openStream()`) instead of paying a fresh TLS/H2 handshake each time.
 - Unary RPCs (model discovery, usage) use the dedicated one-shot client in `h2-unary.ts` — genuinely simpler than streaming (one write, then read to completion), kept separate rather than merged into `h2-session.ts`. `PI_CURSOR_UNARY_BRIDGE=1` forces the general-purpose `h2-session.ts` bridge as a fallback path instead, for diagnostics/testing.
 - `fetch`/`undici` cannot be used for either path: Cursor's hosts speak HTTP/2 only and undici rejects the h2 preface.
-- This project used to proxy the streaming RPC through a Node child process (`h2-bridge.mjs`), because Bun's `node:http2` bidirectional streaming was believed unreliable. It's gone — see [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)'s `packages/ai/src/providers/cursor.ts` for a Bun-hosted Pi fork doing the identical bidirectional pattern in-process, with its only documented Bun/H2 caveat being ALPN negotiation behind an ALPN-stripping proxy (ported as `describeH2TransportError` in `h2-session.ts`) — an environment issue, not a streaming bug. `h2-session.ts`'s module docstring explains the exit-code/retry contract (`classifyBridgeExit()` in `src/stream/transport-errors.ts`) this transport must preserve exactly; read it before touching that file.
+- This project used to proxy the streaming RPC through a Node child process (`h2-bridge.mjs`). That subprocess is gone. `h2-session.ts`'s module docstring explains the exit-code/retry contract (`classifyBridgeExit()` in `src/stream/transport-errors.ts`) this transport must preserve exactly; read it before touching that file. ALPN-stripping proxies can still break HTTP/2 (ported as `describeH2TransportError`).
 
-### 7. Runtime Support: Bun Only
+### 7. Runtime Support: Node.js Only
 
-- Bun is the only supported runtime — no Node.js binary is required or spawned, ever. `target: "node"` in `scripts/build.ts` is still deliberate: it keeps `dist/` restricted to standard, portable APIs (`node:http2` included) rather than baking in Bun-only builtins, even though Bun is the only host actually shipped/tested.
-- `node:sqlite` (auth cascade tier 4) is implemented by Bun >= 1.4 and behaves identically, including the `{ readOnly: true }` option — no fallback to `bun:sqlite` is needed.
-- `bun test` supplies a `vi` compatibility shim, but not `vi.mocked`; use `mock.module()` for module factories, and prefer `toHaveBeenCalledTimes(1)` over `toHaveBeenCalledOnce()` (the latter works at runtime but is absent from `@types/bun`).
+- Node.js >= 22 is the only supported runtime. Yarn 4 is the package manager (`nodeLinker: node-modules`).
+- `node:sqlite` (auth cascade tier 4) uses Node's built-in module, including the `{ readOnly: true }` option.
+- Tests use Vitest. Prefer `vi.mock()` for module factories and `toHaveBeenCalledTimes(1)` over `toHaveBeenCalledOnce()`.
 
 ### 8. Reasoning Effort & Thinking Mapping
 

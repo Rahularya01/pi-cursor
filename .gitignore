@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+.yarn/install-state.gz
+.pnp.*
 .pi-subagents/
 *.log
 .DS_Store

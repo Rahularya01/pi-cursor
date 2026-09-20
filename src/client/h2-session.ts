@@ -1,13 +1,10 @@
 /**
  * In-process HTTP/2 transport for Cursor's Connect RPCs — streaming (bidirectional) and unary.
  *
- * Replaces the old h2-bridge.mjs Node child process. That subprocess existed because Bun's
- * `node:http2` client was believed unable to carry a bidirectional Connect stream reliably.
- * The same bidirectional Connect-stream pattern now runs directly in-process under Bun — writes
- * (heartbeats, interaction responses, exec results) interleaved with reads throughout the
- * stream's life, no subprocess. The documented Bun/H2 caveat is ALPN negotiation failing
- * behind an ALPN-stripping TLS proxy (see `describeH2TransportError`) — an
- * environment issue, not a bidirectional-streaming bug.
+ * Replaces the old h2-bridge.mjs Node child process. Writes (heartbeats, interaction
+ * responses, exec results) are interleaved with reads throughout the stream's life, no
+ * subprocess. ALPN negotiation can still fail behind an ALPN-stripping TLS proxy (see
+ * `describeH2TransportError`) — an environment issue, not a bidirectional-streaming bug.
  *
  * This module reproduces h2-bridge.mjs's exact externally observable protocol — the same
  * onData frames and onClose exit codes for the same conditions (clean end, non-2xx status,

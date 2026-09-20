@@ -7,8 +7,8 @@ hand-edited.
 ## Regenerating the TypeScript
 
 ```bash
-npm run proto:gen     # proto/agent.proto -> src/proto/agent_pb.ts
-npm run proto:check   # fails if src/proto/agent_pb.ts is stale (runs in npm run check)
+yarn proto:gen     # proto/agent.proto -> src/proto/agent_pb.ts
+yarn proto:check   # fails if src/proto/agent_pb.ts is stale (runs in yarn check)
 ```
 
 Both use `buf` and `protoc-gen-es` from devDependencies, so no system `protoc` is needed.
@@ -17,14 +17,14 @@ Both use `buf` and `protoc-gen-es` from devDependencies, so no system `protoc` i
 
 Cursor can change the agent schema at any time. There are two ways to pick that up:
 
-1. **You have an updated `.proto`.** Edit `agent.proto`, then `npm run proto:gen`.
+1. **You have an updated `.proto`.** Edit `agent.proto`, then `yarn proto:gen`.
 
 2. **You only have an updated generated file** (the common case — the schema is recovered
    from a Cursor client build). Drop the new `agent_pb.ts` into `src/proto/`, then:
 
    ```bash
-   npm run proto:sync    # rebuild agent.proto from the new generated file
-   npm run proto:check   # prove the two now agree
+   yarn proto:sync    # rebuild agent.proto from the new generated file
+   yarn proto:check   # prove the two now agree
    ```
 
    `proto:sync` works because `protoc-gen-es` embeds the complete `FileDescriptorProto`

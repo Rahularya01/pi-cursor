@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { resolveSystemCredentialPolicy, systemCredentialsAllowed } from "../src/auth/consent.js";
 
 describe("system credential consent", () => {

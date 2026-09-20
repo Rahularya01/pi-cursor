@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import type { CursorParameterizedModel } from "../src/client/cursor-wire.js";
 import { augmentCursorModels } from "../src/models/parameterized.js";
 import { processModels } from "../src/models/processing.js";

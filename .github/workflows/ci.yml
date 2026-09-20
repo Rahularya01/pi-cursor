@@ -11,20 +11,18 @@ permissions:
 
 jobs:
   check:
-    name: Check (Bun)
+    name: Check (Node)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
         with:
-          bun-version: 1.4.0
-      # Bun blocks dependency lifecycle scripts unless they are listed under
-      # trustedDependencies, which is the posture `npm ci --ignore-scripts`
-      # used to provide. The root `prepare` script still runs, so this step
-      # also exercises the bundle build.
-      - run: bun install --frozen-lockfile
-      - run: bun run check
-      - run: bun run test:coverage
-      - run: bun audit --audit-level=high
+          node-version: 22
+          cache: yarn
+      - run: corepack enable
+      - run: yarn install --immutable
+      - run: yarn check
+      - run: yarn test:coverage
+      - run: yarn npm audit --all --recursive --no-deprecations --severity high

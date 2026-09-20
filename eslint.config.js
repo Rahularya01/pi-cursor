@@ -10,7 +10,7 @@ export default tseslint.config(
       "scripts/**",
       "dist/**",
       "eslint.config.js",
-      // Generated protocol surface (see npm run proto:gen). Keep typecheck strict instead.
+      // Generated protocol surface (see yarn proto:gen). Keep typecheck strict instead.
       "src/proto/**",
       "src/client/h2-bridge.mjs",
     ],
@@ -66,11 +66,9 @@ export default tseslint.config(
     },
   },
   {
-    // bun:test types `.rejects` / `.resolves` matcher calls as returning void
-    // (they return undefined at runtime; the runner tracks the assertion and
-    // still fails the test). The `await` is kept because it is a harmless
-    // no-op that documents the async assertion and stays correct under any
-    // runner that does return a promise — so this rule has nothing to catch here.
+    // Vitest's `.rejects` / `.resolves` matcher calls are typed as returning
+    // void in some versions. The `await` is kept because it documents the async
+    // assertion.
     files: ["tests/**/*.ts"],
     rules: {
       "@typescript-eslint/await-thenable": "off",

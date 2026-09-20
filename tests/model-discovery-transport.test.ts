@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BridgeHandle } from "../src/client/bridge.js";
 import { setBridgeFactoryForTests } from "../src/stream/bridge-session.js";

@@ -1,6 +1,6 @@
 {
   "name": "@rahularya01/pi-cursor",
-  "version": "1.4.35",
+  "version": "1.4.36",
   "description": "Native Cursor provider for Pi Coding Agent (OAuth + Connect/protobuf streamSimple)",
   "author": "Rahul Arya",
   "license": "MIT",
@@ -19,7 +19,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "engines": {
-    "bun": ">=1.4.0"
+    "node": ">=22"
   },
   "keywords": [
     "pi-package",
@@ -35,27 +35,28 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun scripts/build.ts",
-    "prepare": "bun run build || node scripts/prepare.mjs",
-    "prepublishOnly": "bun run build",
+    "build": "tsup",
+    "prepare": "node scripts/prepare.mjs",
+    "prepublishOnly": "yarn build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "security-check": "bun scripts/security-check.ts",
+    "security-check": "tsx scripts/security-check.ts",
     "proto:gen": "buf generate",
-    "proto:sync": "bun scripts/proto-sync.ts",
-    "proto:check": "bun scripts/proto-check.ts",
-    "test": "bun test --timeout=15000",
-    "test:coverage": "bun test --coverage --timeout=15000 && bun scripts/coverage-threshold.ts",
-    "test:watch": "bun test --watch --timeout=15000",
-    "test:legacy": "bun scripts/test-model-routing.ts && bun scripts/test-thinking-levels.ts && bun scripts/test-usage.ts && bun scripts/test-context-mode-normalize.ts && bun scripts/test-cli-auth.ts",
-    "smoke:auth": "bun scripts/smoke-auth.mjs",
-    "smoke:models": "bun scripts/smoke-models.mjs",
-    "smoke:stream": "bun scripts/smoke-stream.mjs",
-    "smoke:wire": "bun scripts/smoke-wire.mjs",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun run security-check && bun run proto:check && bun run test && bun run test:legacy"
+    "proto:sync": "tsx scripts/proto-sync.ts",
+    "proto:check": "tsx scripts/proto-check.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:legacy": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
+    "smoke:auth": "node scripts/smoke-auth.mjs",
+    "smoke:models": "node scripts/smoke-models.mjs",
+    "smoke:stream": "node scripts/smoke-stream.mjs",
+    "smoke:wire": "node scripts/smoke-wire.mjs",
+    "check": "yarn typecheck && yarn lint && yarn format:check && yarn security-check && yarn proto:check && yarn test && yarn test:legacy",
+    "audit": "yarn npm audit --all --recursive --no-deprecations"
   },
   "pi": {
     "extensions": [
@@ -63,24 +64,34 @@
     ]
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.0.0"
+    "@bufbuild/protobuf": "2.13.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.80.0",
     "@earendil-works/pi-coding-agent": ">=0.80.0"
   },
+  "resolutions": {
+    "@earendil-works/pi-ai": "0.84.2",
+    "esbuild": "0.28.2",
+    "glob": "13.0.6"
+  },
   "devDependencies": {
-    "@bufbuild/buf": "^1.72.0",
-    "@bufbuild/protoc-gen-es": "^2.13.0",
+    "@bufbuild/buf": "1.72.0",
+    "@bufbuild/protoc-gen-es": "2.13.0",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@eslint/js": "^10.0.1",
-    "@types/bun": "^1.4.0",
     "@types/node": "^26.1.1",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
     "prettier": "^3.9.5",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.64.0"
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^4.1.11"
   },
-  "packageManager": "bun@1.4.0"
+  "packageManager": "yarn@4.10.3"
 }

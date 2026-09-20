@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.4.36] - 2026-09-20
+
+### Changed
+
+- **Toolchain is Node.js + Yarn.** Bun is no longer required to develop, test, or publish. Package manager is Yarn 4 (`node-modules` linker), unit tests run on Vitest, and `dist/` is bundled with tsup. Runtime HTTP/2 still uses in-process `node:http2`. Pi hosts should be Node.js >= 22.
+
+### Security
+
+- CI audits the installed Yarn graph with `yarn npm audit` instead of `npm audit` (which does not read `yarn.lock`).
+- Dev tooling pins Vitest 4.1.11 ([GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9)), esbuild 0.28.2, and glob 13.0.6.
+
 ## [1.4.35] - 2026-09-20
 
 ### Fixed

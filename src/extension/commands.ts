@@ -134,7 +134,7 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
         `lastError=${d.error ? redactSecrets(d.error) : "none"}`,
         "transport=native-streamSimple",
         "unaryTransport=in-process-h2",
-        `runtime=bun ${process.versions.bun ?? "?"}`,
+        `runtime=${process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.version}`}`,
         "runtimeCli=not-used",
         "proxyPath=removed",
         "commands=/cursor.models /cursor.usage /cursor.doctor",

@@ -1,8 +1,8 @@
 /**
  * Fails if `src/proto/agent_pb.ts` is not what `proto/agent.proto` generates.
  *
- * Runs in `npm run check`, so a hand-edit of the generated file — or a forgotten
- * `npm run proto:gen` after a schema change — is caught in CI rather than at
+ * Runs in `yarn check`, so a hand-edit of the generated file — or a forgotten
+ * `yarn proto:gen` after a schema change — is caught in CI rather than at
  * runtime against Cursor's servers.
  */
 import { execFileSync } from "node:child_process";
@@ -30,8 +30,8 @@ try {
   if (expected !== actual) {
     console.error(
       `proto:check: ${GENERATED} is out of date with proto/agent.proto.\n` +
-        "Run `npm run proto:gen` and commit the result.\n" +
-        "If you instead have a newer generated file from upstream, run `npm run proto:sync`.",
+        "Run `yarn proto:gen` and commit the result.\n" +
+        "If you instead have a newer generated file from upstream, run `yarn proto:sync`.",
     );
     process.exit(1);
   }

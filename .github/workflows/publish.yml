@@ -17,33 +17,29 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
-      # Publishing to npm is a registry operation, not a runtime choice.
-      # setup-node is kept solely because it writes the .npmrc that
-      # NODE_AUTH_TOKEN needs; the build and checks all run on Bun.
-      - name: Setup Node.js for npm registry auth
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: yarn
           registry-url: "https://registry.npmjs.org"
 
+      - name: Enable Corepack
+        run: corepack enable
+
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: yarn install --immutable
 
       - name: Run checks (typecheck, lint, format, tests)
-        run: bun run check
+        run: yarn check
 
       - name: Publish to npm (skip if version already exists)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          NAME="$(bun --print "require('./package.json').name")"
-          VERSION="$(bun --print "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
           TAG="${GITHUB_REF_NAME#v}"
 
           if [ "$TAG" != "$VERSION" ]; then
