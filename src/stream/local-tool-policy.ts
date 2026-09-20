@@ -1,6 +1,6 @@
 /** Local operations are executed by Pi, never by the provider. */
 import type { McpToolDefinition } from "../proto/agent_pb.js";
-import { cursorMcpToolName, systemPromptRootMessage } from "./root-prompt.js";
+import { cursorMcpToolName } from "./root-prompt.js";
 
 export const MAX_LOCAL_TOOL_REJECTIONS = 8;
 export const LOCAL_TOOL_LOOP_ERROR =
@@ -72,8 +72,4 @@ export function localToolPolicyText(tools: McpToolDefinition[]): string {
         "If no registered tool supports an operation, report that limitation."
       : "No Pi MCP tools are exposed for this request. Local operations are unavailable in this request.")
   );
-}
-
-export function localToolPolicyMessage(tools: McpToolDefinition[]) {
-  return systemPromptRootMessage(localToolPolicyText(tools));
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
@@ -44,15 +44,20 @@ function exec(caseName: string, args: object = {}, id = 12): ExecServerMessage {
   } as ExecServerMessage;
 }
 
-function execFrame(caseName: string, args: object = {}, id = 12) {
+function serverFrame(message: MessageInitShape<typeof AgentServerMessageSchema>["message"]) {
   return frameConnectMessage(
-    toBinary(
-      AgentServerMessageSchema,
-      create(AgentServerMessageSchema, {
-        message: { case: "execServerMessage", value: exec(caseName, args, id) },
-      }),
-    ),
+    toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, { message })),
   );
+}
+
+function execFrame(caseName: string, args: object = {}, id = 12) {
+  return serverFrame({ case: "execServerMessage", value: exec(caseName, args, id) });
+}
+
+function progressFrame(
+  message: { case: "textDelta"; value: { text: string } } | { case: "heartbeat"; value: object },
+) {
+  return serverFrame({ case: "interactionUpdate", value: { message } });
 }
 
 const localCases = [
@@ -332,32 +337,8 @@ describe("local tool rejection budget on the stream", () => {
     for (let i = 0; i < 8; i++) {
       h.send(execFrame(i % 2 ? "readArgs" : "grepArgs", {}, i));
       if (i < 7) {
-        h.send(
-          frameConnectMessage(
-            toBinary(
-              AgentServerMessageSchema,
-              create(AgentServerMessageSchema, {
-                message: {
-                  case: "interactionUpdate",
-                  value: { message: { case: "textDelta", value: { text: "retry" } } },
-                },
-              }),
-            ),
-          ),
-        );
-        h.send(
-          frameConnectMessage(
-            toBinary(
-              AgentServerMessageSchema,
-              create(AgentServerMessageSchema, {
-                message: {
-                  case: "interactionUpdate",
-                  value: { message: { case: "heartbeat", value: {} } },
-                },
-              }),
-            ),
-          ),
-        );
+        h.send(progressFrame({ case: "textDelta", value: { text: "retry" } }));
+        h.send(progressFrame({ case: "heartbeat", value: {} }));
         expect(h.output.error).not.toHaveBeenCalled();
       }
     }
@@ -475,19 +456,7 @@ describe("local tool rejection budget on the stream", () => {
           reply.message.value.message.case === "mcpResult",
       ),
     ).toHaveLength(2);
-    h.send(
-      frameConnectMessage(
-        toBinary(
-          AgentServerMessageSchema,
-          create(AgentServerMessageSchema, {
-            message: {
-              case: "interactionUpdate",
-              value: { message: { case: "textDelta", value: { text: "Found both files." } } },
-            },
-          }),
-        ),
-      ),
-    );
+    h.send(progressFrame({ case: "textDelta", value: { text: "Found both files." } }));
     expect(resumed.text).toHaveBeenCalledWith("Found both files.");
     for (let i = 0; i < 7; i++) h.send(execFrame("grepArgs"));
     expect(resumed.error).not.toHaveBeenCalled();

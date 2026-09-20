@@ -11,12 +11,11 @@
  * Every handler returns whether it made forward progress, which is what feeds
  * the idle watchdog — see `processServerMessage` for the exact contract.
  */
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import { pathToFileURL } from "node:url";
 
 import {
   AgentClientMessageSchema,
-  BackgroundShellSpawnResultSchema,
   ComputerUseErrorSchema,
   ComputerUseResultSchema,
   ConversationStateStructureSchema,
@@ -24,18 +23,6 @@ import {
   ExecClientMessageSchema,
   ExecClientThrowSchema,
   GetBlobResultSchema,
-  ReadResultSchema,
-  ReadRejectedSchema,
-  LsResultSchema,
-  LsRejectedSchema,
-  GrepResultSchema,
-  GrepErrorSchema,
-  WriteResultSchema,
-  WriteRejectedSchema,
-  DeleteResultSchema,
-  DeleteRejectedSchema,
-  ShellResultSchema,
-  ShellStreamSchema,
   KvClientMessageSchema,
   McpResultSchema,
   McpToolNotFoundSchema,
@@ -48,9 +35,6 @@ import {
   RequestContextSchema,
   RequestContextSuccessSchema,
   SetBlobResultSchema,
-  ShellRejectedSchema,
-  WriteShellStdinErrorSchema,
-  WriteShellStdinResultSchema,
   type AgentServerMessage,
   type ConversationStateStructure,
   type ExecServerMessage,
@@ -443,151 +427,59 @@ function handleExecMessageInner(
     return true;
   }
 
-  // Local operations must go through Pi, using each registered tool's schema.
-  if (execCase === "readArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "readResult",
-      create(ReadResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ReadRejectedSchema, { path: args.path, reason: REJECT_REASON }),
+  // Build the typed rejection once; the envelope creates nested protobuf messages.
+  const request = execMsg.message;
+  let rejection: MessageInitShape<typeof ExecClientMessageSchema>["message"];
+  switch (request.case) {
+    case "readArgs":
+    case "lsArgs":
+    case "writeArgs":
+    case "deleteArgs": {
+      const resultCase = {
+        readArgs: "readResult",
+        lsArgs: "lsResult",
+        writeArgs: "writeResult",
+        deleteArgs: "deleteResult",
+      } as const;
+      rejection = {
+        case: resultCase[request.case],
+        value: {
+          result: { case: "rejected", value: { path: request.value.path, reason: REJECT_REASON } },
         },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "lsArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "lsResult",
-      create(LsResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(LsRejectedSchema, { path: args.path, reason: REJECT_REASON }),
+      };
+      break;
+    }
+    case "grepArgs":
+    case "writeShellStdinArgs":
+      rejection = {
+        case: request.case === "grepArgs" ? "grepResult" : "writeShellStdinResult",
+        value: { result: { case: "error", value: { error: REJECT_REASON } } },
+      };
+      break;
+    case "shellArgs":
+    case "shellStreamArgs":
+    case "backgroundShellSpawnArgs": {
+      const result = {
+        case: "rejected" as const,
+        value: {
+          command: request.value.command,
+          workingDirectory: request.value.workingDirectory,
+          reason: REJECT_REASON,
+          isReadonly: false,
         },
-      }),
-      sendFrame,
-    );
-    return true;
+      };
+      rejection =
+        request.case === "shellStreamArgs"
+          ? { case: "shellStream", value: { event: result } }
+          : {
+              case: request.case === "shellArgs" ? "shellResult" : "backgroundShellSpawnResult",
+              value: { result },
+            };
+      break;
+    }
   }
-  if (execCase === "grepArgs") {
-    sendExecResult(
-      execMsg,
-      "grepResult",
-      create(GrepResultSchema, {
-        result: { case: "error", value: create(GrepErrorSchema, { error: REJECT_REASON }) },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "writeArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "writeResult",
-      create(WriteResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(WriteRejectedSchema, { path: args.path, reason: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "deleteArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "deleteResult",
-      create(DeleteResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(DeleteRejectedSchema, { path: args.path, reason: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "shellArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "shellResult",
-      create(ShellResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ShellRejectedSchema, {
-            command: args.command ?? "",
-            workingDirectory: args.workingDirectory ?? "",
-            reason: REJECT_REASON,
-            isReadonly: false,
-          }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "shellStreamArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "shellStream",
-      create(ShellStreamSchema, {
-        event: {
-          case: "rejected",
-          value: create(ShellRejectedSchema, {
-            command: args.command ?? "",
-            workingDirectory: args.workingDirectory ?? "",
-            reason: REJECT_REASON,
-            isReadonly: false,
-          }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-
-  if (execCase === "backgroundShellSpawnArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "backgroundShellSpawnResult",
-      create(BackgroundShellSpawnResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ShellRejectedSchema, {
-            command: args.command ?? "",
-            workingDirectory: args.workingDirectory ?? "",
-            reason: REJECT_REASON,
-            isReadonly: false,
-          }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "writeShellStdinArgs") {
-    sendExecResult(
-      execMsg,
-      "writeShellStdinResult",
-      create(WriteShellStdinResultSchema, {
-        result: {
-          case: "error",
-          value: create(WriteShellStdinErrorSchema, { error: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
+  if (rejection?.case) {
+    sendExecResult(execMsg, rejection.case, rejection.value, sendFrame);
     return true;
   }
   const nativeArgs = ((execMsg as any).message?.value ?? {}) as Record<string, unknown>;

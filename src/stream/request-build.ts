@@ -10,7 +10,7 @@
  * from re-uploading every attachment on every turn.
  */
 
-import { localToolPolicyMessage, localToolPolicyText } from "./local-tool-policy.js";
+import { localToolPolicyText } from "./local-tool-policy.js";
 import { create, fromBinary, fromJson, toBinary, toJson, type JsonValue } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import { createHash } from "node:crypto";
@@ -51,6 +51,7 @@ import {
   buildRootPromptMessages,
   encodeRootPromptMessage,
   isPromptHistoryEnabled,
+  systemPromptRootMessage,
 } from "./root-prompt.js";
 export {
   buildMcpToolDefinitions,
@@ -588,7 +589,7 @@ export function buildCursorRequestFromParts(
   // message. Without history, retain only the policy as a separate user message.
   const promptMessages = isPromptHistoryEnabled()
     ? buildRootPromptMessages(`${systemPrompt}\n\n${localToolPolicyText(mcpTools)}`, turns)
-    : [localToolPolicyMessage(mcpTools)];
+    : [systemPromptRootMessage(localToolPolicyText(mcpTools))];
   const promptBlobIds = promptMessages.map((message) =>
     storeAsBlob(encodeRootPromptMessage(message), blobStore),
   );
