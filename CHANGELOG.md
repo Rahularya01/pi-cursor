@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Pi clipboard screenshots no longer come back as `permission denied`.** Ctrl+V writes `$TMPDIR/pi-clipboard-<uuid>.<ext>` and inserts that path as text. Native `read` now allowlists those files (read-only; write/delete/shell stay in the workspace), returns image bytes instead of UTF-8, and the request builder attaches the same files as vision images so the model can see the screenshot without a tool call.
+
 ## [1.4.34] - 2026-09-14
 
 ### Fixed

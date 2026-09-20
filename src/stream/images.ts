@@ -80,6 +80,23 @@ export function validateCursorCliImageLimits(bytes: Uint8Array): string {
   return sniffedMimeType;
 }
 
+export function decodeImageBytes(
+  bytes: Uint8Array,
+  options: ImageDecodeOptions = {},
+): ParsedImageContent | undefined {
+  if (bytes.length === 0) return undefined;
+  try {
+    const mimeType = options.enforceCursorCliLimits
+      ? validateCursorCliImageLimits(bytes)
+      : sniffCursorImageMimeType(bytes);
+    if (!mimeType || !CURSOR_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) return undefined;
+    return { data: bytes, mimeType };
+  } catch (error) {
+    if (!options.dropInvalid) throw error;
+    return undefined;
+  }
+}
+
 export function decodeBase64Image(
   data: string,
   mimeType: string,

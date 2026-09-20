@@ -3,9 +3,10 @@
  * delete, shell, fetch). These run on the open Run RPC so the model can keep
  * generating instead of being told to retry through MCP.
  *
- * Paths are confined to `process.cwd()`. Mutating and shell work still happens
- * here because that is the exec-channel contract — Pi's MCP tools remain
- * available for anything the model calls that way.
+ * Paths are confined to `process.cwd()`, except native `read` of Pi clipboard
+ * screenshots (`$TMPDIR/pi-clipboard-<uuid>.<ext>`). Mutating and shell work
+ * still happens here because that is the exec-channel contract — Pi's MCP tools
+ * remain available for anything the model calls that way.
  */
 import { spawn } from "node:child_process";
 import {
@@ -22,6 +23,9 @@ import {
 import path from "node:path";
 
 import { create } from "@bufbuild/protobuf";
+
+import { isPiClipboardImagePath } from "./clipboard-images.js";
+import { CURSOR_CLI_MAX_IMAGE_BYTES, sniffCursorImageMimeType } from "./images.js";
 
 import {
   DeleteErrorSchema,
@@ -113,6 +117,7 @@ export function emptyGrepPatternRejection(
 
 export function resolveInWorkspace(
   inputPath: string | undefined,
+  options?: { allowTmpClipboardRead?: boolean },
 ): { path: string } | { error: string; code: "denied" | "invalid" } {
   let root: string;
   try {
@@ -129,6 +134,9 @@ export function resolveInWorkspace(
   }
   const relative = path.relative(root, comparable);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    if (options?.allowTmpClipboardRead && isPiClipboardImagePath(comparable)) {
+      return { path: candidate };
+    }
     return { error: `Path is outside the workspace: ${inputPath ?? "."}`, code: "denied" };
   }
   return { path: candidate };
@@ -186,7 +194,7 @@ export function dispatchNativeExec(
 
 function execRead(args: Record<string, unknown>): NativeExecFrame {
   const rawPath = typeof args.path === "string" ? args.path : "";
-  const resolved = resolveInWorkspace(rawPath);
+  const resolved = resolveInWorkspace(rawPath, { allowTmpClipboardRead: true });
   if ("error" in resolved) {
     return {
       resultCase: "readResult",
@@ -225,6 +233,38 @@ function execRead(args: Record<string, unknown>): NativeExecFrame {
     const offset = Number(args.offset);
     const limit = Number(args.limit);
     const raw = readFileSync(resolved.path);
+    const imageMime = sniffCursorImageMimeType(new Uint8Array(raw));
+    if (imageMime) {
+      if (raw.byteLength > CURSOR_CLI_MAX_IMAGE_BYTES) {
+        return {
+          resultCase: "readResult",
+          value: create(ReadResultSchema, {
+            result: {
+              case: "error",
+              value: create(ReadErrorSchema, {
+                path: rawPath,
+                error: `Image exceeds Cursor CLI's ${CURSOR_CLI_MAX_IMAGE_BYTES} byte limit.`,
+              }),
+            },
+          }),
+        };
+      }
+      return {
+        resultCase: "readResult",
+        value: create(ReadResultSchema, {
+          result: {
+            case: "success",
+            value: create(ReadSuccessSchema, {
+              path: displayPath(resolved.path),
+              totalLines: 0,
+              fileSize: BigInt(stat.size),
+              truncated: false,
+              output: { case: "data", value: raw },
+            }),
+          },
+        }),
+      };
+    }
     const truncatedFile = raw.byteLength > MAX_READ_BYTES;
     const text = raw.subarray(0, MAX_READ_BYTES).toString("utf8");
     const lines = text.split("\n");
