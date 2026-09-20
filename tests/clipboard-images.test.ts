@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -33,6 +33,20 @@ describe("clipboard image path allowlist", () => {
     expect(isPiClipboardImagePath(path.join(tmpdir(), "evil.sh"))).toBe(false);
     expect(isPiClipboardImagePath(path.join(tmpdir(), "pi-clipboard-not-a-uuid.png"))).toBe(false);
     expect(isPiClipboardImagePath("/etc/passwd")).toBe(false);
+  });
+
+  it("rejects a clipboard-named symlink to another temp file", () => {
+    const target = path.join(tmpdir(), "pi-cursor-secret.txt");
+    const link = path.join(tmpdir(), CLIPBOARD_NAME);
+    writeFileSync(target, "secret");
+    try {
+      symlinkSync(target, link);
+      expect(isPiClipboardImagePath(link)).toBe(false);
+      expect(loadClipboardImagesFromText(link)).toEqual([]);
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(target, { force: true });
+    }
   });
 });
 

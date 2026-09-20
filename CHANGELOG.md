@@ -4,7 +4,8 @@
 
 ### Fixed
 
-- **Pi clipboard screenshots no longer come back as `permission denied`.** Ctrl+V writes `$TMPDIR/pi-clipboard-<uuid>.<ext>` and inserts that path as text. Native `read` now allowlists those files (read-only; write/delete/shell stay in the workspace), returns image bytes instead of UTF-8, and the request builder attaches the same files as vision images so the model can see the screenshot without a tool call.
+- **Non-function / malformed tools no longer crash request preparation.** `slimOpenAIToolsForCursor` and `buildMcpToolDefinitions` skip or pass through tools without a `function` object instead of throwing. Fixes [#32](https://github.com/Rahularya01/pi-cursor/issues/32).
+- **Pi clipboard screenshots no longer come back as `permission denied`.** Ctrl+V writes `$TMPDIR/pi-clipboard-<uuid>.<ext>` and inserts that path as text. Native `read` now allowlists those files (read-only; write/delete/shell stay in the workspace), returns image bytes instead of UTF-8, and the request builder attaches the same files as vision images so the model can see the screenshot without a tool call. Leaf symlinks, non-image payloads, and files over Cursor's 5 MiB image cap are refused.
 
 ## [1.4.34] - 2026-09-14
 

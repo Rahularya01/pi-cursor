@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -89,6 +89,44 @@ describe("native exec handlers", () => {
       expect(Buffer.from(result.value.output?.value ?? []).equals(png)).toBe(true);
     } finally {
       rmSync(file, { force: true });
+    }
+  });
+
+  it("refuses a clipboard-named non-image instead of dumping UTF-8", () => {
+    const name = "pi-clipboard-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png";
+    const file = path.join(tmpdir(), name);
+    dir = mkdtempSync(path.join(tmpdir(), "pi-cursor-exec-"));
+    writeFileSync(file, "not-an-image");
+    try {
+      process.chdir(dir);
+      const dispatched = dispatchNativeExec("readArgs", { path: file });
+      expect(dispatched?.kind).toBe("sync");
+      if (dispatched?.kind !== "sync") return;
+      const result = (dispatched.frame.value as { result: { case: string } }).result;
+      expect(result.case).toBe("error");
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("refuses a clipboard-named symlink even when the target is in tmpdir", () => {
+    const target = path.join(tmpdir(), "pi-cursor-secret.txt");
+    const name = "pi-clipboard-ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb.png";
+    const file = path.join(tmpdir(), name);
+    dir = mkdtempSync(path.join(tmpdir(), "pi-cursor-exec-"));
+    writeFileSync(target, "secret");
+    try {
+      symlinkSync(target, file);
+      process.chdir(dir);
+      expect("path" in resolveInWorkspace(file, { allowTmpClipboardRead: true })).toBe(false);
+      const dispatched = dispatchNativeExec("readArgs", { path: file });
+      expect(dispatched?.kind).toBe("sync");
+      if (dispatched?.kind !== "sync") return;
+      const result = (dispatched.frame.value as { result: { case: string } }).result;
+      expect(result.case).toBe("permissionDenied");
+    } finally {
+      rmSync(file, { force: true });
+      rmSync(target, { force: true });
     }
   });
 

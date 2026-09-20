@@ -24,7 +24,11 @@ import path from "node:path";
 
 import { create } from "@bufbuild/protobuf";
 
-import { isPiClipboardImagePath } from "./clipboard-images.js";
+import {
+  isPiClipboardImagePath,
+  readPiClipboardImageBytes,
+  resolvedPiClipboardImagePath,
+} from "./clipboard-images.js";
 import { CURSOR_CLI_MAX_IMAGE_BYTES, sniffCursorImageMimeType } from "./images.js";
 
 import {
@@ -134,8 +138,9 @@ export function resolveInWorkspace(
   }
   const relative = path.relative(root, comparable);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    if (options?.allowTmpClipboardRead && isPiClipboardImagePath(comparable)) {
-      return { path: candidate };
+    const clipboardPath = resolvedPiClipboardImagePath(candidate);
+    if (options?.allowTmpClipboardRead && clipboardPath && isPiClipboardImagePath(candidate)) {
+      return { path: clipboardPath };
     }
     return { error: `Path is outside the workspace: ${inputPath ?? "."}`, code: "denied" };
   }
@@ -232,6 +237,53 @@ function execRead(args: Record<string, unknown>): NativeExecFrame {
     }
     const offset = Number(args.offset);
     const limit = Number(args.limit);
+    if (isPiClipboardImagePath(resolved.path)) {
+      const bytes = readPiClipboardImageBytes(resolved.path);
+      if (bytes === "oversized") {
+        return {
+          resultCase: "readResult",
+          value: create(ReadResultSchema, {
+            result: {
+              case: "error",
+              value: create(ReadErrorSchema, {
+                path: rawPath,
+                error: `Image exceeds Cursor CLI's ${CURSOR_CLI_MAX_IMAGE_BYTES} byte limit.`,
+              }),
+            },
+          }),
+        };
+      }
+      const imageMime = bytes ? sniffCursorImageMimeType(bytes) : undefined;
+      if (!bytes || !imageMime) {
+        return {
+          resultCase: "readResult",
+          value: create(ReadResultSchema, {
+            result: {
+              case: "error",
+              value: create(ReadErrorSchema, {
+                path: rawPath,
+                error: "Clipboard path is not a supported image (jpeg, png, gif, or webp).",
+              }),
+            },
+          }),
+        };
+      }
+      return {
+        resultCase: "readResult",
+        value: create(ReadResultSchema, {
+          result: {
+            case: "success",
+            value: create(ReadSuccessSchema, {
+              path: displayPath(resolved.path),
+              totalLines: 0,
+              fileSize: BigInt(bytes.byteLength),
+              truncated: false,
+              output: { case: "data", value: bytes },
+            }),
+          },
+        }),
+      };
+    }
     const raw = readFileSync(resolved.path);
     const imageMime = sniffCursorImageMimeType(new Uint8Array(raw));
     if (imageMime) {
