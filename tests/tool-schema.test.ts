@@ -2,7 +2,7 @@ import { fromBinary, toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import { afterEach, describe, expect, it } from "bun:test";
 
-import { buildMcpToolDefinitions } from "../src/stream/tool-schema.js";
+import { buildMcpToolDefinitions, slimOpenAIToolsForCursor } from "../src/stream/tool-schema.js";
 import type { OpenAIToolDef } from "../src/stream/types.js";
 
 const previousSlimTools = process.env.PI_CURSOR_SLIM_TOOLS;
@@ -107,4 +107,40 @@ describe("Cursor tool schema encoding", () => {
     ]);
     expect(schema.required).toEqual(["title", "default", "literal"]);
   });
+
+  it.each(["0", "1"])(
+    "handles non-function and malformed tools defensively in mode %s",
+    (slimMode) => {
+      process.env.PI_CURSOR_SLIM_TOOLS = slimMode;
+      const mixedTools = [
+        null as any,
+        undefined as any,
+        "invalid-tool-item" as any,
+        { type: "web_search" } as any,
+        { type: "function" } as any,
+        { type: "function", function: "not-an-object" } as any,
+        { type: "function", function: { name: "   " } } as any,
+        {
+          type: "function",
+          function: {
+            name: "valid_tool",
+            description: "A valid tool",
+            parameters: { type: "object", properties: { key: { type: "string" } } },
+          },
+        },
+      ];
+
+      // slimOpenAIToolsForCursor should not crash on non-function tool definitions
+      const slimmed = slimOpenAIToolsForCursor(mixedTools);
+      expect(slimmed.length).toBe(8);
+      expect(slimmed[3]).toEqual({ type: "web_search" } as any);
+      expect(slimmed[7]!.function?.name).toBe("valid_tool");
+
+      // buildMcpToolDefinitions should safely skip non-function tools in all modes
+      const mcpTools = buildMcpToolDefinitions(mixedTools);
+      expect(mcpTools.length).toBe(1);
+      expect(mcpTools[0]!.name).toBe("valid_tool");
+      expect(mcpTools[0]!.toolName).toBe("valid_tool");
+    },
+  );
 });
