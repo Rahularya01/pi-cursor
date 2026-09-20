@@ -118,6 +118,9 @@ describe("request build root prompt wiring", () => {
     expect(roles[0]).toBe("system");
     expect(roles.slice(1)).toEqual(["user", "user", "assistant", "tool"]);
     expect(JSON.stringify(messages)).toContain("my favourite color is black");
+    const rules = messages.filter((message) => JSON.stringify(message).includes("<rules>"));
+    expect(rules).toHaveLength(1);
+    expect(JSON.stringify(rules)).toContain("Native Cursor local tools are disabled");
   });
 
   it("always overlays Pi history onto a checkpoint so empty server placeholders are not the prompt", () => {
@@ -136,6 +139,9 @@ describe("request build root prompt wiring", () => {
     const messages = rootPromptMessages(pinned);
     expect(JSON.stringify(messages)).toContain("UPDATED PI PROMPT");
     expect(JSON.stringify(messages)).toContain("my favourite color is black");
+    const rules = messages.filter((message) => JSON.stringify(message).includes("<rules>"));
+    expect(rules).toHaveLength(1);
+    expect(JSON.stringify(rules)).toContain("Native Cursor local tools are disabled");
     const runRequest = fromBinary(AgentClientMessageSchema, pinned.requestBytes).message.value as {
       customSystemPrompt?: string;
       modelDetails?: { modelId?: string };

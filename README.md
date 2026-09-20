@@ -181,6 +181,7 @@ Pi Coding Agent  →  streamSimple (cursor-native)
 
 - **Transport:** Native Connect/protobuf streaming over HTTP/2, in-process via `h2-session.ts` — no subprocess.
 - **Infrastructure Context Normalization:** Side-channel user messages (context-mode routing, post-compaction `<session_state>`, and explicit `[pi-lens automated … not a user request]` notices) are safely normalized into the system prompt so Cursor models stay focused on your primary task.
+- **Local operations through Pi:** File reads, searches, directory listings, writes, deletions, and shell commands run through the tools registered in Pi. Native Cursor local calls are rejected with guidance to call a Pi MCP tool using its own schema; this may require an extra model response. There is no built-in local fallback when Pi lacks a suitable tool. Eight rejected local requests without a Pi tool result stop the run at a receive-chunk boundary, unless Pi calls are already awaiting results. Pending Pi calls take priority; sending their results resets the counter. Web search and fetch are unchanged. This tool policy is sent even when `PI_CURSOR_PROMPT_HISTORY=0`.
 - **Context-Efficient Tools:** MCP schemas are compacted without changing callable constraints, and exact conversational-only turns (`hi`, `thanks`, etc.) omit tools entirely. Actionable prompts always retain tools.
 - **Cross-Platform:** Tested and fully compatible with macOS, Linux, Windows, and WSL.
 
@@ -273,7 +274,7 @@ layer. Never hand-edit it — regenerate with `yarn proto:gen` (see
 
 ## Troubleshooting
 
-- **Pasted screenshot is `permission denied`:** Pi Ctrl+V writes `$TMPDIR/pi-clipboard-<uuid>.png` and inserts that path as text. Native Cursor `read` still cannot leave the workspace for anything else, but clipboard images are ingested as vision attachments and readable on the exec channel. Write/delete/shell stay confined to the cwd. If the temp file was already deleted, paste again.
+- **Pasted screenshot is `permission denied`:** Pi Ctrl+V writes `$TMPDIR/pi-clipboard-<uuid>.png` and inserts that path as text. Clipboard images are still ingested as vision attachments. Native Cursor `read` is rejected and redirected to Pi tools; reading the path through a tool now depends on the active Pi tool's access rules. If the temporary file is gone, paste again. If Pi's read tool cannot access it, reattach the image for vision input or place it in a location that tool can read.
 - **`No API provider registered for api: cursor-native`:** Update to the latest `pi-cursor` (`pi update npm:@rahularya01/pi-cursor`) and restart Pi (or `/reload`). This means the Agent tried to stream via Pi's global `streamSimple` dispatcher before the Cursor transport was registered there. Current builds register `cursor-native` on that registry during extension load.
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.
