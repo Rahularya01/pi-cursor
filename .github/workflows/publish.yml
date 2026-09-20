@@ -21,11 +21,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: yarn
           registry-url: "https://registry.npmjs.org"
 
       - name: Enable Corepack
         run: corepack enable
+
+      - name: Cache Yarn
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: yarn install --immutable
