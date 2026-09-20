@@ -13,6 +13,7 @@ import {
   systemPromptHasSessionMemory as systemPromptHasSessionMemoryImpl,
   type OpenAIMessage as NormalizedOpenAIMessage,
 } from "./context-normalize.js";
+import { loadClipboardImagesFromText } from "./clipboard-images.js";
 import { debugLog } from "./debug-log.js";
 import {
   decodeBase64Image,
@@ -297,9 +298,13 @@ export function parseMessages(
 
     if (msg.role === "user") {
       finalizeCurrentTurn();
-      const userImages = imageContent(msg.content, decodeOptions(index));
+      const userText = textContent(msg.content);
+      const opts = decodeOptions(index);
+      const userImages =
+        mergeImages(imageContent(msg.content, opts), loadClipboardImagesFromText(userText, opts)) ??
+        [];
       currentTurn = {
-        userText: textContent(msg.content),
+        userText,
         steps: [],
         ...(userImages.length > 0 ? { userImages } : {}),
         toolCallById: new Map(),

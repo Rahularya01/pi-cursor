@@ -273,6 +273,7 @@ layer. Never hand-edit it — regenerate with `bun run proto:gen` (see
 
 ## Troubleshooting
 
+- **Pasted screenshot is `permission denied`:** Pi Ctrl+V writes `$TMPDIR/pi-clipboard-<uuid>.png` and inserts that path as text. Native Cursor `read` still cannot leave the workspace for anything else, but clipboard images are ingested as vision attachments and readable on the exec channel. Write/delete/shell stay confined to the cwd. If the temp file was already deleted, paste again.
 - **`No API provider registered for api: cursor-native`:** Update to the latest `pi-cursor` (`pi update npm:@rahularya01/pi-cursor`) and restart Pi (or `/reload`). This means the Agent tried to stream via Pi's global `streamSimple` dispatcher before the Cursor transport was registered there. Current builds register `cursor-native` on that registry during extension load.
 - **Not logged in / 401:** Ensure Cursor CLI or app is logged in, or run `/login cursor` again. Check `/cursor.doctor` to verify your `tokenSource`. Tokens from CLI/IDE are re-resolved when near expiry; idle stream retries also force-refresh credentials.
 - **Empty / hung stream:** Cursor may have updated wire headers; verify network connectivity or bump `PI_CURSOR_CLIENT_VERSION`. `/cursor.doctor` prints the active `clientVersion`.

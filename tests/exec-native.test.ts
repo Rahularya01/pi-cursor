@@ -21,6 +21,18 @@ describe("native exec workspace paths", () => {
     expect("path" in resolveInWorkspace(".")).toBe(true);
     expect("path" in resolveInWorkspace("package.json")).toBe(true);
   });
+
+  it("allows read-only access to Pi clipboard images in tmpdir", () => {
+    const name = "pi-clipboard-d41cbdb9-fc79-4558-a98a-d8f5a0af0114.png";
+    const file = path.join(tmpdir(), name);
+    writeFileSync(file, "not-an-image");
+    try {
+      expect("path" in resolveInWorkspace(file)).toBe(false);
+      expect("path" in resolveInWorkspace(file, { allowTmpClipboardRead: true })).toBe(true);
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
 });
 
 describe("native exec handlers", () => {
@@ -44,6 +56,40 @@ describe("native exec handlers", () => {
     ).result;
     expect(result.case).toBe("success");
     expect(result.value.output?.value).toContain("hello from native read");
+  });
+
+  it("reads a Pi clipboard PNG as image bytes instead of denying the path", () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const name = "pi-clipboard-11111111-2222-3333-4444-555555555555.png";
+    const file = path.join(tmpdir(), name);
+    dir = mkdtempSync(path.join(tmpdir(), "pi-cursor-exec-"));
+    writeFileSync(file, png);
+    try {
+      process.chdir(dir);
+      const write = dispatchNativeExec("writeArgs", { path: file, fileText: "nope" });
+      expect(write?.kind).toBe("sync");
+      if (write?.kind === "sync") {
+        expect((write.frame.value as { result: { case: string } }).result.case).toBe(
+          "permissionDenied",
+        );
+      }
+      const dispatched = dispatchNativeExec("readArgs", { path: file });
+      expect(dispatched?.kind).toBe("sync");
+      if (dispatched?.kind !== "sync") return;
+      const result = (
+        dispatched.frame.value as {
+          result: { case: string; value: { output?: { case?: string; value?: Uint8Array } } };
+        }
+      ).result;
+      expect(result.case).toBe("success");
+      expect(result.value.output?.case).toBe("data");
+      expect(Buffer.from(result.value.output?.value ?? []).equals(png)).toBe(true);
+    } finally {
+      rmSync(file, { force: true });
+    }
   });
 
   it("writes then lists a directory", () => {
