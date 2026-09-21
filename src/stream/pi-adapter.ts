@@ -20,6 +20,11 @@ import type {
 
 import { redactSecrets } from "../utils/security.js";
 import type { CursorNativeModelRouting } from "./model-routing.js";
+import {
+  isTranscriptSystemMessage,
+  resolveContextSystemPrompt,
+  resolveContextTools,
+} from "./transcript-compat.js";
 import type {
   ChatCompletionRequest,
   ContentPart,
@@ -294,7 +299,22 @@ export function contextToCursorChatCompletionRequest(
   config: CursorNativeStreamConfig,
 ): ChatCompletionRequest {
   const messages: OpenAIMessage[] = [];
-  if (context.systemPrompt) messages.push({ role: "system", content: context.systemPrompt });
+  // Pi 0.86 moved the prompt and tools onto the transcript's system messages;
+  // both are replayed here so the request is identical on either host version.
+  // Later system messages are dropped from the message list itself: Cursor
+  // carries one root prompt per conversation, so a mid-conversation system
+  // message has nowhere to go except folded into that prompt.
+  const systemPrompt = resolveContextSystemPrompt(context);
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+
+  // Index of the last message that survives into the Cursor request. Trailing
+  // system messages (a 0.86 tool-set update, say) are folded into the prompt
+  // above, so they must not make a trailing aborted assistant turn look like
+  // history — that is what the `interrupted_notice` guard below turns on.
+  const lastReplayedIndex = context.messages.reduce(
+    (last, message, index) => (isTranscriptSystemMessage(message) ? last : index),
+    -1,
+  );
 
   for (const [index, message] of context.messages.entries()) {
     if (message.role === "user") {
@@ -310,7 +330,7 @@ export function contextToCursorChatCompletionRequest(
       // annotating it would turn an empty-step turn into a non-empty one and
       // strand the live user text.
       const interrupted_notice =
-        index < context.messages.length - 1 ? interruptedAssistantNotice(message) : "";
+        index < lastReplayedIndex ? interruptedAssistantNotice(message) : "";
       messages.push({
         role: "assistant",
         content: assistantTextFromPiContent(message.content),
@@ -335,7 +355,7 @@ export function contextToCursorChatCompletionRequest(
     model: model.id,
     messages,
     stream: true,
-    tools: (context.tools ?? []).map(piToolToOpenAI),
+    tools: resolveContextTools(context).map(piToolToOpenAI),
     tool_choice: options?.toolChoice,
     reasoning_effort: resolveNativeReasoningEffort(
       model,

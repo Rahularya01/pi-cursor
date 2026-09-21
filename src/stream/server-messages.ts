@@ -37,6 +37,7 @@ import {
   RequestContextSuccessSchema,
   SetBlobResultSchema,
   ShellRejectedSchema,
+  ShellStreamSchema,
   WriteShellStdinErrorSchema,
   WriteShellStdinResultSchema,
   type AgentServerMessage,
@@ -484,6 +485,32 @@ function handleExecMessageInner(
     return true;
   }
 
+  if (execCase === "shellStreamArgs") {
+    // Only reached when native shell execution is off (the default). The
+    // model is told to route the command through Pi's `bash` tool, which the
+    // server accepts and continues from — unlike a reported shell exit, which
+    // parks the turn. See `nativeShellStreamEnabled()` in exec-native.ts.
+    const args = (execMsg as any).message.value;
+    sendNativeFrame(
+      execMsg,
+      {
+        resultCase: "shellStream",
+        value: create(ShellStreamSchema, {
+          event: {
+            case: "rejected",
+            value: create(ShellRejectedSchema, {
+              command: args.command ?? "",
+              workingDirectory: args.workingDirectory ?? "",
+              reason: REJECT_REASON,
+              isReadonly: false,
+            }),
+          },
+        }),
+      },
+      sendFrame,
+    );
+    return true;
+  }
   if (execCase === "backgroundShellSpawnArgs") {
     const args = (execMsg as any).message.value;
     sendExecResult(

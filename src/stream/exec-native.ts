@@ -101,6 +101,38 @@ const MAX_FETCH_BYTES = 1024 * 1024;
 const SHELL_TIMEOUT_MS = 30_000;
 const FETCH_TIMEOUT_MS = 20_000;
 
+/** Opt back in to running Cursor's streamed shell natively. Off by default. */
+const NATIVE_SHELL_ENV = "PI_CURSOR_NATIVE_SHELL";
+
+/**
+ * Whether `shellStreamArgs` is executed in-process.
+ *
+ * Cursor's current server does not complete a turn from the streamed shell
+ * frames this build knows how to send. Answer a `shellStreamArgs` with
+ * `start`/`stdout`/`exit` — in any combination, including a lone `exit`, a
+ * terminal `ShellResult`, or an `exit` whose output is handed over as an
+ * `output_location` file — and the Run RPC simply never advances: the tool
+ * call stays open and the connection carries nothing but heartbeats until the
+ * user aborts. Every other native exec case (`read`, `ls`, `grep`, `write`,
+ * `delete`, `fetch`) is answered and consumed normally, and a `rejected`
+ * shell frame is consumed normally too, so this is specific to reporting a
+ * shell as having run. It matches the unknown `ShellArgs` fields (15, 17, 21)
+ * the server sends and `/cursor.doctor` reports as wire drift: the completion
+ * contract for a streamed shell has moved on from `proto/agent.proto`.
+ *
+ * So the shell is handed back to Pi instead, which has two further benefits:
+ * a command Pi runs goes through Pi's own approval and permission handling
+ * rather than being spawned inside the provider where the host cannot see it,
+ * and its output lands in the transcript as a normal tool result.
+ *
+ * Set `PI_CURSOR_NATIVE_SHELL=1` to restore in-process execution once the
+ * schema is resynced.
+ */
+export function nativeShellStreamEnabled(): boolean {
+  const raw = process.env[NATIVE_SHELL_ENV];
+  return raw === "1" || raw === "true";
+}
+
 export type NativeExecFrame = { resultCase: string; value: unknown };
 
 export type NativeExecDispatch =
@@ -189,7 +221,11 @@ export function dispatchNativeExec(
     case "shellArgs":
       return { kind: "async", run: () => execShell(args) };
     case "shellStreamArgs":
-      return { kind: "stream", run: (emit) => execShellStream(args, emit) };
+      // Unhandled by default so the caller answers with a rejection that
+      // points the model at Pi's `bash` tool. See nativeShellStreamEnabled().
+      return nativeShellStreamEnabled()
+        ? { kind: "stream", run: (emit) => execShellStream(args, emit) }
+        : undefined;
     case "fetchArgs":
       return { kind: "async", run: () => execFetch(args) };
     default:

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pi 0.86 hosts no longer send every request with an empty system prompt and no tools.** Pi 0.86 normalizes provider input into a `TranscriptContext`: `Context.systemPrompt` and `Context.tools` are folded into the transcript's system messages, so reading those two fields returned nothing and each turn went out with the `"You are a helpful assistant."` placeholder and `tools: []`. With no MCP tools declared, models fell back to Cursor's native exec channel for everything, which then parked on the first shell command — the visible symptom was a turn that printed a line of preamble and hung until it was aborted. The prompt and tool set are now replayed from the transcript's system messages (later messages append instructions, patch named sections, and add or remove tools), falling back to the legacy fields on Pi 0.80–0.85. The replay is local, so the supported host range is unchanged.
+- **A shell command from the model no longer hangs the turn.** Cursor's current server does not complete a turn from the streamed shell frames this build sends: `start`/`stdout`/`exit`, a lone `exit`, a terminal `ShellResult`, and an `exit` carrying an `output_location` file all leave the Run RPC idling on heartbeats until the user aborts, while every other native exec case (`read`, `ls`, `grep`, `write`, `delete`, `fetch`) and a `rejected` shell frame are consumed normally. This matches the unknown `ShellArgs` fields (15, 17, 21) already reported as wire drift. `shellStreamArgs` is now answered with a rejection that points the model at Pi's `bash` tool, which also puts shell commands back under Pi's own approval handling and records their output in the transcript. Set `PI_CURSOR_NATIVE_SHELL=1` to restore in-process execution.
+
 ## [1.4.36] - 2026-09-20
 
 ### Changed
