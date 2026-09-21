@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cursor `grok-4.7` requests no longer fail with `Connect error not_found`.** The Run endpoint rejects the base-ID-plus-`effort` parameter shape for the grok-4.7 family but accepts the discovered sibling wire IDs verbatim, so routing now sends `grok-4.7-<effort>[-fast]` with empty parameters for every grok-4.7 variant (bare, `-fast`, `-max`, and the `cursor-`-prefixed twins; max-mode flags preserved). Other model families are unchanged. Fixes [#38](https://github.com/Rahularya01/pi-cursor/issues/38).
+
 ## [1.4.36] - 2026-09-20
 
 ### Changed
