@@ -357,6 +357,7 @@ function handleExecMessage(
   return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
 }
 
+/** Routes Pi calls, rejects native local requests, and dispatches the remaining native handlers. */
 function handleExecMessageInner(
   execMsg: ExecServerMessage,
   mcpTools: McpToolDefinition[],

@@ -17,6 +17,7 @@ export type NativeExecFrame = { resultCase: string; value: unknown };
 export type NativeExecDispatch =
   { kind: "sync"; frame: NativeExecFrame } | { kind: "async"; run: () => Promise<NativeExecFrame> };
 
+/** Dispatches retained native handlers; local file and shell operations have no executor here. */
 export function dispatchNativeExec(
   execCase: string,
   args: Record<string, unknown>,
@@ -44,6 +45,7 @@ export function dispatchNativeExec(
   }
 }
 
+/** Returns an empty diagnostic result because this provider does not run workspace diagnostics. */
 function execDiagnostics(args: Record<string, unknown>): NativeExecFrame {
   const rawPath = typeof args.path === "string" ? args.path : "";
   return {
@@ -61,6 +63,7 @@ function execDiagnostics(args: Record<string, unknown>): NativeExecFrame {
   };
 }
 
+/** Fetches HTTP(S) content with a timeout and truncates the returned text to the transport limit. */
 async function execFetch(args: Record<string, unknown>): Promise<NativeExecFrame> {
   const url = typeof args.url === "string" ? args.url : "";
   let parsed: URL;
@@ -96,6 +99,7 @@ async function execFetch(args: Record<string, unknown>): Promise<NativeExecFrame
   }
 }
 
+/** Wraps a fetch failure in the typed result expected by the waiting Cursor request. */
 function fetchError(url: string, error: string): NativeExecFrame {
   return {
     resultCase: "fetchResult",

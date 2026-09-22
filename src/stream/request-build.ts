@@ -527,6 +527,7 @@ export function buildCursorRequest(
   );
 }
 
+/** Builds the wire request and prompt blobs, retaining the local-tool policy even without history. */
 export function buildCursorRequestFromParts(
   modelId: string,
   systemPrompt: string,

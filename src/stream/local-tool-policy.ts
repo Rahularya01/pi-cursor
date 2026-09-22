@@ -19,11 +19,13 @@ const LOCAL_TOOL_HINTS: Record<string, string[]> = {
   writeShellStdinArgs: ["bash"],
 };
 
+/** Identifies native file and shell requests that must be rejected in favor of Pi tools. */
 export function isLocalToolExec(execCase: string): boolean {
   return Object.hasOwn(LOCAL_TOOL_HINTS, execCase);
 }
 
 const namesCache = new WeakMap<McpToolDefinition[], string[]>();
+/** Caches nonempty tool names and aliases; the definitions array must remain immutable. */
 export function availableToolNamesFor(tools: McpToolDefinition[]): string[] {
   const cached = namesCache.get(tools);
   if (cached) return cached;
@@ -32,6 +34,7 @@ export function availableToolNamesFor(tools: McpToolDefinition[]): string[] {
   return names;
 }
 
+/** Lists registered tools with known matches first, custom tools visible, and bash last. */
 export function localToolCandidates(execCase: string, tools: McpToolDefinition[]): string[] {
   const available = availableToolNamesFor(tools);
   const preferred = (LOCAL_TOOL_HINTS[execCase] ?? []).filter(
@@ -48,6 +51,7 @@ export function localToolCandidates(execCase: string, tools: McpToolDefinition[]
   ];
 }
 
+/** Explains a native rejection using registered tools and their schemas, or the current lack of tools. */
 export function nativeToolRejectReason(execCase: string, tools: McpToolDefinition[]): string {
   const candidates = localToolCandidates(execCase, tools);
   const names = candidates.map(cursorMcpToolName);
@@ -59,6 +63,7 @@ export function nativeToolRejectReason(execCase: string, tools: McpToolDefinitio
   return `Do not retry this native Cursor tool. It is unavailable. No operation was performed. ${guidance}`;
 }
 
+/** Builds prompt guidance for Pi-owned local operations, including tool-free requests. */
 export function localToolPolicyText(tools: McpToolDefinition[]): string {
   const available = availableToolNamesFor(tools);
   const known = new Set(Object.values(LOCAL_TOOL_HINTS).flat());

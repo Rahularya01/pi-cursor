@@ -846,6 +846,7 @@ async function handleCursorNativeRequest(
   });
 }
 
+/** Consumes one bridge stream, yielding Pi calls and enforcing the rejection budget across retries. */
 function writeNativeStream(
   bridge: BridgeHandle,
   heartbeatTimer: ReturnType<typeof setInterval>,
@@ -1114,6 +1115,7 @@ function writeNativeStream(
     }
   };
 
+  /** Stops an exhausted rejection loop at a chunk boundary unless Pi calls are awaiting results. */
   const stopLocalToolLoop = (): boolean => {
     // Evaluate at chunk boundaries so Pi calls in the same chunk win. While
     // those calls await results, preserve their continuation instead of closing
@@ -1131,6 +1133,7 @@ function writeNativeStream(
     return true;
   };
 
+  /** Finalizes a completed stream after enforcing the local-tool rejection limit. */
   const finalizeSuccessfulStream = () => {
     if (stopLocalToolLoop()) return;
     if (cancelled || streamFinalized) return;
@@ -1615,6 +1618,7 @@ interface ResumeContext {
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
 }
 
+/** Collects pending Pi results and resumes Cursor with a fresh budget once all results are sent. */
 function handleNativeToolResultResume(
   active: ActiveBridge,
   toolResults: ToolResultInfo[],
@@ -2002,6 +2006,7 @@ function formatStreamParkMessage(execCase: string, timeoutMs: number): string {
   );
 }
 
+/** Rebuilds stream attempts while preserving the rejection budget across transport recovery. */
 function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void {
   // Recovered/rebuilt streams enter this helper with ordinary retry semantics to avoid recursive recovery loops.
   let latestAccessToken = input.accessToken;

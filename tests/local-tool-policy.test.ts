@@ -23,6 +23,7 @@ import {
 } from "../src/stream/bridge-session.js";
 import type { NativeStreamWriter, StreamIdleRetryController } from "../src/stream/types.js";
 
+/** Creates registered Pi tool definitions with permissive schemas for routing tests. */
 function tools(...names: string[]) {
   return buildMcpToolDefinitions(
     names.map((name) => ({
@@ -36,6 +37,7 @@ function tools(...names: string[]) {
   );
 }
 
+/** Builds a native request fixture with stable IDs without requiring unrelated protobuf fields. */
 function exec(caseName: string, args: object = {}, id = 12): ExecServerMessage {
   return {
     id,
@@ -44,16 +46,19 @@ function exec(caseName: string, args: object = {}, id = 12): ExecServerMessage {
   } as ExecServerMessage;
 }
 
+/** Encodes a server message with the Connect framing consumed by the real stream parser. */
 function serverFrame(message: MessageInitShape<typeof AgentServerMessageSchema>["message"]) {
   return frameConnectMessage(
     toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, { message })),
   );
 }
 
+/** Frames an execution request so tests exercise native dispatch through the stream parser. */
 function execFrame(caseName: string, args: object = {}, id = 12) {
   return serverFrame({ case: "execServerMessage", value: exec(caseName, args, id) });
 }
 
+/** Frames text or heartbeat progress to check that neither resets the rejection budget. */
 function progressFrame(
   message: { case: "textDelta"; value: { text: string } } | { case: "heartbeat"; value: object },
 ) {
@@ -256,6 +261,7 @@ describe("Pi-only local tool routing", () => {
   );
 });
 
+/** Records stream events and marks completion, matching the writer lifecycle used by cleanup. */
 function writer() {
   return {
     output: {} as never,
@@ -281,6 +287,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Connects the real stream consumer to a controllable bridge and registers abort/timer cleanup. */
 function harness(retry?: StreamIdleRetryController) {
   const controller = new AbortController();
   let onData = (_chunk: Buffer) => {};
