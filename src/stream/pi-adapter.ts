@@ -287,14 +287,102 @@ export function applyNativeCursorRouting(
     body.cursor_model_max_mode = routing.requestedMaxMode;
 }
 
+/**
+ * A transcript system message as pi-ai >= 0.86 normalizes it. Declared
+ * structurally because the repo compiles against an older pi-ai whose `Message`
+ * union has no system role.
+ */
+interface TranscriptSystemMessage {
+  role: "system";
+  content?: string | PiTextContent[];
+  sections?: Record<string, string | null>;
+  toolsAdded?: PiTool[];
+  toolsRemoved?: { name: string }[];
+}
+
+export interface TranscriptInputs {
+  systemPrompt: string;
+  tools: PiTool[];
+}
+
+function isTranscriptSystemMessage(message: unknown): message is TranscriptSystemMessage {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    (message as { role?: unknown }).role === "system"
+  );
+}
+
+function transcriptContentText(content: TranscriptSystemMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/**
+ * pi-ai 0.86 stopped handing providers `context.systemPrompt` / `context.tools`
+ * and now carries both as deltas on the transcript's system messages
+ * (`normalizeContext` builds a `{ messages }` object and drops the rest).
+ * The replay is reimplemented rather than imported from `getCurrentTools` /
+ * `getCurrentSystemPrompt`: pi-ai is an external peer dependency, so a named
+ * import missing on 0.85.x would be an ESM link error that kills the whole
+ * extension. Presence of a system message — not truthiness of `context.tools` —
+ * selects the shape, so a 0.86 turn that legitimately declares no tools is not
+ * mistaken for a legacy context.
+ */
+export function resolveTranscriptInputs(context: Context): TranscriptInputs {
+  const tools = new Map<string, PiTool>();
+  const sections = new Map<string, string>();
+  const contents: string[] = [];
+  let sawSystemMessage = false;
+
+  for (const message of context.messages as unknown[]) {
+    if (!isTranscriptSystemMessage(message)) continue;
+    sawSystemMessage = true;
+
+    const text = transcriptContentText(message.content);
+    if (text.length > 0) contents.push(text);
+
+    for (const [name, value] of Object.entries(message.sections ?? {})) {
+      if (value === null) sections.delete(name);
+      else sections.set(name, value);
+    }
+
+    // Order matters: pi-ai encodes a redefined tool as a removal plus an
+    // addition in the same message, so the addition has to land last.
+    for (const removed of message.toolsRemoved ?? []) tools.delete(removed.name);
+    for (const added of message.toolsAdded ?? []) tools.set(added.name, added);
+  }
+
+  if (!sawSystemMessage) {
+    return { systemPrompt: context.systemPrompt ?? "", tools: context.tools ?? [] };
+  }
+
+  const promptParts = [contents.join("\n\n"), ...sections.values()].filter(
+    (part) => part.length > 0,
+  );
+  return { systemPrompt: promptParts.join("\n\n"), tools: [...tools.values()] };
+}
+
 export function contextToCursorChatCompletionRequest(
   model: Model<Api>,
   context: Context,
   options: CursorNativeStreamOptions | undefined,
   config: CursorNativeStreamConfig,
 ): ChatCompletionRequest {
+  const { systemPrompt, tools } = resolveTranscriptInputs(context);
   const messages: OpenAIMessage[] = [];
-  if (context.systemPrompt) messages.push({ role: "system", content: context.systemPrompt });
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+
+  // Transcript system messages are replayed above, not emitted as turns, so a
+  // trailing one must not make the live assistant turn look like history.
+  let lastTurnIndex = -1;
+  for (const [index, message] of context.messages.entries()) {
+    if (!isTranscriptSystemMessage(message)) lastTurnIndex = index;
+  }
 
   for (const [index, message] of context.messages.entries()) {
     if (message.role === "user") {
@@ -309,8 +397,7 @@ export function contextToCursorChatCompletionRequest(
       // assistant message is the turn being retried, not context behind us —
       // annotating it would turn an empty-step turn into a non-empty one and
       // strand the live user text.
-      const interrupted_notice =
-        index < context.messages.length - 1 ? interruptedAssistantNotice(message) : "";
+      const interrupted_notice = index < lastTurnIndex ? interruptedAssistantNotice(message) : "";
       messages.push({
         role: "assistant",
         content: assistantTextFromPiContent(message.content),
@@ -335,7 +422,7 @@ export function contextToCursorChatCompletionRequest(
     model: model.id,
     messages,
     stream: true,
-    tools: (context.tools ?? []).map(piToolToOpenAI),
+    tools: tools.map(piToolToOpenAI),
     tool_choice: options?.toolChoice,
     reasoning_effort: resolveNativeReasoningEffort(
       model,
