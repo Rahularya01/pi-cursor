@@ -8,6 +8,10 @@
 - Eight native local-tool rejections without a Pi tool result stop the run at a receive-chunk boundary, unless Pi calls are already awaiting results. Pending Pi calls take priority. The counter survives transport retries and explicitly resets when their results are sent to Cursor.
 - Clipboard images remain available as vision attachments. Native exec-channel clipboard reads have been removed; tool-based reads now use the active Pi tool and its access rules.
 
+### Fixed
+
+- **Cursor `grok-4.7` requests no longer fail with `Connect error not_found`.** The Run endpoint rejects the base-ID-plus-`effort` parameter shape for the grok-4.7 family but accepts the discovered sibling wire IDs verbatim, so routing now sends `grok-4.7-<effort>[-fast]` with empty parameters for every grok-4.7 variant (bare, `-fast`, `-max`, and the `cursor-`-prefixed twins; max-mode flags preserved). Other model families are unchanged. Fixes [#38](https://github.com/Rahularya01/pi-cursor/issues/38).
+
 ## [1.4.36] - 2026-09-20
 
 ### Changed

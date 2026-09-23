@@ -94,6 +94,36 @@ export function buildNoReasoningEffortLookup(models: ProcessedModel[]): Map<stri
   return lookup;
 }
 
+/**
+ * Grok 4.7 sibling wire IDs.
+ *
+ * Cursor's Run endpoint rejects the base-ID-plus-`effort` parameter shape
+ * for the grok-4.7 family (Connect `not_found`), but accepts the discovered
+ * sibling wire IDs verbatim with empty parameters (see issue #38). Route
+ * every grok-4.7 variant group — bare, `-fast`, `-max`, and the `cursor-`
+ * prefixed twins — to the bare `grok-4.7-<effort>[-fast]` sibling ID instead.
+ */
+const GROK47_GROUP_BASE_PATTERN = /^(cursor-)?grok-4\.7(-max)?$/;
+const GROK47_SIBLING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+
+export function grok47SiblingRouting(
+  base: string,
+  fast: boolean,
+  effort: string,
+  model: CursorModel,
+): CursorModelRouting | undefined {
+  if (!GROK47_GROUP_BASE_PATTERN.test(base) || !GROK47_SIBLING_EFFORTS.has(effort)) {
+    return undefined;
+  }
+  return {
+    modelId: `grok-4.7-${effort}${fast ? "-fast" : ""}`,
+    ...(model.requiresMaxMode ? { requiresMaxMode: true } : {}),
+    ...(typeof model.requestedMaxMode === "boolean"
+      ? { requestedMaxMode: model.requestedMaxMode }
+      : {}),
+  };
+}
+
 function routingForModel(model: CursorModel): CursorModelRouting | undefined {
   if (
     !model.requestedModelId &&
@@ -257,7 +287,7 @@ export function processModels(raw: CursorModel[]): ProcessedModel[] {
       const rawRoutingByEffort = Object.fromEntries(
         [...g.efforts.entries()].map(([effort, model]) => [
           effort,
-          {
+          grok47SiblingRouting(g.base, g.fast, effort, model) ?? {
             modelId: model.requestedModelId ?? model.id,
             ...(model.parameters?.length ? { parameters: model.parameters } : {}),
             ...(model.requiresMaxMode ? { requiresMaxMode: true } : {}),
