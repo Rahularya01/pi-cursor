@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Local file and shell operations now run exclusively through Pi's registered MCP tools. Native Cursor calls receive schema-aware guidance instead of executing inside the provider, removing the incomplete native grep implementation. Guidance can require an extra model response; unavailable Pi tools have no local fallback. Web search and fetch are unchanged.
+- Eight native local-tool rejections without a Pi tool result stop the run at a receive-chunk boundary, unless Pi calls are already awaiting results. Pending Pi calls take priority. The counter survives transport retries and explicitly resets when their results are sent to Cursor.
+- Clipboard images remain available as vision attachments. Native exec-channel clipboard reads have been removed; tool-based reads now use the active Pi tool and its access rules.
+
 ## [1.4.36] - 2026-09-20
 
 ### Changed

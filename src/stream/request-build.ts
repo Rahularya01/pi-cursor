@@ -9,6 +9,8 @@
  * store and referenced by hash, which is what keeps a long session's request
  * from re-uploading every attachment on every turn.
  */
+
+import { localToolPolicyText } from "./local-tool-policy.js";
 import { create, fromBinary, fromJson, toBinary, toJson, type JsonValue } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import { createHash } from "node:crypto";
@@ -49,6 +51,7 @@ import {
   buildRootPromptMessages,
   encodeRootPromptMessage,
   isPromptHistoryEnabled,
+  systemPromptRootMessage,
 } from "./root-prompt.js";
 export {
   buildMcpToolDefinitions,
@@ -524,6 +527,7 @@ export function buildCursorRequest(
   );
 }
 
+/** Builds the wire request and prompt blobs, retaining the local-tool policy even without history. */
 export function buildCursorRequestFromParts(
   modelId: string,
   systemPrompt: string,
@@ -582,11 +586,14 @@ export function buildCursorRequestFromParts(
   // model messages. The prompt it actually reads is this list. Always overlay
   // a fresh prompt from Pi's transcript — a checkpoint's historical user
   // entries are often empty placeholders.
-  const promptBlobIds = isPromptHistoryEnabled()
-    ? buildRootPromptMessages(systemPrompt, turns).map((message) =>
-        storeAsBlob(encodeRootPromptMessage(message), blobStore),
-      )
-    : [];
+  // With history enabled, merge the capability policy into the existing rules
+  // message. Without history, retain only the policy as a separate user message.
+  const promptMessages = isPromptHistoryEnabled()
+    ? buildRootPromptMessages(`${systemPrompt}\n\n${localToolPolicyText(mcpTools)}`, turns)
+    : [systemPromptRootMessage(localToolPolicyText(mcpTools))];
+  const promptBlobIds = promptMessages.map((message) =>
+    storeAsBlob(encodeRootPromptMessage(message), blobStore),
+  );
   const rootPromptMessagesJson = [systemBlobId, ...promptBlobIds];
 
   let conversationState;

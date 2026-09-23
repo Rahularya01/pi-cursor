@@ -220,6 +220,8 @@ export interface StoredConversation {
 }
 
 export interface StreamState {
+  /** Rejections since the last Pi result. Stop is deferred while Pi calls await results. */
+  localToolRejections?: number;
   toolCallIndex: number;
   pendingExecs: PendingExec[];
   outputTokens: number;
@@ -271,6 +273,8 @@ export interface IdleRestartContext {
 }
 
 export interface StreamIdleRetryController {
+  /** Preserve the rejection budget across transport retries. */
+  localToolRejections?: number;
   currentAttempt: number;
   maxRetries: number;
   recoverBeforeRetry?: boolean;
@@ -278,6 +282,8 @@ export interface StreamIdleRetryController {
 }
 
 export interface NativeStreamAttemptInput {
+  /** Carry the budget when a tool continuation rebuilds its transport. */
+  localToolRejections?: number;
   accessToken: string;
   requestBytes: Uint8Array;
   blobStore: Map<string, Uint8Array>;

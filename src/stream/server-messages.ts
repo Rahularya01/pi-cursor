@@ -5,18 +5,17 @@
  * on the same stream or the server parks waiting:
  *   - `kvServerMessage`   blob get/set against the local blob store
  *   - `execServerMessage`  tool execution — MCP calls are handed to the caller;
- *     Cursor-native tools (read/write/ls/grep/shell/fetch) run on this stream
+ *     native local tools are rejected with Pi MCP guidance; fetch runs on this stream
  *   - `interactionQuery`  permission prompts, answered by ./interaction-query.ts
  *
  * Every handler returns whether it made forward progress, which is what feeds
  * the idle watchdog — see `processServerMessage` for the exact contract.
  */
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import { pathToFileURL } from "node:url";
 
 import {
   AgentClientMessageSchema,
-  BackgroundShellSpawnResultSchema,
   ComputerUseErrorSchema,
   ComputerUseResultSchema,
   ConversationStateStructureSchema,
@@ -36,9 +35,6 @@ import {
   RequestContextSchema,
   RequestContextSuccessSchema,
   SetBlobResultSchema,
-  ShellRejectedSchema,
-  WriteShellStdinErrorSchema,
-  WriteShellStdinResultSchema,
   type AgentServerMessage,
   type ConversationStateStructure,
   type ExecServerMessage,
@@ -52,6 +48,12 @@ import { recordDriftSignal, recordUnknownFields } from "./drift.js";
 import { dispatchNativeExec, type NativeExecFrame } from "./exec-native.js";
 import { handleInteractionQuery } from "./interaction-query.js";
 import { decodeMcpArgsMap } from "./request-build.js";
+import {
+  availableToolNamesFor,
+  isLocalToolExec,
+  localToolCandidates,
+  nativeToolRejectReason,
+} from "./local-tool-policy.js";
 import { stripCursorMcpToolName } from "./root-prompt.js";
 import {
   interactionUpdateProgress,
@@ -164,6 +166,14 @@ export function processServerMessage(
     const execMsg = msg.message.value as ExecServerMessage;
     const execCase = (execMsg as { message?: { case?: string } }).message?.case;
     const handled = handleExecMessage(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
+    if (execCase && isLocalToolExec(execCase)) {
+      state.localToolRejections = (state.localToolRejections ?? 0) + 1;
+      lifecycleLog("local_tool_rejected", {
+        execCase,
+        count: state.localToolRejections,
+        candidates: localToolCandidates(execCase, mcpTools),
+      });
+    }
     // execServerMessage was previously invisible in the lifecycle log — the exact
     // blind spot behind unexplained mid-run stalls. Record the exec case and whether
     // we answered it, so a parked stream can be diagnosed from the sanitized log
@@ -347,47 +357,7 @@ function handleExecMessage(
   return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
 }
 
-// mcpTools is fixed for the life of a stream but `mcpArgs` exec messages can arrive many times
-// per turn; cache the derived name list by array identity instead of rebuilding it every call.
-const availableToolNamesCache = new WeakMap<McpToolDefinition[], string[]>();
-
-function availableToolNamesFor(mcpTools: McpToolDefinition[]): string[] {
-  const cached = availableToolNamesCache.get(mcpTools);
-  if (cached) return cached;
-  const names = [...new Set(mcpTools.flatMap((tool) => [tool.toolName, tool.name]))].filter(
-    Boolean,
-  ) as string[];
-  availableToolNamesCache.set(mcpTools, names);
-  return names;
-}
-
-const NATIVE_EXEC_MCP_HINTS: Record<string, string[]> = {
-  readArgs: ["read", "Read"],
-  lsArgs: ["ls", "LS"],
-  grepArgs: ["grep", "Grep"],
-  writeArgs: ["write", "edit", "Edit"],
-  deleteArgs: ["bash", "edit", "Edit"],
-  shellArgs: ["bash"],
-  shellStreamArgs: ["bash"],
-  backgroundShellSpawnArgs: ["bash"],
-  writeShellStdinArgs: ["bash"],
-  fetchArgs: ["web_search", "fetch"],
-};
-
-function nativeToolRejectReason(execCase: string, mcpTools: McpToolDefinition[]): string {
-  const available = availableToolNamesFor(mcpTools);
-  const candidates = (NATIVE_EXEC_MCP_HINTS[execCase] ?? []).filter((name) =>
-    available.includes(name),
-  );
-  if (candidates.length > 0) {
-    return (
-      `This native Cursor tool is not available in Pi. ` +
-      `Call the MCP tool "${candidates[0]}" with the same arguments instead.`
-    );
-  }
-  return "This native Cursor tool is not available in Pi. Use the MCP tools provided instead.";
-}
-
+/** Routes Pi calls, rejects native local requests, and dispatches the remaining native handlers. */
 function handleExecMessageInner(
   execMsg: ExecServerMessage,
   mcpTools: McpToolDefinition[],
@@ -458,6 +428,61 @@ function handleExecMessageInner(
     return true;
   }
 
+  // Build the typed rejection once; the envelope creates nested protobuf messages.
+  const request = execMsg.message;
+  let rejection: MessageInitShape<typeof ExecClientMessageSchema>["message"];
+  switch (request.case) {
+    case "readArgs":
+    case "lsArgs":
+    case "writeArgs":
+    case "deleteArgs": {
+      const resultCase = {
+        readArgs: "readResult",
+        lsArgs: "lsResult",
+        writeArgs: "writeResult",
+        deleteArgs: "deleteResult",
+      } as const;
+      rejection = {
+        case: resultCase[request.case],
+        value: {
+          result: { case: "rejected", value: { path: request.value.path, reason: REJECT_REASON } },
+        },
+      };
+      break;
+    }
+    case "grepArgs":
+    case "writeShellStdinArgs":
+      rejection = {
+        case: request.case === "grepArgs" ? "grepResult" : "writeShellStdinResult",
+        value: { result: { case: "error", value: { error: REJECT_REASON } } },
+      };
+      break;
+    case "shellArgs":
+    case "shellStreamArgs":
+    case "backgroundShellSpawnArgs": {
+      const result = {
+        case: "rejected" as const,
+        value: {
+          command: request.value.command,
+          workingDirectory: request.value.workingDirectory,
+          reason: REJECT_REASON,
+          isReadonly: false,
+        },
+      };
+      rejection =
+        request.case === "shellStreamArgs"
+          ? { case: "shellStream", value: { event: result } }
+          : {
+              case: request.case === "shellArgs" ? "shellResult" : "backgroundShellSpawnResult",
+              value: { result },
+            };
+      break;
+    }
+  }
+  if (rejection?.case) {
+    sendExecResult(execMsg, rejection.case, rejection.value, sendFrame);
+    return true;
+  }
   const nativeArgs = ((execMsg as any).message?.value ?? {}) as Record<string, unknown>;
   const native = dispatchNativeExec(execCase ?? "", nativeArgs);
   if (native?.kind === "sync") {
@@ -474,50 +499,7 @@ function handleExecMessageInner(
     onLocalWork?.(work);
     return true;
   }
-  if (native?.kind === "stream") {
-    const work = native
-      .run((frame) => sendNativeFrame(execMsg, frame, sendFrame))
-      .catch((error) => {
-        sendExecThrow(execMsg, error instanceof Error ? error.message : String(error), sendFrame);
-      });
-    onLocalWork?.(work);
-    return true;
-  }
 
-  if (execCase === "backgroundShellSpawnArgs") {
-    const args = (execMsg as any).message.value;
-    sendExecResult(
-      execMsg,
-      "backgroundShellSpawnResult",
-      create(BackgroundShellSpawnResultSchema, {
-        result: {
-          case: "rejected",
-          value: create(ShellRejectedSchema, {
-            command: args.command ?? "",
-            workingDirectory: args.workingDirectory ?? "",
-            reason: REJECT_REASON,
-            isReadonly: false,
-          }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
-  if (execCase === "writeShellStdinArgs") {
-    sendExecResult(
-      execMsg,
-      "writeShellStdinResult",
-      create(WriteShellStdinResultSchema, {
-        result: {
-          case: "error",
-          value: create(WriteShellStdinErrorSchema, { error: REJECT_REASON }),
-        },
-      }),
-      sendFrame,
-    );
-    return true;
-  }
   if (execCase === "readMcpResourceExecArgs") {
     const args = (execMsg as any).message.value;
     sendExecResult(

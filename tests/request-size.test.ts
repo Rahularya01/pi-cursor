@@ -156,13 +156,13 @@ describe("native Cursor exec steering", () => {
       },
     ]);
     expect(serverMessageInternals.nativeToolRejectReason("readArgs", mcpTools)).toMatch(
-      /Call the MCP tool "read"/,
+      /mcp_pi_read/,
     );
   });
 
   it("falls back to a generic MCP-only hint when no matching tool exists", () => {
     expect(serverMessageInternals.nativeToolRejectReason("shellArgs", [])).toMatch(
-      /Use the MCP tools/,
+      /No Pi MCP tools are exposed for this request/,
     );
   });
 

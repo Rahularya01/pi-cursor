@@ -5,6 +5,8 @@
  * Based on https://github.com/ephraimduncan/opencode-cursor by Ephraim Duncan.
  * Uses an in-process node:http2 client (src/client/h2-session.ts) — no subprocess.
  */
+
+import { LOCAL_TOOL_LOOP_ERROR, MAX_LOCAL_TOOL_REJECTIONS } from "./local-tool-policy.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   createAssistantMessageEventStream,
@@ -281,6 +283,7 @@ export const __testInternals = {
   trimBlobStore,
   classifyBridgeExit,
   writeNativeStream,
+  handleNativeToolResultResume,
   setMetricEmitterForTests(factory?: MetricEmitter) {
     setMetricEmitter(factory);
   },
@@ -843,6 +846,7 @@ async function handleCursorNativeRequest(
   });
 }
 
+/** Consumes one bridge stream, yielding Pi calls and enforcing the rejection budget across retries. */
 function writeNativeStream(
   bridge: BridgeHandle,
   heartbeatTimer: ReturnType<typeof setInterval>,
@@ -880,6 +884,7 @@ function writeNativeStream(
     attempt: idleRetry?.currentAttempt ?? 1,
   });
   const state: StreamState = {
+    localToolRejections: idleRetry?.localToolRejections ?? 0,
     toolCallIndex: 0,
     pendingExecs: [],
     outputTokens: 0,
@@ -1110,7 +1115,27 @@ function writeNativeStream(
     }
   };
 
+  /** Stops an exhausted rejection loop at a chunk boundary unless Pi calls are awaiting results. */
+  const stopLocalToolLoop = (): boolean => {
+    // Evaluate at chunk boundaries so Pi calls in the same chunk win. While
+    // those calls await results, preserve their continuation instead of closing
+    // the bridge. The count is not reset until their results are sent below.
+    if ((state.localToolRejections ?? 0) < MAX_LOCAL_TOOL_REJECTIONS || mcpExecReceived)
+      return false;
+    if (!cancelled && !streamFinalized) {
+      cancelled = true;
+      idleWatchdog.clear();
+      options?.signal?.removeEventListener("abort", abort);
+      cleanupBridge(bridge, heartbeatTimer, bridgeKey);
+      lifecycleLog("local_tool_loop_stopped", { requestId, count: state.localToolRejections });
+      if (!writer.closed) writer.error(LOCAL_TOOL_LOOP_ERROR, "error", state);
+    }
+    return true;
+  };
+
+  /** Finalizes a completed stream after enforcing the local-tool rejection limit. */
   const finalizeSuccessfulStream = () => {
+    if (stopLocalToolLoop()) return;
     if (cancelled || streamFinalized) return;
     streamFinalized = true;
     idleWatchdog.clear();
@@ -1152,6 +1177,7 @@ function writeNativeStream(
 
   const processChunk = createConnectFrameParser(
     (messageBytes) => {
+      if (cancelled || streamFinalized) return;
       try {
         const serverMessage = fromBinary(AgentServerMessageSchema, messageBytes);
         const progress = processServerMessage(
@@ -1246,6 +1272,7 @@ function writeNativeStream(
           },
           convKey,
         );
+        if (idleRetry) idleRetry.localToolRejections = state.localToolRejections;
         if (progress === "work") {
           if (parkedExecCase !== undefined) {
             parkedExecCase = undefined;
@@ -1268,6 +1295,11 @@ function writeNativeStream(
       }
     },
     (endStreamBytes) => {
+      if (
+        cancelled ||
+        (!mcpExecReceived && (state.localToolRejections ?? 0) >= MAX_LOCAL_TOOL_REJECTIONS)
+      )
+        return;
       const endError = parseConnectEndStream(endStreamBytes);
       if (endError) {
         // Cursor closes the connection right after `turnEnded`. That close ends a completed
@@ -1367,6 +1399,7 @@ function writeNativeStream(
       pauseRequested = false;
       if (!writer.closed) writer.done("toolUse", state);
     }
+    stopLocalToolLoop();
   });
 
   bridge.onClose((code) => {
@@ -1585,6 +1618,7 @@ interface ResumeContext {
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string>;
 }
 
+/** Collects pending Pi results and resumes Cursor with a fresh budget once all results are sent. */
 function handleNativeToolResultResume(
   active: ActiveBridge,
   toolResults: ToolResultInfo[],
@@ -1728,6 +1762,8 @@ function handleNativeToolResultResume(
   }
 
   const idleRetry: StreamIdleRetryController = {
+    // All pending Pi results have now been sent; start a new rejection budget.
+    localToolRejections: 0,
     currentAttempt: 1,
     maxRetries: resolveStreamIdleMaxRetries(process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES),
     // Phase 0 found mcpArgs-before-checkpoint across composer/gemini/gpt-5.4, so this stays model-agnostic.
@@ -1777,6 +1813,7 @@ function handleNativeToolResultResume(
         payload.mcpTools = mcpTools;
         if (stored) stored.lastAccessMs = Date.now();
         startNativeStreamWithIdleRetries({
+          localToolRejections: idleRetry.localToolRejections,
           accessToken,
           requestBytes: payload.requestBytes,
           blobStore: payload.blobStore,
@@ -1853,6 +1890,7 @@ function handleNativeToolResultResume(
       });
       payload.mcpTools = mcpTools;
       startNativeStreamWithIdleRetries({
+        localToolRejections: idleRetry.localToolRejections,
         accessToken,
         requestBytes: payload.requestBytes,
         blobStore: payload.blobStore,
@@ -1968,6 +2006,7 @@ function formatStreamParkMessage(execCase: string, timeoutMs: number): string {
   );
 }
 
+/** Rebuilds stream attempts while preserving the rejection budget across transport recovery. */
 function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void {
   // Recovered/rebuilt streams enter this helper with ordinary retry semantics to avoid recursive recovery loops.
   let latestAccessToken = input.accessToken;
@@ -1978,6 +2017,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
   let currentTurn = input.currentTurn;
 
   const controller: StreamIdleRetryController = {
+    localToolRejections: input.localToolRejections ?? 0,
     currentAttempt: 1,
     maxRetries:
       input.maxIdleRetries ??
