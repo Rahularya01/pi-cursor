@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.37] - 2026-09-23
+
 ### Changed
 
 - Local file and shell operations now run exclusively through Pi's registered MCP tools. Native Cursor calls receive schema-aware guidance instead of executing inside the provider, removing the incomplete native grep implementation. Guidance can require an extra model response; unavailable Pi tools have no local fallback. Web search and fetch are unchanged.
