@@ -399,7 +399,15 @@ export function augmentCursorModels(
 
   const metadataRows =
     modelsFromParameterizedMetadata(parameterizedModels).map(normalizeDisplayModel);
-  for (const model of metadataRows) byId.set(model.id, model);
+  for (const model of metadataRows) {
+    byId.set(model.id, model);
+    // The raw catalog has no max-mode rows for this family. Keep the
+    // cursor-prefixed picker twins aligned with the metadata-derived rows.
+    if (/^grok-4\.7-max(?:-|$)/.test(model.id)) {
+      const aliasId = `cursor-${model.id}`;
+      if (!byId.has(aliasId)) byId.set(aliasId, { ...model, id: aliasId });
+    }
+  }
   overlayParameterizedContextWindows(byId, metadataRows);
 
   // Fallback for static/offline discovery. Cursor exposes GPT-5.5 context as

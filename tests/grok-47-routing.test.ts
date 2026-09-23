@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CursorParameterizedModel } from "../src/client/cursor-wire.js";
-import { modelsFromParameterizedMetadata } from "../src/models/parameterized.js";
+import { augmentCursorModels } from "../src/models/parameterized.js";
 import { buildRawModelLookup, processModels } from "../src/models/processing.js";
 import { applyNativeCursorRouting } from "../src/stream/pi-adapter.js";
 import type { ChatCompletionRequest } from "../src/stream/types.js";
@@ -53,9 +53,7 @@ const grok47Metadata: CursorParameterizedModel = {
 };
 
 function grok47Lookup() {
-  const metadataRows = modelsFromParameterizedMetadata([grok47Metadata]);
-  const augmented: CursorModel[] = [
-    ...metadataRows,
+  const rawRows: CursorModel[] = [
     raw("cursor-grok-4.7-low", "Cursor Grok 4.7 Low"),
     raw("cursor-grok-4.7-medium", "Cursor Grok 4.7 Medium"),
     raw("cursor-grok-4.7-high", "Cursor Grok 4.7"),
@@ -69,7 +67,7 @@ function grok47Lookup() {
     param("grok-4.5-medium", "grok-4.5", "medium", false),
     param("grok-4.5-high", "grok-4.5", "high", false),
   ];
-  return buildRawModelLookup(processModels(augmented));
+  return buildRawModelLookup(processModels(augmentCursorModels(rawRows, [grok47Metadata])));
 }
 
 describe("grok-4.7 sibling wire routing (issue #38)", () => {
@@ -91,13 +89,17 @@ describe("grok-4.7 sibling wire routing (issue #38)", () => {
     }
   });
 
-  it("routes grok-4.7-max efforts to bare siblings preserving max mode", () => {
+  it("routes grok-4.7-max and max-fast efforts preserving max mode", () => {
     const lookup = grok47Lookup();
     for (const effort of ["low", "medium", "high", "xhigh"] as const) {
       const routing = lookup.get("grok-4.7-max")?.[effort];
       expect(routing?.modelId).toBe(`grok-4.7-${effort}`);
       expect(routing?.parameters ?? []).toEqual([]);
       expect(routing?.requestedMaxMode).toBe(true);
+      const fastRouting = lookup.get("grok-4.7-max-fast")?.[effort];
+      expect(fastRouting?.modelId).toBe(`grok-4.7-${effort}-fast`);
+      expect(fastRouting?.parameters ?? []).toEqual([]);
+      expect(fastRouting?.requestedMaxMode).toBe(true);
     }
   });
 
@@ -106,6 +108,14 @@ describe("grok-4.7 sibling wire routing (issue #38)", () => {
     for (const effort of ["low", "medium", "high", "xhigh"] as const) {
       expect(lookup.get("cursor-grok-4.7")?.[effort]?.modelId).toBe(`grok-4.7-${effort}`);
       expect(lookup.get("cursor-grok-4.7-fast")?.[effort]?.modelId).toBe(`grok-4.7-${effort}-fast`);
+      const maxRouting = lookup.get("cursor-grok-4.7-max")?.[effort];
+      expect(maxRouting?.modelId).toBe(`grok-4.7-${effort}`);
+      expect(maxRouting?.parameters ?? []).toEqual([]);
+      expect(maxRouting?.requestedMaxMode).toBe(true);
+      const maxFastRouting = lookup.get("cursor-grok-4.7-max-fast")?.[effort];
+      expect(maxFastRouting?.modelId).toBe(`grok-4.7-${effort}-fast`);
+      expect(maxFastRouting?.parameters ?? []).toEqual([]);
+      expect(maxFastRouting?.requestedMaxMode).toBe(true);
     }
   });
 
