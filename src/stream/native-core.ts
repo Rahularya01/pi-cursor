@@ -1336,10 +1336,14 @@ function writeNativeStream(
           exitCode: 0,
           endErrorMessage: endError.message,
         });
+        const maxRetriesForFailure =
+          endFailure.kind === TransportFailureKind.RateLimit
+            ? Math.min(1, idleRetry?.maxRetries ?? 0)
+            : (idleRetry?.maxRetries ?? 0);
         const recoverable =
           endFailure.retryable &&
           !!idleRetry &&
-          idleRetry.currentAttempt <= idleRetry.maxRetries &&
+          idleRetry.currentAttempt <= maxRetriesForFailure &&
           canRecoverAfterTransportLoss({
             emittedUserVisibleContent,
             hasCheckpoint: !!checkpointRef.current,
@@ -1357,6 +1361,15 @@ function writeNativeStream(
             // Process may already be exiting; `onClose` still runs.
           }
           return;
+        }
+        streamFinalized = true;
+        idleWatchdog.clear();
+        clearInterval(heartbeatTimer);
+        options?.signal?.removeEventListener("abort", abort);
+        try {
+          bridge.proc.kill();
+        } catch {
+          // Process may already be exiting.
         }
         writer.error(enhanced, "error", state);
       }
@@ -1479,7 +1492,10 @@ function writeNativeStream(
         });
       if (allowRestart && idleRetry) {
         const attempt = idleRetry.currentAttempt;
-        const maxRetries = idleRetry.maxRetries;
+        const maxRetries =
+          failure.kind === TransportFailureKind.RateLimit
+            ? Math.min(1, idleRetry.maxRetries)
+            : idleRetry.maxRetries;
         if (attempt <= maxRetries) {
           debugLog("native.stream.transport_retry", {
             requestId,

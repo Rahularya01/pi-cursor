@@ -151,6 +151,26 @@ describe("in-process h2 session bridge", () => {
     expect(streams).toHaveLength(2);
   });
 
+  it("clears old callbacks on openStream so new turns receive data cleanly", () => {
+    const { streams, bridge } = sessionHarness({ persistent: true });
+    const oldDataCb = vi.fn();
+    bridge.onData(oldDataCb);
+
+    streams[0]!.emit("end");
+
+    bridge.openStream!("token-2");
+
+    // Data arriving on new stream before new callback is attached
+    streams[1]!.emit("data", Buffer.from("chunk-1"));
+
+    expect(oldDataCb).not.toHaveBeenCalled();
+
+    const newDataCb = vi.fn();
+    bridge.onData(newDataCb);
+
+    expect(newDataCb).toHaveBeenCalledWith(Buffer.from("chunk-1"));
+  });
+
   it("enforces the write backpressure cap", () => {
     const { session, streams, bridge } = sessionHarness();
     (streams[0] as unknown as { writableLength: number }).writableLength = MAX_BRIDGE_MESSAGE_BYTES;

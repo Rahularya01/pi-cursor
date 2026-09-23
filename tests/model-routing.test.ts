@@ -31,4 +31,13 @@ describe("resolveRequestedModelId", () => {
     expect(resolved.modelId).toBe("composer-2-high");
     expect(resolved.maxMode).toBe(false);
   });
+
+  it("resolves auto alias to default model ID", () => {
+    expect(resolveModelId("auto")).toBe("default");
+    expect(resolveRequestedModelId("auto")).toBe("default");
+    expect(resolveRequestedModelId({ id: "auto" }).modelId).toBe("default");
+    expect(resolveRequestedModelId({ id: "auto", requestedModelId: "default" }).modelId).toBe(
+      "default",
+    );
+  });
 });

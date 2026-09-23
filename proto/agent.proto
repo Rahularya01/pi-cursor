@@ -1495,6 +1495,11 @@ message ExecServerMessage {
     RecordScreenArgs record_screen_args = 21;
     ComputerUseArgs computer_use_args = 22;
     WriteShellStdinArgs write_shell_stdin_args = 23;
+    ReflectArgs reflect_args = 32;
+    SetupVmEnvironmentArgs setup_vm_environment_args = 33;
+    TruncatedToolCallArgs truncated_tool_call_args = 34;
+    StartGrindExecutionArgs start_grind_execution_args = 35;
+    StartGrindPlanningArgs start_grind_planning_args = 36;
   }
 }
 
@@ -1519,6 +1524,11 @@ message ExecClientMessage {
     RecordScreenResult record_screen_result = 21;
     ComputerUseResult computer_use_result = 22;
     WriteShellStdinResult write_shell_stdin_result = 23;
+    ReflectResult reflect_result = 32;
+    SetupVmEnvironmentResult setup_vm_environment_result = 33;
+    TruncatedToolCallResult truncated_tool_call_result = 34;
+    StartGrindExecutionResult start_grind_execution_result = 35;
+    StartGrindPlanningResult start_grind_planning_result = 36;
   }
 }
 

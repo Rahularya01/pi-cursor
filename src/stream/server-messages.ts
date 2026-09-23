@@ -30,11 +30,21 @@ import {
   ReadMcpResourceRejectedSchema,
   RecordScreenFailureSchema,
   RecordScreenResultSchema,
+  ReflectResultSchema,
+  ReflectSuccessSchema,
   RequestContextEnvSchema,
   RequestContextResultSchema,
   RequestContextSchema,
   RequestContextSuccessSchema,
   SetBlobResultSchema,
+  SetupVmEnvironmentResultSchema,
+  SetupVmEnvironmentSuccessSchema,
+  StartGrindExecutionResultSchema,
+  StartGrindExecutionSuccessSchema,
+  StartGrindPlanningResultSchema,
+  StartGrindPlanningSuccessSchema,
+  TruncatedToolCallResultSchema,
+  TruncatedToolCallSuccessSchema,
   type AgentServerMessage,
   type ConversationStateStructure,
   type ExecServerMessage,
@@ -545,6 +555,76 @@ function handleExecMessageInner(
             actionCount: Array.isArray(args.actions) ? args.actions.length : 0,
             durationMs: 0,
           }),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "reflectArgs") {
+    sendExecResult(
+      execMsg,
+      "reflectResult",
+      create(ReflectResultSchema, {
+        result: {
+          case: "success",
+          value: create(ReflectSuccessSchema, {}),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "setupVmEnvironmentArgs") {
+    sendExecResult(
+      execMsg,
+      "setupVmEnvironmentResult",
+      create(SetupVmEnvironmentResultSchema, {
+        result: {
+          case: "success",
+          value: create(SetupVmEnvironmentSuccessSchema, {}),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "truncatedToolCallArgs") {
+    sendExecResult(
+      execMsg,
+      "truncatedToolCallResult",
+      create(TruncatedToolCallResultSchema, {
+        result: {
+          case: "success",
+          value: create(TruncatedToolCallSuccessSchema, {}),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "startGrindExecutionArgs") {
+    sendExecResult(
+      execMsg,
+      "startGrindExecutionResult",
+      create(StartGrindExecutionResultSchema, {
+        result: {
+          case: "success",
+          value: create(StartGrindExecutionSuccessSchema, {}),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "startGrindPlanningArgs") {
+    sendExecResult(
+      execMsg,
+      "startGrindPlanningResult",
+      create(StartGrindPlanningResultSchema, {
+        result: {
+          case: "success",
+          value: create(StartGrindPlanningSuccessSchema, {}),
         },
       }),
       sendFrame,

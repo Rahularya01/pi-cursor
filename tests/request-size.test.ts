@@ -187,6 +187,37 @@ describe("native Cursor exec steering", () => {
     expect((control.message.value as ExecClientThrow).id).toBe(12);
   });
 
+  it("handles planning, execution, reflection, VM setup, and truncated tool call execs with success results", () => {
+    const cases = [
+      ["startGrindPlanningArgs", "startGrindPlanningResult"],
+      ["startGrindExecutionArgs", "startGrindExecutionResult"],
+      ["reflectArgs", "reflectResult"],
+      ["setupVmEnvironmentArgs", "setupVmEnvironmentResult"],
+      ["truncatedToolCallArgs", "truncatedToolCallResult"],
+    ] as const;
+
+    for (const [argCase, resultCase] of cases) {
+      const frames: Uint8Array[] = [];
+      const handled = serverMessageInternals.handleExecMessageInner(
+        { id: "100", execId: "exec-100", message: { case: argCase, value: {} } } as never,
+        [],
+        (frame: Uint8Array) => frames.push(frame),
+        () => {
+          throw new Error("should not execute");
+        },
+      );
+      expect(handled).toBe(true);
+      expect(frames).toHaveLength(1);
+      const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
+      expect(answer.message.case).toBe("execClientMessage");
+      const execResult = answer.message.value as {
+        message?: { case?: string; value?: { result?: { case?: string } } };
+      };
+      expect(execResult.message?.case).toBe(resultCase);
+      expect(execResult.message?.value?.result?.case).toBe("success");
+    }
+  });
+
   it("reports the field numbers of an exec our schema cannot decode", () => {
     expect(
       serverMessageInternals.describeUnknownFields({

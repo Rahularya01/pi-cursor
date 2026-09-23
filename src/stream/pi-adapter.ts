@@ -439,9 +439,7 @@ export function contextToCursorChatCompletionRequest(
   return body;
 }
 
-export function nativeRequestParameterError(body: ChatCompletionRequest): string | undefined {
-  if (body.temperature !== undefined)
-    return "Unsupported Cursor provider parameter(s): temperature";
+export function nativeRequestParameterError(_body: ChatCompletionRequest): string | undefined {
   return undefined;
 }
 

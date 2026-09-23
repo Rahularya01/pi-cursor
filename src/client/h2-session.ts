@@ -414,6 +414,12 @@ export function createBridgeHandleForSession(
       safeWrite(data);
     },
     openStream(accessToken: string) {
+      cbs.data = null;
+      cbs.streamDone = null;
+      cbs.close = null;
+      queuedData.length = 0;
+      queuedDataBytes = 0;
+      queuedStreamDone = false;
       openStream(accessToken || options.accessToken);
     },
     end() {
@@ -534,6 +540,9 @@ function createProxiedBridge(
       else pendingWrites.push(data);
     },
     openStream(accessToken: string) {
+      onDataCb = undefined;
+      onStreamDoneCb = undefined;
+      onCloseCb = undefined;
       inner?.openStream?.(accessToken);
     },
     end() {

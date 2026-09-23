@@ -17,7 +17,7 @@ const streamFn = createCursorNativeStream({
 });
 
 const model = {
-  id: process.env.CURSOR_SMOKE_MODEL || "composer-2",
+  id: process.env.CURSOR_SMOKE_MODEL || "composer-2.5",
   name: "smoke",
   provider: "cursor",
   api: "cursor-native",
@@ -50,3 +50,4 @@ for await (const event of stream) {
   }
 }
 console.log("smoke-stream: ok");
+process.exit(0);

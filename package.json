@@ -1,6 +1,6 @@
 {
   "name": "@rahularya01/pi-cursor",
-  "version": "1.4.37",
+  "version": "1.4.38",
   "description": "Native Cursor provider for Pi Coding Agent (OAuth + Connect/protobuf streamSimple)",
   "author": "Rahul Arya",
   "license": "MIT",
@@ -51,10 +51,10 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:legacy": "tsx scripts/test-model-routing.ts && tsx scripts/test-thinking-levels.ts && tsx scripts/test-usage.ts && tsx scripts/test-context-mode-normalize.ts && tsx scripts/test-cli-auth.ts",
-    "smoke:auth": "node scripts/smoke-auth.mjs",
-    "smoke:models": "node scripts/smoke-models.mjs",
-    "smoke:stream": "node scripts/smoke-stream.mjs",
-    "smoke:wire": "node scripts/smoke-wire.mjs",
+    "smoke:auth": "tsx scripts/smoke-auth.mjs",
+    "smoke:models": "tsx scripts/smoke-models.mjs",
+    "smoke:stream": "tsx scripts/smoke-stream.mjs",
+    "smoke:wire": "tsx scripts/smoke-wire.mjs",
     "check": "yarn typecheck && yarn lint && yarn format:check && yarn security-check && yarn proto:check && yarn test && yarn test:legacy",
     "audit": "yarn npm audit --all --recursive --no-deprecations"
   },

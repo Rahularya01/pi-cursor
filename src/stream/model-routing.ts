@@ -27,10 +27,11 @@ export interface CursorResolvableModel {
  * If no effort provided, returns model as-is.
  */
 export function resolveModelId(model: string, reasoningEffort?: string): string {
-  if (!reasoningEffort) return model;
+  const normalized = model === "auto" ? "default" : model;
+  if (!reasoningEffort) return normalized;
 
   let suffix = "";
-  let base = model;
+  let base = normalized;
   if (base.endsWith("-fast")) {
     suffix = "-fast";
     base = base.slice(0, -5);
@@ -77,7 +78,9 @@ export function resolveRequestedModelId(
 
   const routingByModelId =
     cursorModelIdOrRoutingByModelId instanceof Map ? cursorModelIdOrRoutingByModelId : undefined;
-  const configured = routingByModelId?.get(model.id);
+  const configured =
+    routingByModelId?.get(model.id) ??
+    (model.id === "auto" ? routingByModelId?.get("default") : undefined);
   let routing: CursorNativeModelRouting | undefined;
   if (isCursorModelRouting(configured)) {
     routing = configured;
@@ -90,8 +93,13 @@ export function resolveRequestedModelId(
       Object.values(configured).find(isCursorModelRouting);
   }
 
+  const rawLookup =
+    typeof (model as any).requestedModelId === "string" && (model as any).requestedModelId
+      ? (model as any).requestedModelId
+      : model.id;
+
   return {
-    modelId: routing?.modelId ?? resolveModelId(model.id, reasoningEffort),
+    modelId: routing?.modelId ?? resolveModelId(rawLookup, reasoningEffort),
     maxMode: Boolean(routing?.requestedMaxMode ?? routing?.requiresMaxMode),
     parameters: routing?.parameters,
     requestedMaxMode: routing?.requestedMaxMode,

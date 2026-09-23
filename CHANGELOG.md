@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.4.38] - 2026-09-23
+
+### Fixed
+
+- **Protobuf wire drift for grind planning, execution, reflection, and VM setup no longer causes 45-second stream stalls.** Cursor now issues `startGrindPlanningArgs`, `startGrindExecutionArgs`, `reflectArgs`, `setupVmEnvironmentArgs`, and `truncatedToolCallArgs` during complex turns. These are now modeled in `proto/agent.proto` and acknowledged with success frames instead of failing with `UNHANDLED exec case: "undefined"` and triggering a 45-second park freeze.
+- **Model alias `auto` now resolves properly to Cursor's valid backend model ID `default`.** Previously, requesting `auto` sent `modelId: "auto"` verbatim over the wire, causing `Connect error not_found: Error`.
+- **Requests with `temperature` parameters are no longer rejected with fatal errors.** `nativeRequestParameterError` now tolerates standard model options such as `temperature: 0` without crashing the stream turn.
+- **HTTP/2 bridge reuse no longer drops initial chunks on new turns.** Reopening streams via `openStream` on persistent bridges now cleanly resets previous turn listeners and queued buffers.
+- **Consecutive rate limit retries (`resource_exhausted`) fail fast instead of spinning.** Rate-limited responses or exhausted plan quotas are capped to at most 1 rotation retry rather than looping 5 times over 20 seconds.
+
 ## [1.4.37] - 2026-09-23
 
 ### Changed

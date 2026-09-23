@@ -50,16 +50,18 @@ if (exitCode !== 0) {
   process.exit(1);
 }
 
-// Connect unary responses are a 5-byte framed envelope around the message.
-const payload = body.length > 5 ? body.subarray(5) : body;
-
 let response;
 try {
-  response = fromBinary(GetUsableModelsResponseSchema, payload);
-} catch (error) {
-  console.error(`smoke-wire: FAILED — response did not decode with our schema: ${error}`);
-  console.error("The agent schema has likely drifted. See proto/README.md.");
-  process.exit(1);
+  response = fromBinary(GetUsableModelsResponseSchema, body);
+} catch {
+  const payload = body.length > 5 ? body.subarray(5) : body;
+  try {
+    response = fromBinary(GetUsableModelsResponseSchema, payload);
+  } catch (error) {
+    console.error(`smoke-wire: FAILED — response did not decode with our schema: ${error}`);
+    console.error("The agent schema has likely drifted. See proto/README.md.");
+    process.exit(1);
+  }
 }
 
 console.log(`models:        ${response.models.length}`);
