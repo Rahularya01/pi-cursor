@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Discovery-first models no longer conclude Pi MCP tools are unregistered.** Cursor's server-side `GetDynamicTools` catalog does not list the `pi` namespace even though the same request's `mcpTools` make it callable, so models that enumerate tools before acting (e.g. Claude) reported the Pi tools as missing and stopped. The tool policy and native-tool rejection guidance now state that Pi tools are invisible to `GetDynamicTools`, point models at `CallDynamicTool(namespace="pi", toolName="mcp_pi_<name>", ...)`, and list the common argument schemas (`bash`, `read`, `write`, `edit`).
+
 ## [1.4.38] - 2026-09-23
 
 ### Fixed
