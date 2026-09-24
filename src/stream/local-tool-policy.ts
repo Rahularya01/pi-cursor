@@ -1,6 +1,6 @@
 /** Local operations are executed by Pi, never by the provider. */
 import type { McpToolDefinition } from "../proto/agent_pb.js";
-import { cursorMcpToolName } from "./root-prompt.js";
+import { MCP_PROVIDER_IDENTIFIER, cursorMcpToolName } from "./root-prompt.js";
 
 export const MAX_LOCAL_TOOL_REJECTIONS = 8;
 export const LOCAL_TOOL_LOOP_ERROR =
@@ -18,6 +18,46 @@ const LOCAL_TOOL_HINTS: Record<string, string[]> = {
   backgroundShellSpawnArgs: ["bash"],
   writeShellStdinArgs: ["bash"],
 };
+
+/**
+ * Cursor's server-side `GetDynamicTools` catalog does not list the `pi`
+ * namespace even though the same request's `mcpTools` make it callable, so
+ * models that enumerate tools before acting conclude the Pi tools are
+ * unregistered. The policy points them at `CallDynamicTool` instead of
+ * relying on discovery, with schemas listed only for registered tools.
+ */
+const COMMON_SCHEMAS: Record<string, string> = {
+  bash: '{"command"}',
+  read: '{"path","offset","limit"}',
+  write: '{"path","content"}',
+  edit: '{"path","edits":[{"oldText","newText"}]}',
+};
+
+const MCP_TOOL_PREFIX = `mcp_${MCP_PROVIDER_IDENTIFIER}_`;
+
+/** Schemas for the known local-operation tools among the given (prefixed) names. */
+function schemaHints(names: string[]): string {
+  const hints = names
+    .map((name) => {
+      const schema =
+        COMMON_SCHEMAS[
+          name.startsWith(MCP_TOOL_PREFIX) ? name.slice(MCP_TOOL_PREFIX.length) : name
+        ];
+      return schema ? `${name}=${schema}` : undefined;
+    })
+    .filter((hint): hint is string => Boolean(hint));
+  return hints.length ? ` Common schemas: ${hints.join(", ")}.` : "";
+}
+
+/** Discovery caveat plus call pattern, with schemas for any registered known tools. */
+function dynamicToolGuidance(names: string[]): string {
+  return (
+    'Pi MCP tools are not listed by GetDynamicTools (Cursor\'s catalog omits the "pi" namespace ' +
+    "although the tools are registered and callable). Invoke them via " +
+    'CallDynamicTool(namespace="pi", toolName="mcp_pi_<name>", arguments={...}); ' +
+    `do not report them as unregistered.${schemaHints(names)}`
+  );
+}
 
 /** Identifies native file and shell requests that must be rejected in favor of Pi tools. */
 export function isLocalToolExec(execCase: string): boolean {
@@ -58,7 +98,8 @@ export function nativeToolRejectReason(execCase: string, tools: McpToolDefinitio
   const guidance = names.length
     ? `Use the registered Pi MCP tools: ${names.join(", ")}. ` +
       "Choose a tool that supports the operation and construct arguments according to its schema; " +
-      "do not copy native Cursor arguments unchanged. If none supports it, report that limitation."
+      "do not copy native Cursor arguments unchanged. " +
+      `${dynamicToolGuidance(names)} If none supports it, report that limitation.`
     : "No Pi MCP tools are exposed for this request, so this operation cannot be performed in this request.";
   return `Do not retry this native Cursor tool. It is unavailable. No operation was performed. ${guidance}`;
 }
@@ -74,6 +115,7 @@ export function localToolPolicyText(tools: McpToolDefinition[]): string {
     (available.length
       ? (names.length ? `Local Pi MCP tools: ${names.join(", ")}. ` : "") +
         "Other exposed Pi tools may also support the operation. Follow each tool's input schema. " +
+        `${dynamicToolGuidance(names)} ` +
         "If no registered tool supports an operation, report that limitation."
       : "No Pi MCP tools are exposed for this request. Local operations are unavailable in this request.")
   );

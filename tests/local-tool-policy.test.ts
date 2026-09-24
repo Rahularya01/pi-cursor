@@ -127,11 +127,24 @@ describe("Pi-only local tool routing", () => {
     expect(reason).toContain("mcp_pi_grep, mcp_pi_bash");
     expect(reason).toContain("according to its schema");
     expect(reason).not.toContain("with the same arguments");
+    expect(reason).toContain("CallDynamicTool");
+    expect(reason).toContain("GetDynamicTools");
+    expect(reason).toContain('mcp_pi_bash={"command"}');
     expect(nativeToolRejectReason("grepArgs", tools("bash"))).not.toContain("mcp_pi_grep");
     const custom = nativeToolRejectReason("grepArgs", tools("search_repository"));
     expect(custom).toContain("mcp_pi_search_repository");
     expect(custom).not.toContain("mcp_pi_bash");
     expect(nativeToolRejectReason("shellArgs", [])).toContain("cannot be performed");
+    expect(nativeToolRejectReason("shellArgs", [])).not.toContain("CallDynamicTool");
+  });
+
+  it("warns that GetDynamicTools hides the pi namespace and points at CallDynamicTool", () => {
+    const policy = localToolPolicyText(tools("bash"));
+    expect(policy).toContain("not listed by GetDynamicTools");
+    expect(policy).toContain('CallDynamicTool(namespace="pi"');
+    expect(policy).toContain('mcp_pi_bash={"command"}');
+    expect(policy).toContain("do not report them as unregistered");
+    expect(localToolPolicyText([])).not.toContain("CallDynamicTool");
   });
 
   it.each([
@@ -148,6 +161,7 @@ describe("Pi-only local tool routing", () => {
     expect(policy).toContain("No Pi MCP tools are exposed for this request");
     expect(policy).toContain("do not call or retry them");
     expect(policy).not.toContain("No Pi MCP tools are registered");
+    expect(policy).not.toContain("CallDynamicTool");
   });
 
   it("keeps the prompt compact without hiding custom tools behind a no-tools claim", () => {

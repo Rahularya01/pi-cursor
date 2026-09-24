@@ -27,7 +27,7 @@ import { createHash } from "node:crypto";
 import type { ParsedTurn, ParsedTurnStep, ParsedToolCallStep } from "./types.js";
 
 /** Provider identifier used when registering Pi's tools as Cursor MCP tools. */
-const MCP_PROVIDER_IDENTIFIER = "pi";
+export const MCP_PROVIDER_IDENTIFIER = "pi";
 
 /**
  * Replayed tool results are already bounded by `normalizeToolResultForTransport`
