@@ -187,9 +187,8 @@ describe("native Cursor exec steering", () => {
     expect((control.message.value as ExecClientThrow).id).toBe(12);
   });
 
-  it("handles planning, execution, reflection, VM setup, and truncated tool call execs with success results", () => {
+  it("handles grind execution, reflection, VM setup, and truncated tool call execs with success results", () => {
     const cases = [
-      ["startGrindPlanningArgs", "startGrindPlanningResult"],
       ["startGrindExecutionArgs", "startGrindExecutionResult"],
       ["reflectArgs", "reflectResult"],
       ["setupVmEnvironmentArgs", "setupVmEnvironmentResult"],

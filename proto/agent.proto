@@ -1499,7 +1499,8 @@ message ExecServerMessage {
     SetupVmEnvironmentArgs setup_vm_environment_args = 33;
     TruncatedToolCallArgs truncated_tool_call_args = 34;
     StartGrindExecutionArgs start_grind_execution_args = 35;
-    StartGrindPlanningArgs start_grind_planning_args = 36;
+    // Field 36 was start_grind_planning_args; current Cursor sends MCP state here.
+    McpStateExecArgs mcp_state_exec_args = 36;
   }
 }
 
@@ -1528,7 +1529,7 @@ message ExecClientMessage {
     SetupVmEnvironmentResult setup_vm_environment_result = 33;
     TruncatedToolCallResult truncated_tool_call_result = 34;
     StartGrindExecutionResult start_grind_execution_result = 35;
-    StartGrindPlanningResult start_grind_planning_result = 36;
+    McpStateExecResult mcp_state_exec_result = 36;
   }
 }
 
@@ -1930,6 +1931,44 @@ message McpInstructions {
   string instructions = 2;
 }
 
+// Cursor's GetDynamicTools / CallDynamicTool ask the client which MCP servers
+// and tools it has through this exec (ExecServerMessage field 36).
+message McpStateExecArgs {
+  repeated string server_identifiers = 1;
+  bool kick_only = 2;
+}
+
+message McpStateServer {
+  string server_name = 1;
+  string server_identifier = 2;
+  optional string plugin = 3;
+  optional string marketplace = 4;
+  repeated McpToolDefinition tools = 5;
+  repeated McpInstructions instructions = 6;
+  optional string status = 7;
+  optional string error_message = 8;
+}
+
+message McpStateSuccess {
+  repeated McpStateServer servers = 1;
+}
+
+message McpStateError {
+  string error = 1;
+}
+
+message McpStateRejected {
+  string reason = 1;
+}
+
+message McpStateExecResult {
+  oneof result {
+    McpStateSuccess success = 1;
+    McpStateError error = 2;
+    McpStateRejected rejected = 3;
+  }
+}
+
 message McpDescriptor {
   string server_name = 1;
   string server_identifier = 2;
@@ -1948,6 +1987,7 @@ message McpFileSystemOptions {
   string workspace_project_dir = 2;
   repeated McpDescriptor mcp_descriptors = 3;
 }
+
 
 message ReadArgs {
   string path = 1;

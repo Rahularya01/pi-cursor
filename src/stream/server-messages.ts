@@ -24,6 +24,9 @@ import {
   ExecClientThrowSchema,
   GetBlobResultSchema,
   KvClientMessageSchema,
+  McpStateExecResultSchema,
+  McpStateServerSchema,
+  McpStateSuccessSchema,
   McpResultSchema,
   McpToolNotFoundSchema,
   ReadMcpResourceExecResultSchema,
@@ -41,8 +44,6 @@ import {
   SetupVmEnvironmentSuccessSchema,
   StartGrindExecutionResultSchema,
   StartGrindExecutionSuccessSchema,
-  StartGrindPlanningResultSchema,
-  StartGrindPlanningSuccessSchema,
   TruncatedToolCallResultSchema,
   TruncatedToolCallSuccessSchema,
   type AgentServerMessage,
@@ -353,6 +354,32 @@ function handleKvMessage(
   return false;
 }
 
+function mcpToolsByServer(mcpTools: McpToolDefinition[]): Map<string, McpToolDefinition[]> {
+  const byServer = new Map<string, McpToolDefinition[]>();
+  for (const tool of mcpTools) {
+    const server = tool.providerIdentifier || "pi";
+    byServer.set(server, [...(byServer.get(server) ?? []), tool]);
+  }
+  return byServer;
+}
+
+/**
+ * Cursor's current agent finds MCP tools through its meta tools
+ * (GetDynamicTools / CallDynamicTool). They ask the client which servers and
+ * tools it has with an `mcpStateExecArgs` exec, which reuses field 36 of the
+ * retired `startGrindPlanningArgs`. Answering it as grind planning gave Cursor
+ * an empty server list, so discovery reported `namespace "pi" not found` and
+ * models that check their catalog first concluded the Pi tools weren't
+ * registered (#40).
+ */
+export function mcpStateServersFor(mcpTools: McpToolDefinition[], serverIdentifiers: string[]) {
+  return [...mcpToolsByServer(mcpTools)]
+    .filter(([server]) => serverIdentifiers.length === 0 || serverIdentifiers.includes(server))
+    .map(([server, tools]) =>
+      create(McpStateServerSchema, { serverName: server, serverIdentifier: server, tools }),
+    );
+}
+
 /**
  * Returns true when this `execServerMessage` was handled (MCP exec **or** a
  * native-tool result). Handled round-trips count as idle-watchdog progress.
@@ -617,14 +644,17 @@ function handleExecMessageInner(
     );
     return true;
   }
-  if (execCase === "startGrindPlanningArgs") {
+  if (execCase === "mcpStateExecArgs") {
+    const args = (execMsg as any).message.value;
     sendExecResult(
       execMsg,
-      "startGrindPlanningResult",
-      create(StartGrindPlanningResultSchema, {
+      "mcpStateExecResult",
+      create(McpStateExecResultSchema, {
         result: {
           case: "success",
-          value: create(StartGrindPlanningSuccessSchema, {}),
+          value: create(McpStateSuccessSchema, {
+            servers: mcpStateServersFor(mcpTools, args.serverIdentifiers ?? []),
+          }),
         },
       }),
       sendFrame,
