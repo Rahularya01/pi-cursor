@@ -8,6 +8,8 @@ syntax = "proto3";
 
 package agent.v1;
 
+import "google/protobuf/struct.proto";
+
 message GlobToolResult {
   oneof result {
     GlobToolSuccess success = 1;
@@ -1919,7 +1921,8 @@ message McpToolDefinition {
   string provider_identifier = 4;
   string tool_name = 5;
   string description = 2;
-  bytes input_schema = 3;
+  google.protobuf.Value input_schema = 3;
+  optional string input_schema_json = 6;
 }
 
 message McpTools {

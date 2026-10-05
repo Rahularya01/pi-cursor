@@ -227,7 +227,8 @@ export function summarizeRequestSize(input: {
   for (const bytes of input.blobStore.values()) blobBytes += bytes.byteLength;
   let mcpSchemaBytes = 0;
   for (const tool of input.mcpTools) {
-    mcpSchemaBytes += tool.inputSchema?.byteLength ?? 0;
+    mcpSchemaBytes += tool.inputSchema ? toBinary(ValueSchema, tool.inputSchema).byteLength : 0;
+    mcpSchemaBytes += Buffer.byteLength(tool.inputSchemaJson ?? "", "utf8");
     mcpSchemaBytes += (tool.description?.length ?? 0) + (tool.name?.length ?? 0);
   }
   // `toolJsonChars` reports the raw Pi surface for comparison only. Do not add

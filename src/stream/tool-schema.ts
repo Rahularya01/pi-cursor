@@ -2,19 +2,18 @@
  * Cursor MCP tool-schema encoding.
  *
  * Pi tools use JSON Schema, while Cursor carries each schema as a protobuf
- * Value. The optional slimming pass removes model-facing prose without changing
- * property names or the executable schema contract.
+ * Value and a JSON string. Slimming compacts tool prose and schema annotations
+ * but retains parameter descriptions needed to construct correct arguments.
  */
-import { create, fromJson, toBinary, type JsonValue } from "@bufbuild/protobuf";
+import { create, fromJson, type JsonValue } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 
 import { McpToolDefinitionSchema, type McpToolDefinition } from "../proto/agent_pb.js";
 import type { OpenAIToolDef } from "./types.js";
 
 /**
- * Whether to truncate verbose tool descriptions/parameter docs before sending
- * them to Cursor. Default ON — full Pi/MCP prose often costs tens of thousands
- * of tokens per turn without improving tool selection. Set
+ * Whether to compact tool descriptions and nonessential schema annotations.
+ * Default ON; parameter descriptions remain intact in both modes. Set
  * PI_CURSOR_SLIM_TOOLS=0 to keep the original tool definitions.
  */
 export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS): boolean {
@@ -24,7 +23,6 @@ export function isSlimToolsEnabled(envValue = process.env.PI_CURSOR_SLIM_TOOLS):
 }
 
 const SCHEMA_ANNOTATION_KEYS = new Set([
-  "description",
   "title",
   "examples",
   "default",
@@ -88,8 +86,8 @@ function slimNamedSchemaMap(value: unknown, depth: number): unknown {
 }
 
 /**
- * Remove prose-only annotations from actual JSON Schema nodes while preserving
- * the executable contract. Traversal is keyword-aware: blindly recursing into
+ * Remove nonessential annotations while preserving the executable contract
+ * and argument descriptions. Traversal is keyword-aware: blindly recursing into
  * `properties` treats a parameter named `description` as an annotation and
  * leaves an invalid dangling entry in `required`.
  */
@@ -175,12 +173,9 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
     const jsonSchema: JsonValue = isObjectRecord(fn.parameters)
       ? (fn.parameters as JsonValue)
       : { type: "object", properties: {}, required: [] };
-    // Cursor CLI's current schema uses google.protobuf.Value for
-    // McpToolDefinition.input_schema. The committed generated schema still
-    // exposes that field as bytes, but the outer wire encoding is identical
-    // for bytes and message fields (length-delimited field #3), so place the
-    // serialized Value bytes here.
-    const inputSchema = toBinary(ValueSchema, fromJson(ValueSchema, jsonSchema));
+    // Current Cursor prefers field 6 and falls back to the Value in field 3.
+    // Populate both from the same schema so either discovery path agrees.
+    const inputSchema = fromJson(ValueSchema, jsonSchema);
     result.push(
       create(McpToolDefinitionSchema, {
         name,
@@ -188,6 +183,7 @@ export function buildMcpToolDefinitions(tools: OpenAIToolDef[]): McpToolDefiniti
         providerIdentifier: "pi",
         toolName: name,
         inputSchema,
+        inputSchemaJson: JSON.stringify(jsonSchema),
       }),
     );
   }

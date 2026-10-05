@@ -1,4 +1,4 @@
-import { fromBinary, toJson } from "@bufbuild/protobuf";
+import { toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -13,7 +13,9 @@ afterEach(() => {
 });
 
 function decodeSchema(tool: ReturnType<typeof buildMcpToolDefinitions>[number]): any {
-  return toJson(ValueSchema, fromBinary(ValueSchema, tool.inputSchema));
+  const schema = toJson(ValueSchema, tool.inputSchema!);
+  expect(JSON.parse(tool.inputSchemaJson!)).toEqual(schema);
+  return schema;
 }
 
 function descriptionPropertyTool(): OpenAIToolDef[] {
@@ -61,9 +63,12 @@ describe("Cursor tool schema encoding", () => {
     const [tool] = buildMcpToolDefinitions(descriptionPropertyTool());
     const schema = decodeSchema(tool!);
 
-    expect(schema.properties.description).toEqual(
-      slimMode === "1" ? { type: "string" } : { type: "string", description: "Short task label." },
-    );
+    expect(schema.properties.description).toEqual({
+      type: "string",
+      description: "Short task label.",
+    });
+    expect(schema.properties.options.properties.description.description).toBe("Option label.");
+    expect(schema.properties.entries.items.properties.description.description).toBe("Entry label.");
     expect(schema.properties.options.properties.description).toBeDefined();
     expect(schema.properties.entries.items.properties.description).toBeDefined();
     expect(schema.required).toContain("description");
@@ -101,7 +106,10 @@ describe("Cursor tool schema encoding", () => {
 
     expect(schema.properties.title).toEqual({ type: "string" });
     expect(schema.properties.default).toEqual({ type: "string" });
-    expect(schema.$defs.description).toEqual({ type: "string" });
+    expect(schema.$defs.description).toEqual({
+      type: "string",
+      description: "Definition prose",
+    });
     expect(schema.properties.literal.enum).toEqual([
       { description: "literal description", title: "literal title" },
     ]);

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { fromBinary } from "@bufbuild/protobuf";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
+  McpToolDefinitionSchema,
   type ExecClientControlMessage,
   type ExecClientThrow,
 } from "../src/proto/agent_pb.js";
@@ -113,33 +114,33 @@ describe("slim tools for Cursor", () => {
     expect(isSlimToolsEnabled("false")).toBe(false);
   });
 
-  it("removes schema prose but preserves the executable contract", () => {
+  it("compacts tool prose but preserves argument descriptions and the executable contract", () => {
     const slim = slimOpenAIToolsForCursor(fatTools(1));
     const fn = slim[0]!.function;
     expect((fn.description || "").length).toBeLessThanOrEqual(120);
     const parameters = fn.parameters as any;
     const path = parameters.properties.path;
-    expect(path.description).toBeUndefined();
+    expect(path.description).toBe("A very long parameter description. ".repeat(30));
     expect(path.type).toBe("string");
     expect(path.enum).toHaveLength(80);
     expect(parameters.required).toEqual(["path"]);
   });
 
-  it("materially shrinks MCP schema payload vs raw tools", () => {
+  it("shrinks the tool payload without discarding argument descriptions", () => {
     const raw = fatTools(20);
     const prev = process.env.PI_CURSOR_SLIM_TOOLS;
     try {
       process.env.PI_CURSOR_SLIM_TOOLS = "0";
       const rawMcp = buildMcpToolDefinitions(raw);
       let rawBytes = 0;
-      for (const t of rawMcp) rawBytes += t.inputSchema?.byteLength ?? 0;
+      for (const t of rawMcp) rawBytes += toBinary(McpToolDefinitionSchema, t).byteLength;
 
       process.env.PI_CURSOR_SLIM_TOOLS = "1";
       const slimMcp = buildMcpToolDefinitions(raw);
       let slimBytes = 0;
-      for (const t of slimMcp) slimBytes += t.inputSchema?.byteLength ?? 0;
+      for (const t of slimMcp) slimBytes += toBinary(McpToolDefinitionSchema, t).byteLength;
 
-      expect(slimBytes).toBeLessThan(rawBytes * 0.5);
+      expect(slimBytes).toBeLessThan(rawBytes);
     } finally {
       if (prev === undefined) delete process.env.PI_CURSOR_SLIM_TOOLS;
       else process.env.PI_CURSOR_SLIM_TOOLS = prev;
