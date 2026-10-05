@@ -27,6 +27,7 @@ import {
   McpStateExecResultSchema,
   McpStateServerSchema,
   McpStateSuccessSchema,
+  McpToolDefinitionSchema,
   McpResultSchema,
   McpToolNotFoundSchema,
   ReadMcpResourceExecResultSchema,
@@ -65,7 +66,7 @@ import {
   localToolCandidates,
   nativeToolRejectReason,
 } from "./local-tool-policy.js";
-import { stripCursorMcpToolName } from "./root-prompt.js";
+import { cursorMcpToolName, stripCursorMcpToolName } from "./root-prompt.js";
 import {
   interactionUpdateProgress,
   MAX_ACTIVE_BLOB_BYTES,
@@ -358,7 +359,9 @@ function mcpToolsByServer(mcpTools: McpToolDefinition[]): Map<string, McpToolDef
   const byServer = new Map<string, McpToolDefinition[]>();
   for (const tool of mcpTools) {
     const server = tool.providerIdentifier || "pi";
-    byServer.set(server, [...(byServer.get(server) ?? []), tool]);
+    const tools = byServer.get(server) ?? [];
+    tools.push(tool);
+    byServer.set(server, tools);
   }
   return byServer;
 }
@@ -373,11 +376,27 @@ function mcpToolsByServer(mcpTools: McpToolDefinition[]): Map<string, McpToolDef
  * registered (#40).
  */
 export function mcpStateServersFor(mcpTools: McpToolDefinition[], serverIdentifiers: string[]) {
-  return [...mcpToolsByServer(mcpTools)]
-    .filter(([server]) => serverIdentifiers.length === 0 || serverIdentifiers.includes(server))
-    .map(([server, tools]) =>
-      create(McpStateServerSchema, { serverName: server, serverIdentifier: server, tools }),
-    );
+  const servers = [...mcpToolsByServer(mcpTools)];
+  const matching = servers.filter(([server]) => serverIdentifiers.includes(server));
+  // Cursor's client falls back to the whole catalog when no ID matches,
+  // including its generic "custom-user-tools" ID for user-defined tools.
+  return (matching.length ? matching : servers).map(([server, tools]) =>
+    create(McpStateServerSchema, {
+      serverName: server,
+      serverIdentifier: server,
+      // Only discovery uses policy/history names. Do not mutate the raw Pi
+      // registry used by mcpArgs or double-prefix an already qualified name.
+      tools:
+        server === "pi"
+          ? tools.map((tool) =>
+              create(McpToolDefinitionSchema, {
+                ...tool,
+                toolName: cursorMcpToolName(tool.toolName || tool.name),
+              }),
+            )
+          : tools,
+    }),
+  );
 }
 
 /**
@@ -439,11 +458,12 @@ function handleExecMessageInner(
         : typeof mcpArgs.name === "string"
           ? mcpArgs.name
           : "";
-    // The model sometimes mimics the `mcp_pi_<tool>` naming it saw in its own
-    // replayed history (root-prompt.ts) when issuing a new call. Pi's tool
-    // registry only knows the unprefixed name, so unwrap it before matching.
-    const toolName = stripCursorMcpToolName(rawToolName);
+    // Prefer an actual registry name (custom tools can already be prefixed),
+    // otherwise unwrap the model-facing discovery/history name for Pi.
     const availableTools = availableToolNamesFor(mcpTools);
+    const toolName = availableTools.includes(rawToolName)
+      ? rawToolName
+      : stripCursorMcpToolName(rawToolName);
     if (!toolName || !availableTools.includes(toolName)) {
       const notFound = create(McpResultSchema, {
         result: {

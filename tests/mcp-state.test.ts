@@ -1,96 +1,307 @@
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { describe, expect, it } from "vitest";
+import { create, fromBinary, toJson, type JsonValue } from "@bufbuild/protobuf";
+import { ValueSchema } from "@bufbuild/protobuf/wkt";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  AgentClientMessageSchema,
   AgentServerMessageSchema,
   ExecServerMessageSchema,
-  McpStateExecArgsSchema,
-  type ExecClientMessage,
-  type McpStateExecResult,
-  type McpStateSuccess,
+  McpArgsSchema,
+  McpToolDefinitionSchema,
+  type McpToolDefinition,
 } from "../src/proto/agent_pb.js";
-import { processServerMessage } from "../src/stream/server-messages.js";
+import { localToolPolicyText, nativeToolRejectReason } from "../src/stream/local-tool-policy.js";
+import { encodeMcpArgsMap } from "../src/stream/request-build.js";
+import { cursorMcpToolName, turnRootMessages } from "../src/stream/root-prompt.js";
+import { mcpStateServersFor, processServerMessage } from "../src/stream/server-messages.js";
 import { buildMcpToolDefinitions } from "../src/stream/tool-schema.js";
-import type { StreamState } from "../src/stream/types.js";
+import type { PendingExec, StreamState } from "../src/stream/types.js";
 
-const mcpTools = buildMcpToolDefinitions([
-  {
-    type: "function",
-    function: {
-      name: "get_weather",
-      description: "Get the current weather for a city",
-      parameters: { type: "object", properties: { city: { type: "string" } } },
-    },
-  },
-]);
+const previousSlimTools = process.env.PI_CURSOR_SLIM_TOOLS;
+afterEach(() => {
+  if (previousSlimTools === undefined) delete process.env.PI_CURSOR_SLIM_TOOLS;
+  else process.env.PI_CURSOR_SLIM_TOOLS = previousSlimTools;
+});
 
-function answerMcpState(serverIdentifiers: string[]): McpStateSuccess {
-  // Round-trip through bytes: Cursor sends this exec as ExecServerMessage field 36,
-  // which used to decode as startGrindPlanningArgs.
-  const message = fromBinary(
-    AgentServerMessageSchema,
-    toBinary(
-      AgentServerMessageSchema,
-      create(AgentServerMessageSchema, {
-        message: {
-          case: "execServerMessage",
-          value: create(ExecServerMessageSchema, {
-            id: 1,
-            execId: "exec-1",
-            message: {
-              case: "mcpStateExecArgs",
-              value: create(McpStateExecArgsSchema, { serverIdentifiers }),
-            },
-          }),
+function piTools(): McpToolDefinition[] {
+  return buildMcpToolDefinitions([
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        description: "Execute a bash command.",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string", description: "Shell command to execute." } },
+          required: ["command"],
         },
-      }),
-    ),
-  );
-  const state: StreamState = {
-    toolCallIndex: 0,
-    pendingExecs: [],
-    outputTokens: 0,
-    totalTokens: 0,
-    turnEnded: false,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "edit",
+        description: "Edit a file using exact text replacement.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Path to edit." },
+            oldText: { type: "string", description: "Exact original text, including whitespace." },
+            newText: { type: "string", description: "Replacement text." },
+          },
+          required: ["path", "oldText", "newText"],
+        },
+      },
+    },
+  ]);
+}
+
+function state(): StreamState {
+  return { toolCallIndex: 0, pendingExecs: [], outputTokens: 0, totalTokens: 0, turnEnded: false };
+}
+
+// Test-only protobuf framing with fixed Cursor field numbers, independent of
+// Pi's generated message descriptors. A schema self-round-trip cannot pin tags.
+function varint(value: number): Buffer {
+  const bytes: number[] = [];
+  do {
+    bytes.push((value & 0x7f) | (value > 0x7f ? 0x80 : 0));
+    value >>>= 7;
+  } while (value);
+  return Buffer.from(bytes);
+}
+
+function field(no: number, value: Uint8Array | string): Buffer {
+  const bytes = typeof value === "string" ? Buffer.from(value) : Buffer.from(value);
+  return Buffer.concat([varint((no << 3) | 2), varint(bytes.length), bytes]);
+}
+
+function bytesFields(bytes: Uint8Array, no: number): Uint8Array[] {
+  let offset = 0;
+  const readVarint = (): number => {
+    let value = 0;
+    let shift = 0;
+    while (offset < bytes.length && shift < 35) {
+      const byte = bytes[offset++]!;
+      value |= (byte & 0x7f) << shift;
+      if (!(byte & 0x80)) return value >>> 0;
+      shift += 7;
+    }
+    throw new Error("Invalid fixture varint");
   };
+  const found: Uint8Array[] = [];
+  while (offset < bytes.length) {
+    const tag = readVarint();
+    if ((tag & 7) === 0) {
+      readVarint();
+    } else if ((tag & 7) === 2) {
+      const length = readVarint();
+      if (offset + length > bytes.length) throw new Error("Truncated fixture field");
+      if (tag >>> 3 === no) found.push(bytes.subarray(offset, offset + length));
+      offset += length;
+    } else {
+      throw new Error(`Unexpected fixture wire type ${tag & 7}`);
+    }
+  }
+  return found;
+}
+
+function onlyField(bytes: Uint8Array, no: number): Uint8Array {
+  const values = bytesFields(bytes, no);
+  expect(values).toHaveLength(1);
+  return values[0]!;
+}
+
+function text(bytes: Uint8Array, no: number): string {
+  return new TextDecoder().decode(onlyField(bytes, no));
+}
+
+interface DiscoveredServer {
+  serverIdentifier: string;
+  tools: Array<{
+    name: string;
+    toolName: string;
+    description: string;
+    schema: JsonValue;
+    schemaJson: JsonValue;
+  }>;
+}
+
+function answerMcpState(
+  serverIdentifiers: string[],
+  tools = piTools(),
+  fixture?: Uint8Array,
+): DiscoveredServer[] {
+  // AgentServerMessage.exec_server_message=2; ExecServerMessage.id=1,
+  // exec_id=15, mcp_state_exec_args=36; server_identifiers=1.
+  const args = Buffer.concat(serverIdentifiers.map((id) => field(1, id)));
+  const wire =
+    fixture ?? field(2, Buffer.concat([Buffer.from([8, 1]), field(15, "x"), field(36, args)]));
+  const message = fromBinary(AgentServerMessageSchema, wire);
   const frames: Uint8Array[] = [];
   expect(
     processServerMessage(
       message,
       new Map(),
-      mcpTools,
+      tools,
       (frame) => frames.push(frame),
-      state,
+      state(),
       () => {},
       () => {},
     ),
   ).toBe("work");
   expect(frames).toHaveLength(1);
+  const frame = frames[0]!;
+  expect(frame[0]).toBe(0);
+  expect(Buffer.from(frame).readUInt32BE(1)).toBe(frame.length - 5);
 
-  const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
-  expect(answer.message.case).toBe("execClientMessage");
-  const exec = answer.message.value as ExecClientMessage;
-  expect(exec.message.case).toBe("mcpStateExecResult");
-  const result = exec.message.value as McpStateExecResult;
-  expect(result.result.case).toBe("success");
-  return result.result.value as McpStateSuccess;
+  // Decode the reply by Cursor's numeric tags, not Pi's outgoing schema:
+  // AgentClientMessage.exec_client_message=2; result=36; success=1; servers=1.
+  const exec = onlyField(frame.subarray(5), 2);
+  expect(text(exec, 15)).toBe("x");
+  const success = onlyField(onlyField(exec, 36), 1);
+  return bytesFields(success, 1).map((server) => ({
+    serverIdentifier: text(server, 2),
+    tools: bytesFields(server, 5).map((tool) => ({
+      name: text(tool, 1),
+      description: text(tool, 2),
+      toolName: text(tool, 5),
+      // Cursor's Value field 3 and preferred JSON field 6 must agree.
+      schema: toJson(ValueSchema, fromBinary(ValueSchema, onlyField(tool, 3))),
+      schemaJson: JSON.parse(text(tool, 6)) as JsonValue,
+    })),
+  }));
 }
 
-describe("mcpStateExecArgs reply", () => {
-  it("lists the Pi tools under the pi server, so GetDynamicTools finds the pi namespace (#40)", () => {
-    const success = answerMcpState([]);
-    expect(success.servers).toHaveLength(1);
-    const [server] = success.servers;
-    expect(server!.serverIdentifier).toBe("pi");
-    expect(server!.serverName).toBe("pi");
-    expect(server!.tools.map((tool) => tool.toolName)).toEqual(["get_weather"]);
-    expect(server!.tools[0]!.description).toBe("Get the current weather for a city");
-    expect(server!.tools[0]!.inputSchema.byteLength).toBeGreaterThan(0);
+function invoke(toolName: string, tools: McpToolDefinition[]): PendingExec[] {
+  const pending: PendingExec[] = [];
+  const frames: Uint8Array[] = [];
+  const message = create(AgentServerMessageSchema, {
+    message: {
+      case: "execServerMessage",
+      value: create(ExecServerMessageSchema, {
+        id: 2,
+        execId: "invoke",
+        message: {
+          case: "mcpArgs",
+          value: create(McpArgsSchema, {
+            name: toolName,
+            toolName,
+            providerIdentifier: "pi",
+            toolCallId: "call-discovered",
+            args: encodeMcpArgsMap({ command: "pwd" }),
+          }),
+        },
+      }),
+    },
+  });
+  processServerMessage(
+    message,
+    new Map(),
+    tools,
+    (frame) => frames.push(frame),
+    state(),
+    () => {},
+    (exec) => pending.push(exec),
+  );
+  expect(frames).toHaveLength(0);
+  expect(pending).toHaveLength(1);
+  return pending;
+}
+
+describe("Cursor MCP discovery compatibility", () => {
+  it("answers an independent field-36 request fixture with a field-36 result", () => {
+    // Hand-encoded request for server pi, not built with McpStateExecArgsSchema.
+    const fixture = Buffer.from("120c08017a0178a202040a027069", "hex");
+    expect(answerMcpState([], piTools(), fixture)[0]!.serverIdentifier).toBe("pi");
   });
 
-  it("answers only the servers Cursor asked for", () => {
-    expect(answerMcpState(["pi"]).servers.map((server) => server.serverIdentifier)).toEqual(["pi"]);
-    expect(answerMcpState(["github"]).servers).toEqual([]);
+  it("discovers precisely the names advertised by policy, rejections, and replayed history", () => {
+    const tools = piTools();
+    const catalog = answerMcpState([])[0]!.tools;
+    for (const raw of tools) {
+      const advertised = cursorMcpToolName(raw.toolName);
+      expect(localToolPolicyText(tools)).toContain(advertised);
+      expect(nativeToolRejectReason("shellArgs", tools)).toContain(advertised);
+      expect(catalog.filter((tool) => tool.toolName === advertised)).toHaveLength(1);
+    }
+    const history = turnRootMessages({
+      userText: "show cwd",
+      steps: [
+        { kind: "toolCall", toolName: "bash", toolCallId: "old", arguments: { command: "pwd" } },
+      ],
+    });
+    expect(JSON.stringify(history)).toContain('"toolName":"mcp_pi_bash"');
+    expect(catalog.map((tool) => tool.toolName)).toEqual(["mcp_pi_bash", "mcp_pi_edit"]);
+  });
+
+  it.each(["0", "1"])(
+    "retains edit argument semantics in both schema encodings with slimming=%s",
+    (mode) => {
+      process.env.PI_CURSOR_SLIM_TOOLS = mode;
+      const edit = answerMcpState([])[0]!.tools.find((tool) => tool.toolName === "mcp_pi_edit")!;
+      expect(edit.schemaJson).toEqual(edit.schema);
+      expect(edit.schema).toMatchObject({
+        type: "object",
+        required: ["path", "oldText", "newText"],
+        properties: {
+          oldText: { type: "string", description: "Exact original text, including whitespace." },
+          newText: { type: "string", description: "Replacement text." },
+        },
+      });
+    },
+  );
+
+  it("dispatches an exact discovered name through the unchanged raw Pi registry", () => {
+    const tools = piTools();
+    const before = tools.map((tool) => tool.toolName);
+    const discovered = answerMcpState([], tools)[0]!.tools.find(
+      (tool) => tool.toolName === "mcp_pi_bash",
+    )!;
+    const [exec] = invoke(discovered.toolName, tools);
+    expect(exec!.toolName).toBe("bash");
+    expect(JSON.parse(exec!.decodedArgs)).toEqual({ command: "pwd" });
+    expect(tools.map((tool) => tool.toolName)).toEqual(before);
+    expect(invoke("bash", tools)[0]!.toolName).toBe("bash");
+  });
+
+  it("does not double-prefix or misroute tools already named mcp_pi_*", () => {
+    const tools = [
+      create(McpToolDefinitionSchema, {
+        ...piTools()[0]!,
+        name: "mcp_pi_bash",
+        toolName: "mcp_pi_bash",
+      }),
+    ];
+    const discovered = answerMcpState([], tools)[0]!.tools[0]!;
+    expect(discovered.toolName).toBe("mcp_pi_bash");
+    expect(invoke(discovered.toolName, tools)[0]!.toolName).toBe("mcp_pi_bash");
+  });
+
+  it("filters matching server IDs but falls back to all servers when none match", () => {
+    const tools = [
+      ...piTools(),
+      create(McpToolDefinitionSchema, {
+        ...piTools()[0]!,
+        providerIdentifier: "other",
+        name: "custom",
+        toolName: "custom",
+      }),
+    ];
+    expect(answerMcpState(["pi"], tools).map((server) => server.serverIdentifier)).toEqual(["pi"]);
+    expect(answerMcpState(["other"], tools)[0]!.tools[0]!.toolName).toBe("custom");
+    for (const ids of [[], ["custom-user-tools"], ["missing"]]) {
+      expect(answerMcpState(ids, tools).map((server) => server.serverIdentifier)).toEqual([
+        "pi",
+        "other",
+      ]);
+    }
+    expect(
+      answerMcpState(["missing", "pi"], tools).map((server) => server.serverIdentifier),
+    ).toEqual(["pi"]);
+    expect(answerMcpState([], [])).toEqual([]);
+  });
+
+  it("never invents tools when the registry is empty", () => {
+    expect(mcpStateServersFor([], ["custom-user-tools"])).toEqual([]);
   });
 });
