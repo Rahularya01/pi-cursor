@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.39] - 2026-10-08
+
 ### Fixed
 
 - **A terminal Cursor error after a Pi tool call no longer drops the latest checkpoint.** When a checkpoint arrived after `toolUse` and Cursor then ended the stream with a non-retriable Connect error, the stream was marked finalized before the bridge was killed, so the close handler skipped the mid-pause save and left the dead bridge registered. The save and bridge release now run first, so the tool result resumes from the latest state.
