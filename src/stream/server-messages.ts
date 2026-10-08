@@ -65,8 +65,9 @@ import {
   isLocalToolExec,
   localToolCandidates,
   nativeToolRejectReason,
+  wireMcpToolDefinitions,
 } from "./local-tool-policy.js";
-import { cursorMcpToolName, stripCursorMcpToolName } from "./root-prompt.js";
+import { cursorMcpToolNames } from "./root-prompt.js";
 import {
   interactionUpdateProgress,
   MAX_ACTIVE_BLOB_BYTES,
@@ -377,6 +378,7 @@ function mcpToolsByServer(mcpTools: McpToolDefinition[]): Map<string, McpToolDef
  */
 export function mcpStateServersFor(mcpTools: McpToolDefinition[], serverIdentifiers: string[]) {
   const servers = [...mcpToolsByServer(mcpTools)];
+  const toolNames = cursorMcpToolNames(availableToolNamesFor(mcpTools));
   const matching = servers.filter(([server]) => serverIdentifiers.includes(server));
   // Cursor's client falls back to the whole catalog when no ID matches,
   // including its generic "custom-user-tools" ID for user-defined tools.
@@ -384,14 +386,19 @@ export function mcpStateServersFor(mcpTools: McpToolDefinition[], serverIdentifi
     create(McpStateServerSchema, {
       serverName: server,
       serverIdentifier: server,
-      // Only discovery uses policy/history names. Do not mutate the raw Pi
-      // registry used by mcpArgs or double-prefix an already qualified name.
+      // `name` carries the wire name, as in RunRequest/RequestContext, and
+      // `toolName` the advertised one. Observed live (composer-2.5, claude-4.5-
+      // sonnet, gpt-5.2, gemini-3-flash): the call comes back through
+      // CallDynamicTool with McpArgs.tool_name equal to this `toolName`
+      // verbatim (no extra prefix) and McpArgs.name = `<server>-<toolName>`.
+      // The raw Pi registry used by mcpArgs is not mutated.
       tools:
         server === "pi"
           ? tools.map((tool) =>
               create(McpToolDefinitionSchema, {
                 ...tool,
-                toolName: cursorMcpToolName(tool.toolName || tool.name),
+                name: toolNames.wire(tool.toolName || tool.name),
+                toolName: toolNames.advertised(tool.toolName || tool.name),
               }),
             )
           : tools,
@@ -436,7 +443,7 @@ function handleExecMessageInner(
       rules: [],
       env,
       repositoryInfo: [],
-      tools: mcpTools,
+      tools: wireMcpToolDefinitions(mcpTools),
       gitRepos: [],
       projectLayouts: [],
       mcpInstructions: [],
@@ -458,17 +465,15 @@ function handleExecMessageInner(
         : typeof mcpArgs.name === "string"
           ? mcpArgs.name
           : "";
-    // Prefer an actual registry name (custom tools can already be prefixed),
-    // otherwise unwrap the model-facing discovery/history name for Pi.
+    // Map the advertised (`mcp_pi_<wire>`) or wire name back to Pi's registry
+    // name. The two never overlap; see cursorMcpToolNames.
     const availableTools = availableToolNamesFor(mcpTools);
-    const toolName = availableTools.includes(rawToolName)
-      ? rawToolName
-      : stripCursorMcpToolName(rawToolName);
-    if (!toolName || !availableTools.includes(toolName)) {
+    const toolName = cursorMcpToolNames(availableTools).resolve(rawToolName);
+    if (!toolName) {
       const notFound = create(McpResultSchema, {
         result: {
           case: "toolNotFound",
-          value: create(McpToolNotFoundSchema, { name: toolName, availableTools }),
+          value: create(McpToolNotFoundSchema, { name: rawToolName, availableTools }),
         },
       });
       sendExecResult(execMsg, "mcpResult", notFound, sendFrame);

@@ -3,15 +3,24 @@ import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  AgentClientMessageSchema,
   AgentServerMessageSchema,
   ExecServerMessageSchema,
   McpArgsSchema,
   McpToolDefinitionSchema,
   type McpToolDefinition,
 } from "../src/proto/agent_pb.js";
-import { localToolPolicyText, nativeToolRejectReason } from "../src/stream/local-tool-policy.js";
-import { encodeMcpArgsMap } from "../src/stream/request-build.js";
-import { cursorMcpToolName, turnRootMessages } from "../src/stream/root-prompt.js";
+import {
+  availableToolNamesFor,
+  localToolPolicyText,
+  nativeToolRejectReason,
+} from "../src/stream/local-tool-policy.js";
+import { buildCursorRequest, encodeMcpArgsMap } from "../src/stream/request-build.js";
+import {
+  buildRootPromptMessages,
+  cursorMcpToolName,
+  turnRootMessages,
+} from "../src/stream/root-prompt.js";
 import { mcpStateServersFor, processServerMessage } from "../src/stream/server-messages.js";
 import { buildMcpToolDefinitions } from "../src/stream/tool-schema.js";
 import type { PendingExec, StreamState } from "../src/stream/types.js";
@@ -208,6 +217,57 @@ function invoke(toolName: string, tools: McpToolDefinition[]): PendingExec[] {
   return pending;
 }
 
+function catalogNames(tools: McpToolDefinition[]): string[][] {
+  return tools.map((tool) => [tool.name, tool.toolName]);
+}
+
+/** The tool catalog a RunRequest built for `tools` sends to Cursor. */
+function runRequestCatalog(tools: McpToolDefinition[]): McpToolDefinition[] {
+  const run = fromBinary(
+    AgentClientMessageSchema,
+    buildCursorRequest({
+      modelId: "cursor-grok-4.6",
+      systemPrompt: "",
+      userText: "run",
+      turns: [],
+      conversationId: "catalog",
+      checkpoint: null,
+      mcpTools: tools,
+    }).requestBytes,
+  );
+  if (run.message.case !== "runRequest") throw new Error("missing run request");
+  return run.message.value.mcpTools!.mcpTools;
+}
+
+/** The tool catalog our reply to Cursor's `requestContextArgs` exec carries. */
+function requestContextCatalog(tools: McpToolDefinition[]): McpToolDefinition[] {
+  const frames: Uint8Array[] = [];
+  processServerMessage(
+    create(AgentServerMessageSchema, {
+      message: {
+        case: "execServerMessage",
+        value: create(ExecServerMessageSchema, {
+          id: 3,
+          execId: "context",
+          message: { case: "requestContextArgs", value: {} },
+        }),
+      },
+    }),
+    new Map(),
+    tools,
+    (frame) => frames.push(frame),
+    state(),
+    () => {},
+    () => {},
+  );
+  const reply = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
+  if (reply.message.case !== "execClientMessage") throw new Error("missing exec reply");
+  const context = reply.message.value.message;
+  if (context.case !== "requestContextResult" || context.value.result.case !== "success")
+    throw new Error("missing request context");
+  return context.value.result.value.requestContext!.tools;
+}
+
 describe("Cursor MCP discovery compatibility", () => {
   it("answers an independent field-36 request fixture with a field-36 result", () => {
     // Hand-encoded request for server pi, not built with McpStateExecArgsSchema.
@@ -275,6 +335,83 @@ describe("Cursor MCP discovery compatibility", () => {
     const discovered = answerMcpState([], tools)[0]!.tools[0]!;
     expect(discovered.toolName).toBe("mcp_pi_bash");
     expect(invoke(discovered.toolName, tools)[0]!.toolName).toBe("mcp_pi_bash");
+    // Older history rendered this tool with one prefix more than it is advertised under now.
+    expect(invoke("mcp_pi_mcp_pi_bash", tools)[0]!.toolName).toBe("mcp_pi_bash");
+    // A prefix added to an advertised name still reaches its tool when nothing else claims it.
+    expect(invoke("mcp_pi_mcp_pi_edit", piTools())[0]!.toolName).toBe("edit");
+  });
+
+  // `bash` and a custom `mcp_pi_bash` both advertised as `mcp_pi_bash` sent bash's discovered
+  // calls to the custom tool. Renaming the custom tool on the wire to a name that still carried
+  // the prefix let Cursor's own prefixing land on a third tool's advertised name. Wire names are
+  // therefore never prefixed, and every path advertises exactly `mcp_pi_<wire>`.
+  it.each([
+    [["mcp_pi_bash"], ["bash", "edit", "bash_2"]],
+    [
+      ["mcp_pi_bash", "mcp_pi_mcp_pi_bash"],
+      ["bash", "edit", "bash_2", "bash_3"],
+    ],
+  ])("keeps one name per tool with custom tools %j next to bash", (custom, expectedWire) => {
+    const tools = [
+      ...piTools(),
+      ...custom.map((name) =>
+        create(McpToolDefinitionSchema, { ...piTools()[0]!, name, toolName: name }),
+      ),
+    ];
+    const registry = tools.map((tool) => tool.toolName);
+    const advertised = expectedWire.map((wire) => `mcp_pi_${wire}`);
+    // Discovery's `name` is the wire name too, so Cursor prefixing it gives the advertised name.
+    expect(answerMcpState([], tools)[0]!.tools.map((tool) => [tool.name, tool.toolName])).toEqual(
+      expectedWire.map((wire, i) => [wire, advertised[i]]),
+    );
+
+    // Both catalogs the model can see send the same wire names; the registry keeps Pi's names.
+    const wirePairs = expectedWire.map((wire) => [wire, wire]);
+    expect(catalogNames(runRequestCatalog(tools))).toEqual(wirePairs);
+    expect(catalogNames(requestContextCatalog(tools))).toEqual(wirePairs);
+    expect(tools.map((tool) => tool.toolName)).toEqual(registry);
+
+    // Echoed wire names and Cursor-prefixed wire names both reach the tool they were sent for.
+    registry.forEach((name, i) => {
+      expect(invoke(expectedWire[i]!, tools)[0]!.toolName).toBe(name);
+      expect(invoke(advertised[i]!, tools)[0]!.toolName).toBe(name);
+    });
+    // A raw registry name that is also another tool's advertised name means that tool.
+    expect(invoke("mcp_pi_bash", tools)[0]!.toolName).toBe("bash");
+    // `mcp_pi_` + a registry name (pre-wire-name history) is that tool, unless the string is
+    // itself registered; it never falls through to bash's advertised name.
+    expect(invoke("mcp_pi_mcp_pi_bash", tools)[0]!.toolName).toBe(
+      custom.includes("mcp_pi_mcp_pi_bash") ? "mcp_pi_mcp_pi_bash" : "mcp_pi_bash",
+    );
+
+    for (const [i, name] of registry.entries()) {
+      if (!custom.includes(name)) continue;
+      expect(localToolPolicyText(tools)).toContain(
+        `call the custom tool "${name}" as ${advertised[i]}`,
+      );
+      expect(nativeToolRejectReason("shellArgs", tools)).toContain(advertised[i]);
+    }
+    expect(localToolPolicyText(piTools())).not.toContain("name clash");
+    const history = JSON.stringify(
+      buildRootPromptMessages(
+        "",
+        [
+          {
+            userText: "run all",
+            steps: registry.map((toolName) => ({
+              kind: "toolCall" as const,
+              toolName,
+              toolCallId: toolName,
+              arguments: {},
+            })),
+          },
+        ],
+        availableToolNamesFor(tools),
+      ),
+    );
+    registry.forEach((name, i) =>
+      expect(history).toContain(`"toolCallId":"${name}","toolName":"${advertised[i]}"`),
+    );
   });
 
   it("filters matching server IDs but falls back to all servers when none match", () => {

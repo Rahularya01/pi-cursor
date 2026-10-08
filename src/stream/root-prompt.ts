@@ -69,18 +69,76 @@ export function cursorMcpToolName(toolName: string): string {
   return `mcp_${MCP_PROVIDER_IDENTIFIER}_${name}`;
 }
 
+/** One name space for Pi tools, shared by every catalog, prompt and dispatch path. */
+export interface CursorMcpToolNames {
+  /** Name sent in the RunRequest/RequestContext catalogs. Never carries the `mcp_pi_` prefix. */
+  wire: (name: string) => string;
+  /** Name the model sees and calls: always `mcp_pi_` + the wire name. */
+  advertised: (name: string) => string;
+  /** Registry name for a model-issued call, or undefined when no tool owns the name. */
+  resolve: (toolName: string) => string | undefined;
+}
+
+const MCP_TOOL_PREFIX = `mcp_${MCP_PROVIDER_IDENTIFIER}_`;
+const toolNamesCache = new WeakMap<readonly string[], CursorMcpToolNames>();
+
 /**
- * Inverse of `cursorMcpToolName`. Replayed history renders tool calls in
- * Cursor's `mcp_pi_<tool>` form (see module docs), which primes the model to
- * emit that same form for genuinely new calls. Pi's own tool dispatch only
- * knows the raw, unprefixed names, so a live `mcpArgs` exec has to be
- * unwrapped back to the name Pi actually registered before it's matched
- * against the available tool list.
+ * Builds the registry -> wire -> advertised mapping. Cursor may or may not prefix a catalog name
+ * again, so wire names never carry the prefix: then `mcp_pi_<wire>` is the model-facing name on
+ * every path, and wire names (unprefixed) and advertised names (prefixed) cannot collide.
+ * Unprefixed registry names keep themselves; a prefixed one (custom `mcp_pi_bash`) drops the
+ * prefix and takes `bash`, or `bash_2`, `bash_3`, ... when that is already claimed.
  */
-export function stripCursorMcpToolName(toolName: string): string {
-  const name = toolName.trim();
-  const prefix = `mcp_${MCP_PROVIDER_IDENTIFIER}_`;
-  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+export function cursorMcpToolNames(registered: readonly string[]): CursorMcpToolNames {
+  const cached = toolNamesCache.get(registered);
+  if (cached) return cached;
+  const wireByName = new Map<string, string>();
+  const nameByWire = new Map<string, string>();
+  const claim = (name: string, wire: string) => {
+    wireByName.set(name, wire);
+    nameByWire.set(wire, name);
+  };
+  for (const name of registered) if (!name.startsWith(MCP_TOOL_PREFIX)) claim(name, name);
+  for (const name of registered) {
+    if (wireByName.has(name)) continue;
+    let base = name;
+    while (base.startsWith(MCP_TOOL_PREFIX)) base = base.slice(MCP_TOOL_PREFIX.length);
+    base ||= "tool";
+    let wire = base;
+    for (let n = 2; nameByWire.has(wire); n++) wire = `${base}_${n}`;
+    claim(name, wire);
+  }
+  const byAdvertised = (name: string) =>
+    name.startsWith(MCP_TOOL_PREFIX)
+      ? nameByWire.get(name.slice(MCP_TOOL_PREFIX.length))
+      : undefined;
+  const names: CursorMcpToolNames = {
+    wire: (name) => wireByName.get(name.trim()) ?? name.trim(),
+    advertised: (name) => {
+      const wire = wireByName.get(name.trim());
+      // A replayed call to a tool no longer registered keeps the plain prefixed form.
+      return wire ? `${MCP_TOOL_PREFIX}${wire}` : cursorMcpToolName(name);
+    },
+    resolve: (toolName) => {
+      const name = toolName.trim();
+      // Advertised and wire names are exact; a prefixed registry name that is neither is still
+      // accepted verbatim. Then names carrying one prefix too many: `mcp_pi_` + a registry name
+      // (how Cursor rendered a prefixed custom tool before wire names, so older history may
+      // carry it), else `mcp_pi_` + an advertised name. Each step is one-to-one and only sees
+      // names the earlier steps left unclaimed.
+      const unprefixed = name.startsWith(MCP_TOOL_PREFIX)
+        ? name.slice(MCP_TOOL_PREFIX.length)
+        : undefined;
+      return (
+        byAdvertised(name) ??
+        nameByWire.get(name) ??
+        [name, unprefixed].find((candidate) => candidate && registered.includes(candidate)) ??
+        (unprefixed ? byAdvertised(unprefixed) : undefined)
+      );
+    },
+  };
+  toolNamesCache.set(registered, names);
+  return names;
 }
 
 function truncateReplayedResult(text: string): string {
@@ -104,8 +162,12 @@ function isToolCallStep(step: ParsedTurnStep): step is ParsedToolCallStep {
 }
 
 /** Render one completed turn as the user / assistant / tool messages Cursor renders. */
-export function turnRootMessages(turn: ParsedTurn): RootPromptMessage[] {
+export function turnRootMessages(
+  turn: ParsedTurn,
+  registeredToolNames: readonly string[] = [],
+): RootPromptMessage[] {
   const messages: RootPromptMessage[] = [];
+  const toolNames = cursorMcpToolNames(registeredToolNames);
   const userText = turn.userText.trim();
   const imageNote = turn.userImages?.length
     ? `\n\n[${turn.userImages.length} image attachment(s) from this earlier turn are not replayed.]`
@@ -142,7 +204,7 @@ export function turnRootMessages(turn: ParsedTurn): RootPromptMessage[] {
       continue;
     }
     if (!isToolCallStep(step)) continue;
-    const toolName = cursorMcpToolName(step.toolName);
+    const toolName = toolNames.advertised(step.toolName);
     assistantContent.push({
       type: "tool-call",
       toolCallId: step.toolCallId,
@@ -174,10 +236,11 @@ export function turnRootMessages(turn: ParsedTurn): RootPromptMessage[] {
 export function buildRootPromptMessages(
   systemPrompt: string,
   turns: ParsedTurn[],
+  registeredToolNames: readonly string[] = [],
 ): RootPromptMessage[] {
   const messages: RootPromptMessage[] = [];
   if (systemPrompt.trim()) messages.push(systemPromptRootMessage(systemPrompt));
-  for (const turn of turns) messages.push(...turnRootMessages(turn));
+  for (const turn of turns) messages.push(...turnRootMessages(turn, registeredToolNames));
   return messages;
 }
 

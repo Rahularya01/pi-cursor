@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A terminal Cursor error after a Pi tool call no longer drops the latest checkpoint.** When a checkpoint arrived after `toolUse` and Cursor then ended the stream with a non-retriable Connect error, the stream was marked finalized before the bridge was killed, so the close handler skipped the mid-pause save and left the dead bridge registered. The save and bridge release now run first, so the tool result resumes from the latest state.
+- **Pi tools whose names clash under the `mcp_pi_` prefix no longer reach the wrong tool.** With `bash` and a custom `mcp_pi_bash` registered, discovery advertised both as `mcp_pi_bash` and dispatch sent calls to the custom tool. One registry → wire → advertised name map (`cursorMcpToolNames()`) now feeds discovery, the RunRequest and RequestContext catalogs, replayed history, the local-tool policy, rejection guidance and dispatch: wire names never carry the prefix (`mcp_pi_bash` goes out as `bash_2`), and the model-facing name is always `mcp_pi_<wire>` (`mcp_pi_bash_2`). Registries without such a clash are advertised as before.
+
 ## [1.4.38] - 2026-09-23
 
 ### Fixed

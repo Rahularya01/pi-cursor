@@ -11,7 +11,6 @@ import {
   buildRootPromptMessages,
   cursorMcpToolName,
   isPromptHistoryEnabled,
-  stripCursorMcpToolName,
   turnRootMessages,
   type RootPromptMessage,
 } from "../src/stream/root-prompt.js";
@@ -78,12 +77,6 @@ describe("root prompt messages", () => {
   it("namespaces MCP tool names once", () => {
     expect(cursorMcpToolName("grep")).toBe("mcp_pi_grep");
     expect(cursorMcpToolName("mcp_pi_grep")).toBe("mcp_pi_grep");
-  });
-
-  it("strips the Cursor MCP namespace back off so live tool calls match Pi's registry", () => {
-    expect(stripCursorMcpToolName("mcp_pi_bash")).toBe("bash");
-    expect(stripCursorMcpToolName("bash")).toBe("bash");
-    expect(stripCursorMcpToolName(cursorMcpToolName("grep"))).toBe("grep");
   });
 
   it("notes unreplayed images instead of dropping the turn silently", () => {

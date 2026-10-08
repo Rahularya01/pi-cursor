@@ -1115,6 +1115,30 @@ function writeNativeStream(
     }
   };
 
+  /** Saves the latest checkpoint for Pi calls still awaiting results; `details` extends the log. */
+  const saveMidPauseState = (details: Record<string, unknown> = {}) => {
+    const midPauseResult = handleBridgeCloseMidPause({
+      stored: conversationStates.get(convKey),
+      latestCheckpoint: checkpointRef.current,
+      blobStore,
+      completedTurns: persistenceTurns,
+      pendingExecs: emittedExecs,
+      convKey,
+    });
+    debugLog(
+      midPauseResult.committed
+        ? "bridge.died_mid_pause_checkpoint_saved"
+        : "bridge.died_mid_pause_no_checkpoint",
+      {
+        requestId,
+        bridgeKey,
+        convKey,
+        ...details,
+        pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
+      },
+    );
+  };
+
   /** Stops an exhausted rejection loop at a chunk boundary unless Pi calls are awaiting results. */
   const stopLocalToolLoop = (): boolean => {
     // Evaluate at chunk boundaries so Pi calls in the same chunk win. While
@@ -1143,14 +1167,7 @@ function writeNativeStream(
     options?.signal?.removeEventListener("abort", abort);
     const stored = conversationStates.get(convKey);
     if (mcpExecReceived) {
-      handleBridgeCloseMidPause({
-        stored,
-        latestCheckpoint: checkpointRef.current,
-        blobStore,
-        completedTurns: persistenceTurns,
-        pendingExecs: emittedExecs,
-        convKey,
-      });
+      saveMidPauseState({ cause: "stream_done" });
       removeActiveBridge(bridgeKey);
       return;
     }
@@ -1362,6 +1379,12 @@ function writeNativeStream(
           }
           return;
         }
+        // `streamFinalized` makes `onClose` return early, so the mid-pause save and bridge
+        // release it would have done for a pending Pi call must happen here, before the kill.
+        if (mcpExecReceived) {
+          saveMidPauseState({ cause: "stream_error" });
+          removeActiveBridge(bridgeKey);
+        }
         streamFinalized = true;
         idleWatchdog.clear();
         clearInterval(heartbeatTimer);
@@ -1447,28 +1470,7 @@ function writeNativeStream(
     // A staged retriable end-stream error deliberately falls through to the transport-loss path
     // below, which owns restart-vs-fail. Anything else already reported the failure to the client.
     if (streamError && !retriableEndError) {
-      if (mcpExecReceived) {
-        const midPauseResult = handleBridgeCloseMidPause({
-          stored,
-          latestCheckpoint: checkpointRef.current,
-          blobStore,
-          completedTurns: persistenceTurns,
-          pendingExecs: emittedExecs,
-          convKey,
-        });
-        debugLog(
-          midPauseResult.committed
-            ? "bridge.died_mid_pause_checkpoint_saved"
-            : "bridge.died_mid_pause_no_checkpoint",
-          {
-            requestId,
-            bridgeKey,
-            convKey,
-            cause: "stream_error",
-            pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
-          },
-        );
-      }
+      if (mcpExecReceived) saveMidPauseState({ cause: "stream_error" });
       removeActiveBridge(bridgeKey);
       return;
     }
@@ -1547,29 +1549,7 @@ function writeNativeStream(
           }
         }
       }
-      if (mcpExecReceived) {
-        const midPauseResult = handleBridgeCloseMidPause({
-          stored,
-          latestCheckpoint: checkpointRef.current,
-          blobStore,
-          completedTurns: persistenceTurns,
-          pendingExecs: emittedExecs,
-          convKey,
-        });
-        debugLog(
-          midPauseResult.committed
-            ? "bridge.died_mid_pause_checkpoint_saved"
-            : "bridge.died_mid_pause_no_checkpoint",
-          {
-            requestId,
-            bridgeKey,
-            convKey,
-            code,
-            failureKind: failure.kind,
-            pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
-          },
-        );
-      }
+      if (mcpExecReceived) saveMidPauseState({ code, failureKind: failure.kind });
       writer.error(formatTransportFailure(failure), "error", state);
       removeActiveBridge(bridgeKey);
       return;
@@ -1594,25 +1574,7 @@ function writeNativeStream(
       }
       writer.done("stop", state);
     } else {
-      const midPauseResult = handleBridgeCloseMidPause({
-        stored,
-        latestCheckpoint: checkpointRef.current,
-        blobStore,
-        completedTurns: persistenceTurns,
-        pendingExecs: emittedExecs,
-        convKey,
-      });
-      debugLog(
-        midPauseResult.committed
-          ? "bridge.died_mid_pause_checkpoint_saved"
-          : "bridge.died_mid_pause_no_checkpoint",
-        {
-          requestId,
-          bridgeKey,
-          convKey,
-          pendingToolCallIds: emittedExecs.map((e) => e.toolCallId),
-        },
-      );
+      saveMidPauseState();
       removeActiveBridge(bridgeKey);
     }
   });

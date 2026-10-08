@@ -1,6 +1,8 @@
 /** Local operations are executed by Pi, never by the provider. */
-import type { McpToolDefinition } from "../proto/agent_pb.js";
-import { cursorMcpToolName } from "./root-prompt.js";
+import { create } from "@bufbuild/protobuf";
+
+import { McpToolDefinitionSchema, type McpToolDefinition } from "../proto/agent_pb.js";
+import { cursorMcpToolName, cursorMcpToolNames } from "./root-prompt.js";
 
 export const MAX_LOCAL_TOOL_REJECTIONS = 8;
 export const LOCAL_TOOL_LOOP_ERROR =
@@ -34,6 +36,36 @@ export function availableToolNamesFor(tools: McpToolDefinition[]): string[] {
   return names;
 }
 
+/** Registered names advertised under something other than their usual prefixed form. */
+function renamedToolNames(available: readonly string[]): Array<[string, string]> {
+  const names = cursorMcpToolNames(available);
+  return available
+    .map((name): [string, string] => [name, names.advertised(name)])
+    .filter(([name, advertised]) => advertised !== cursorMcpToolName(name));
+}
+
+const wireCache = new WeakMap<McpToolDefinition[], McpToolDefinition[]>();
+/**
+ * The Pi catalog as sent in RunRequest and RequestContext, under the wire names of
+ * `cursorMcpToolNames`. The registry passed to dispatch keeps Pi's own names.
+ */
+export function wireMcpToolDefinitions(tools: McpToolDefinition[]): McpToolDefinition[] {
+  const cached = wireCache.get(tools);
+  if (cached) return cached;
+  const names = cursorMcpToolNames(availableToolNamesFor(tools));
+  let changed = false;
+  const wire = tools.map((tool) => {
+    const name = tool.toolName || tool.name;
+    const wireName = names.wire(name);
+    if (wireName === name || (tool.providerIdentifier || "pi") !== "pi") return tool;
+    changed = true;
+    return create(McpToolDefinitionSchema, { ...tool, name: wireName, toolName: wireName });
+  });
+  const result = changed ? wire : tools;
+  wireCache.set(tools, result);
+  return result;
+}
+
 /** Lists registered tools with known matches first, custom tools visible, and bash last. */
 export function localToolCandidates(execCase: string, tools: McpToolDefinition[]): string[] {
   const available = availableToolNamesFor(tools);
@@ -53,8 +85,8 @@ export function localToolCandidates(execCase: string, tools: McpToolDefinition[]
 
 /** Explains a native rejection using registered tools and their schemas, or the current lack of tools. */
 export function nativeToolRejectReason(execCase: string, tools: McpToolDefinition[]): string {
-  const candidates = localToolCandidates(execCase, tools);
-  const names = candidates.map(cursorMcpToolName);
+  const toolNames = cursorMcpToolNames(availableToolNamesFor(tools));
+  const names = localToolCandidates(execCase, tools).map(toolNames.advertised);
   const guidance = names.length
     ? `Use the registered Pi MCP tools: ${names.join(", ")}. ` +
       "Choose a tool that supports the operation and construct arguments according to its schema; " +
@@ -67,12 +99,18 @@ export function nativeToolRejectReason(execCase: string, tools: McpToolDefinitio
 export function localToolPolicyText(tools: McpToolDefinition[]): string {
   const available = availableToolNamesFor(tools);
   const known = new Set(Object.values(LOCAL_TOOL_HINTS).flat());
-  const names = available.filter((name) => known.has(name)).map(cursorMcpToolName);
+  const names = available
+    .filter((name) => known.has(name))
+    .map(cursorMcpToolNames(available).advertised);
+  const clashes = renamedToolNames(available).map(
+    ([name, advertised]) => `call the custom tool "${name}" as ${advertised}`,
+  );
   return (
     "Local file reads, searches, directory listings, writes, deletions and shell commands " +
     "must use Pi MCP tools. Native Cursor local tools are disabled; do not call or retry them. " +
     (available.length
       ? (names.length ? `Local Pi MCP tools: ${names.join(", ")}. ` : "") +
+        (clashes.length ? `To avoid a name clash, ${clashes.join("; ")}. ` : "") +
         "Other exposed Pi tools may also support the operation. Follow each tool's input schema. " +
         "If no registered tool supports an operation, report that limitation."
       : "No Pi MCP tools are exposed for this request. Local operations are unavailable in this request.")

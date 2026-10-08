@@ -6,12 +6,15 @@ import { join } from "node:path";
 
 import {
   AgentServerMessageSchema,
+  ConversationStateStructureSchema,
   ExecServerMessageSchema,
   HeartbeatUpdateSchema,
   InteractionUpdateSchema,
   TextDeltaUpdateSchema,
   TurnEndedUpdateSchema,
+  type AgentServerMessage,
   type InteractionUpdate,
+  type McpToolDefinition,
 } from "../src/proto/agent_pb.js";
 import { frameConnectMessage, MAX_CONNECT_MESSAGE_BYTES } from "../src/client/bridge.js";
 import { ConnectFlag } from "../src/types/enums.js";
@@ -43,11 +46,14 @@ import {
   deriveConversationKeyFromSessionId,
 } from "../src/stream/session-state.js";
 import {
+  activeBridges,
   parkIdleBridge,
+  removeActiveBridge,
   setBridgeFactoryForTests,
   startBridge,
   destroyAllIdleBridges,
 } from "../src/stream/bridge-session.js";
+import { buildMcpToolDefinitions } from "../src/stream/tool-schema.js";
 
 describe("transport loss recovery policy", () => {
   it("allows blind restart only when nothing was streamed", () => {
@@ -561,7 +567,11 @@ describe("retriable Cursor end-stream errors", () => {
     return frame;
   }
 
-  function setup() {
+  function setup({
+    mcpTools = [],
+    bridgeKey = "bridge-endstream",
+    convKey = "conv-endstream",
+  }: { mcpTools?: McpToolDefinition[]; bridgeKey?: string; convKey?: string } = {}) {
     const calls: string[] = [];
     const restarts: number[] = [];
     let killCalls = 0;
@@ -617,11 +627,11 @@ describe("retriable Cursor end-stream errors", () => {
       bridge,
       heartbeatTimer,
       new Map(),
-      [],
+      mcpTools,
       {} as never,
       "claude-4.5-sonnet",
-      "bridge-endstream",
-      "conv-endstream",
+      bridgeKey,
+      convKey,
       [],
       { userText: "hi", steps: [] },
       writer as never,
@@ -680,5 +690,62 @@ describe("retriable Cursor end-stream errors", () => {
 
     expect(harness.restarts).toEqual([]);
     expect(harness.calls[0]).toMatch(/^error:Connect error invalid_argument: model does not exist/);
+  });
+
+  // The terminal path marks the stream finalized before killing the bridge, which makes `onClose`
+  // return early. A Pi call already handed off with `toolUse` must still get the checkpoint that
+  // arrived after it, or the tool result cannot resume from the latest state.
+  it("saves the post-toolUse checkpoint and releases the bridge on a terminal error mid-pause", () => {
+    const bridgeKey = "bridge-endstream-pause";
+    const convKey = "conv-endstream-pause";
+    const stored: StoredConversation = {
+      conversationId: "conv-1",
+      checkpoint: null,
+      sessionScoped: true,
+      sessionId: "session-1",
+      blobStore: new Map(),
+      lastAccessMs: 0,
+    };
+    conversationStates.set(convKey, stored);
+    const harness = setup({
+      mcpTools: buildMcpToolDefinitions([
+        { type: "function", function: { name: "bash", parameters: { type: "object" } } },
+      ]),
+      bridgeKey,
+      convKey,
+    });
+    const frame = (message: AgentServerMessage["message"]) =>
+      Buffer.from(
+        frameConnectMessage(
+          toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, { message })),
+        ),
+      );
+    try {
+      harness.onData(
+        frame({
+          case: "execServerMessage",
+          value: create(ExecServerMessageSchema, {
+            id: 7,
+            execId: "exec-7",
+            message: { case: "mcpArgs", value: { toolName: "bash", toolCallId: "call-1" } },
+          }),
+        }),
+      );
+      expect(harness.calls).toEqual(["done:toolUse"]);
+      expect(activeBridges.has(bridgeKey)).toBe(true);
+
+      const checkpoint = create(ConversationStateStructureSchema, {});
+      harness.onData(frame({ case: "conversationCheckpointUpdate", value: checkpoint }));
+      harness.onData(endStreamErrorFrame("invalid_argument", "model does not exist"));
+
+      expect(stored.checkpoint).toEqual(toBinary(ConversationStateStructureSchema, checkpoint));
+      expect(stored.midPausePendingToolCalls).toEqual([{ toolCallId: "call-1", toolName: "bash" }]);
+      expect(activeBridges.has(bridgeKey)).toBe(false);
+      expect(harness.restarts).toEqual([]);
+    } finally {
+      clearInterval(harness.heartbeatTimer);
+      removeActiveBridge(bridgeKey);
+      conversationStates.delete(convKey);
+    }
   });
 });

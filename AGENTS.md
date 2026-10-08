@@ -129,7 +129,9 @@ src/
 - The server discards `{"role":"system"}` entries and substitutes Cursor's own system prompt, so
   Pi's system prompt must ride a `user` message (`<rules>…</rules>`), the way Cursor frames its own.
 - Historic tool activity replays as `tool-call` / `tool-result` content parts with names in
-  Cursor's `mcp_pi_<tool>` form.
+  Cursor's `mcp_pi_<tool>` form. `cursorMcpToolNames()` owns that mapping for every catalog,
+  prompt and dispatch path, so a custom tool whose name clashes under the prefix (`mcp_pi_bash`
+  next to `bash`) gets one unique name everywhere instead of shadowing another tool.
 - All of this lives in `src/stream/root-prompt.ts`. Every request overlays a fresh prompt from
   Pi's transcript onto `root_prompt_messages_json`, even when a checkpoint exists — checkpoints
   keep Cursor's state (todos, file state) but their historical user entries are often empty.
