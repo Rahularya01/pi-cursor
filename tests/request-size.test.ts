@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
+  ExecServerMessageSchema,
   McpToolDefinitionSchema,
   type ExecClientControlMessage,
   type ExecClientThrow,
@@ -224,6 +225,53 @@ describe("native Cursor exec steering", () => {
         $unknown: [{ no: 28, wireType: 2, data: new Uint8Array(9) }],
       }),
     ).toBe("28:wt2:9b");
+  });
+
+  // Independent of SubagentArgsSchema. Field 28 is Cursor's Task/subagent request.
+  // The payload includes a prompt and an API key; the reply must not echo either.
+  it("rejects a hand-encoded exec field 28 as a typed subagent error", () => {
+    const wire = Buffer.from(
+      "08077a0165e201300a0463616c6c2216646f2d6e6f742d6c6f672d50524f4d50542d3966336352100a0e736b2d746573742d736563726574",
+      "hex",
+    );
+    const exec = fromBinary(ExecServerMessageSchema, wire);
+    expect(exec.message.case).toBe("subagentArgs");
+    expect(exec.$unknown ?? []).toEqual([]);
+    if (exec.message.case !== "subagentArgs" || !exec.message.value) {
+      throw new Error("field 28 did not decode as subagentArgs");
+    }
+    expect(exec.message.value.prompt).toBe("do-not-log-PROMPT-9f3c");
+    expect(exec.message.value.credentials.case).toBe("apiKeyCredentials");
+
+    const frames: Uint8Array[] = [];
+    const handled = serverMessageInternals.handleExecMessageInner(
+      exec,
+      [],
+      (frame: Uint8Array) => frames.push(frame),
+      () => {
+        throw new Error("should not execute");
+      },
+    );
+    expect(handled).toBe(true);
+    expect(frames).toHaveLength(1);
+    const raw = Buffer.from(frames[0]!);
+    expect(raw.includes(Buffer.from("do-not-log-PROMPT-9f3c"))).toBe(false);
+    expect(raw.includes(Buffer.from("sk-test-secret"))).toBe(false);
+    const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
+    expect(answer.message.case).toBe("execClientMessage");
+    if (answer.message.case !== "execClientMessage" || !answer.message.value) {
+      throw new Error("missing exec reply");
+    }
+    const result = answer.message.value.message;
+    expect(result.case).toBe("subagentResult");
+    if (result.case !== "subagentResult" || !result.value.result.value) {
+      throw new Error("missing subagent result");
+    }
+    expect(result.value.result.case).toBe("error");
+    if (result.value.result.case !== "error") throw new Error("missing subagent error");
+    expect(result.value.result.value.error).toMatch(/does not spawn Cursor subagents/);
+    expect(result.value.result.value.error).not.toContain("do-not-log-PROMPT-9f3c");
+    expect(result.value.result.value.error).not.toContain("sk-test-secret");
   });
 });
 

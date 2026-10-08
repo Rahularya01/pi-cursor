@@ -45,6 +45,8 @@ import {
   SetupVmEnvironmentSuccessSchema,
   StartGrindExecutionResultSchema,
   StartGrindExecutionSuccessSchema,
+  SubagentErrorSchema,
+  SubagentResultSchema,
   TruncatedToolCallResultSchema,
   TruncatedToolCallSuccessSchema,
   type AgentServerMessage,
@@ -679,6 +681,27 @@ function handleExecMessageInner(
           case: "success",
           value: create(McpStateSuccessSchema, {
             servers: mcpStateServersFor(mcpTools, args.serverIdentifiers ?? []),
+          }),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "subagentArgs") {
+    // Cursor's Task tool. Do not read the prompt or the credential oneof, and do not
+    // claim success: that would look like a subagent ran. A typed error releases the
+    // exec without landing in the unknown-shape path.
+    sendExecResult(
+      execMsg,
+      "subagentResult",
+      create(SubagentResultSchema, {
+        result: {
+          case: "error",
+          value: create(SubagentErrorSchema, {
+            error:
+              "Pi's Cursor provider does not spawn Cursor subagents. No subagent was started. " +
+              "Do the work in this conversation with the registered Pi MCP tools instead of calling Task again.",
           }),
         },
       }),

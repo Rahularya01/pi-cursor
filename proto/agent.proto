@@ -1474,6 +1474,68 @@ message AbortArgs {
 message AbortResult {
 }
 
+// Continuation policy nested in SubagentArgs. Field numbers match the Cursor client.
+message ClientContinuationConfig {
+  int32 idle_threshold = 1;
+  int32 max_loops = 2;
+  string nudge_message = 3;
+  string escape_message_template = 4;
+  bool collect_background_children = 5;
+  string children_completed_message_template = 6;
+  int32 continuation_round_delay_ms = 7;
+}
+
+// ExecServerMessage field 28. Cursor's Task tool asks the client to spawn a
+// subagent. This provider does not run one; the handler answers with
+// SubagentError. Credential fields are modeled so they decode instead of
+// looking like wire drift, and must never be logged or used.
+//
+// Cursor also sends mode (14), selected_context (17), environment (19) and
+// repeated model_parameters (21). Those message types are not confirmed here,
+// so they stay undeclared rather than being guessed. They land as unknown
+// fields on this message, not as an unknown exec case.
+message SubagentArgs {
+  string tool_call_id = 1;
+  string subagent_type = 2;
+  string model_id = 3;
+  string prompt = 4;
+  bool readonly = 5;
+  optional string resume_agent_id = 6;
+  optional bool run_in_background = 7;
+  ClientContinuationConfig continuation_config = 8;
+  optional string parent_conversation_id = 9;
+  oneof credentials {
+    ApiKeyCredentials api_key_credentials = 10;
+    AzureCredentials azure_credentials = 11;
+    BedrockCredentials bedrock_credentials = 12;
+  }
+  optional bool interrupt = 13;
+  optional string fork_agent_id = 15;
+  optional string root_parent_conversation_id = 16;
+  optional bool direct_meta_parent_child_subagent = 18;
+  optional string cloud_base_branch = 20;
+}
+
+message SubagentSuccess {
+  string agent_id = 1;
+  optional string final_message = 2;
+  int32 tool_call_count = 3;
+  // Field 4 is background_reason. Left undeclared until its type is confirmed.
+  optional string transcript_path = 5;
+}
+
+message SubagentError {
+  optional string agent_id = 1;
+  string error = 2;
+}
+
+message SubagentResult {
+  oneof result {
+    SubagentSuccess success = 1;
+    SubagentError error = 2;
+  }
+}
+
 message ExecServerMessage {
   uint32 id = 1;
   string exec_id = 15;
@@ -1497,6 +1559,8 @@ message ExecServerMessage {
     RecordScreenArgs record_screen_args = 21;
     ComputerUseArgs computer_use_args = 22;
     WriteShellStdinArgs write_shell_stdin_args = 23;
+    // Field 28 is the Task/subagent spawn, not GenerateImage (that number is ToolCall).
+    SubagentArgs subagent_args = 28;
     ReflectArgs reflect_args = 32;
     SetupVmEnvironmentArgs setup_vm_environment_args = 33;
     TruncatedToolCallArgs truncated_tool_call_args = 34;
@@ -1527,6 +1591,7 @@ message ExecClientMessage {
     RecordScreenResult record_screen_result = 21;
     ComputerUseResult computer_use_result = 22;
     WriteShellStdinResult write_shell_stdin_result = 23;
+    SubagentResult subagent_result = 28;
     ReflectResult reflect_result = 32;
     SetupVmEnvironmentResult setup_vm_environment_result = 33;
     TruncatedToolCallResult truncated_tool_call_result = 34;
