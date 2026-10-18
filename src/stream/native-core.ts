@@ -88,7 +88,7 @@ export {
   summarizeRequestSize,
   type BuildCursorRequestOptions,
 } from "./request-build.js";
-import { hashSystemPrompt } from "./root-prompt.js";
+import { hashSystemPrompt, isPromptHistoryEnabled } from "./root-prompt.js";
 import { buildMcpToolDefinitions } from "./tool-schema.js";
 export { hashSystemPrompt } from "./root-prompt.js";
 import {
@@ -1875,11 +1875,14 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
         },
       );
 
-      // After the first attempt, prefer checkpoint continuation when available so we do not
-      // blind-replay a request that already produced partial assistant output.
+      // Resume the checkpoint whenever the previous stream left one; replaying the original request
+      // regenerates any answer Pi already showed. Idle recovery restarts at the same attempt
+      // number, so this must not wait for a later attempt. Without prompt history the
+      // continuation cannot show the question or the partial answer, so that mode keeps the rule
+      // from before it: only a later attempt (transport loss) continues, an idle stall replays.
       if (
-        nextAttempt > 1 &&
         context.latestCheckpoint &&
+        (isPromptHistoryEnabled() || nextAttempt > 1) &&
         typeof input.systemPrompt === "string" &&
         input.conversationId
       ) {
