@@ -32,8 +32,6 @@ export const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 180_000;
 // More generations for multi-hour agent sessions; each attempt can force-refresh auth.
 export const DEFAULT_STREAM_IDLE_MAX_RETRIES = 5;
 
-export const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
-
 /** Soft cap on retained blob bytes per conversation (images + turn blobs). */
 export const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
 export const MAX_ACTIVE_BLOB_BYTES = MAX_CONVERSATION_BLOB_BYTES;
@@ -179,15 +177,6 @@ export function canRecoverAfterTransportLoss(input: {
 }): boolean {
   if (!input.emittedUserVisibleContent) return true;
   return input.hasCheckpoint;
-}
-
-export function resolveMidPauseRebuildMaxAgeMs(envValue?: string): number {
-  const normalized = envValue?.trim();
-  if (normalized === undefined || normalized === "") return DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS;
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS;
-  // Zero should keep the replay trust window bounded; negative values are treated as invalid.
-  return Math.max(1_000, Math.floor(parsed));
 }
 
 export function createStreamIdleWatchdog(options: { timeoutMs: number; onTimeout: () => void }): {

@@ -40,14 +40,8 @@ export type {
 
 import { processServerMessage } from "./server-messages.js";
 import { createThinkingTagFilter } from "./thinking-filter.js";
+import { contextToCursorChatCompletionRequest, resolveToolsForToolChoice } from "./pi-adapter.js";
 import {
-  contextToCursorChatCompletionRequest,
-  nativeRequestParameterError,
-  resolveNativeReasoningEffort,
-  resolveToolsForToolChoice,
-} from "./pi-adapter.js";
-import {
-  clearStoredMidPauseMetadata,
   commitStoredCheckpoint,
   commitStoredCheckpointMidPause,
   conversationStates,
@@ -69,12 +63,9 @@ import {
 } from "./session-state.js";
 export {
   cleanupAllSessionState,
-  cleanupSessionState,
   commitStoredCheckpointMidPause,
   deriveBridgeKey,
-  deriveBridgeKeyFromSessionId,
   deriveConversationKey,
-  deriveConversationKeyFromSessionId,
   derivePiSessionId,
   deterministicConversationId,
   evictStaleConversations,
@@ -97,15 +88,9 @@ export {
   summarizeRequestSize,
   type BuildCursorRequestOptions,
 } from "./request-build.js";
-import { hashSystemPrompt } from "./root-prompt.js";
-export { isSlimToolsEnabled, slimOpenAIToolsForCursor } from "./tool-schema.js";
+import { hashSystemPrompt, isPromptHistoryEnabled } from "./root-prompt.js";
 import { buildMcpToolDefinitions } from "./tool-schema.js";
-export {
-  buildRootPromptMessages,
-  hashSystemPrompt,
-  isPromptHistoryEnabled,
-  turnRootMessages,
-} from "./root-prompt.js";
+export { hashSystemPrompt } from "./root-prompt.js";
 import {
   appendAssistantTextToTurn,
   getTurnToolCallResults,
@@ -115,22 +100,19 @@ import {
   systemPromptHasSessionMemory,
 } from "./message-parsing.js";
 export {
-  frameContextModeSideChannel,
   isContextModeSideChannelText,
   normalizeMessagesForCursor,
   parseMessages,
   systemPromptHasSessionMemory,
 } from "./message-parsing.js";
 export {
-  callCursorUnaryRpc,
   discoverCursorCatalog,
   getCursorModels,
   getCursorParameterizedModels,
-  inferCursorContextWindow,
   type CursorCatalog,
   type CursorModel,
 } from "./model-discovery.js";
-export { readCachedCatalog, writeCachedCatalog } from "./model-cache.js";
+export { readCachedCatalog } from "./model-cache.js";
 import {
   activeBridges,
   cleanupBridge,
@@ -141,14 +123,9 @@ import {
 } from "./bridge-session.js";
 export { setBridgeFactoryForTests } from "./bridge-session.js";
 import {
-  canBlindIdleRestart,
   canRecoverAfterTransportLoss,
   createStreamIdleWatchdog,
   DEFAULT_STREAM_PARK_TIMEOUT_MS,
-  interactionUpdateProgress,
-  resolveH2ConnectTimeoutMs,
-  resolveH2IdleTimeoutMs,
-  resolveMidPauseRebuildMaxAgeMs,
   resolveResumeIdleTimeoutMs,
   resolveStreamIdleMaxRetries,
   resolveStreamIdleTimeoutMs,
@@ -157,7 +134,6 @@ export {
   canBlindIdleRestart,
   canRecoverAfterTransportLoss,
   interactionUpdateProgress,
-  resolveActiveBridgeTtlMs,
   resolveH2ConnectTimeoutMs,
   resolveH2IdleTimeoutMs,
   resolveResumeIdleTimeoutMs,
@@ -176,37 +152,18 @@ export {
   formatTransportFailure,
   type TransportFailure,
 } from "./transport-errors.js";
-import {
-  debugBase64ImageSummary,
-  debugLog,
-  decodeRequestForTests,
-  emitMetric,
-  lifecycleLog,
-  nextDebugRequestId,
-  redactForDebug,
-  setMetricEmitter,
-  type MetricEmitter,
-} from "./debug-log.js";
+import { debugLog, emitMetric, lifecycleLog, nextDebugRequestId } from "./debug-log.js";
 import { cloneParsedImage } from "./images.js";
-import {
-  resolveModelId as resolveModelIdImpl,
-  resolveRequestedModelId as resolveRequestedModelIdImpl,
-  type CursorNativeModelRouting as ExtractedCursorNativeModelRouting,
-  type CursorResolvableModel as ExtractedCursorResolvableModel,
-  type ResolvedCursorModelRouting as ExtractedResolvedCursorModelRouting,
-} from "./model-routing.js";
+import { resolveRequestedModelId } from "./model-routing.js";
 import { liveTranscript, withSyntheticCurrentTurn } from "./client-transcript.js";
 import {
   planRecovery as planRecoveryImpl,
-  wrapRecoveredToolResults as wrapRecoveredToolResultsImpl,
-  collapseToolResultsById as collapseToolResultsByIdImpl,
-  lostToolContinuationErrorBody as lostToolContinuationErrorBodyImpl,
-  formatLostToolContinuationDiagnostic as formatLostToolContinuationDiagnosticImpl,
-  lostToolContinuationMessage as lostToolContinuationMessageImpl,
-  bridgeKeyPrefix as bridgeKeyPrefixImpl,
-  type RecoveryDecision as ExtractedRecoveryDecision,
-  type PlanRecoveryInput as ExtractedPlanRecoveryInput,
-  type LostToolContinuationDiagnosticInput as ExtractedLostToolContinuationDiagnosticInput,
+  collapseToolResultsById,
+  formatLostToolContinuationDiagnostic,
+  lostToolContinuationMessage,
+  bridgeKeyPrefix,
+  type RecoveryDecision,
+  type PlanRecoveryInput,
 } from "./recovery.js";
 import { enhanceCursorStreamError, isAuthErrorMessage } from "./protocol.js";
 import {
@@ -215,9 +172,6 @@ import {
   setLastRequestSize,
   setLastStreamEvent,
 } from "../diagnostics/diagnostics.js";
-
-// URL resolution lives in ./config.ts
-export { getCursorAgentUrl } from "./config.js";
 
 // ── Types ──
 //
@@ -258,74 +212,22 @@ export type {
 // ── State ──
 
 export const __testInternals = {
-  activeBridges,
   conversationStates,
   createStreamIdleWatchdog,
-  canBlindIdleRestart,
-  canRecoverAfterTransportLoss,
-  clearStoredMidPauseMetadata,
-  collectToolResultImages,
-  debugBase64ImageSummary,
-  decodeRequestForTests,
   discardStaleCheckpointIfNeeded,
   fingerprintCompletedTurns,
-  getOrHydrateConversation,
-  interactionUpdateProgress,
-  redactForDebug,
-  resolveH2ConnectTimeoutMs,
-  resolveH2IdleTimeoutMs,
-  resolveMidPauseRebuildMaxAgeMs,
-  resolveNativeReasoningEffort,
-  resolveResumeIdleTimeoutMs,
-  resolveStreamIdleMaxRetries,
-  resolveStreamIdleTimeoutMs,
   persistAbortedConversationState,
   trimBlobStore,
-  classifyBridgeExit,
   writeNativeStream,
   handleNativeToolResultResume,
-  setMetricEmitterForTests(factory?: MetricEmitter) {
-    setMetricEmitter(factory);
-  },
 };
 
 // ── Native pi streamSimple provider ──
 
-export type CursorNativeModelRouting = ExtractedCursorNativeModelRouting;
 import { createNativeStreamWriter } from "./stream-writer.js";
-export { createNativeStreamWriter } from "./stream-writer.js";
-
-function lostToolContinuationMessage(): string {
-  return lostToolContinuationMessageImpl();
-}
-
-export type LostToolContinuationDiagnosticInput = ExtractedLostToolContinuationDiagnosticInput;
-
-export function lostToolContinuationErrorBody(input: LostToolContinuationDiagnosticInput): {
-  error: Record<string, unknown>;
-} {
-  return lostToolContinuationErrorBodyImpl(input);
-}
-
-function bridgeKeyPrefix(bridgeKey: string): string {
-  return bridgeKeyPrefixImpl(bridgeKey);
-}
-
-export function formatLostToolContinuationDiagnostic(
-  input: LostToolContinuationDiagnosticInput,
-): string {
-  return formatLostToolContinuationDiagnosticImpl(input);
-}
-
-export function wrapRecoveredToolResults(
-  toolResults: Array<Pick<ToolResultInfo, "toolCallId" | "content">>,
-  recoveryId: string = crypto.randomUUID(),
-): string {
-  return wrapRecoveredToolResultsImpl(toolResults, recoveryId);
-}
 
 function collectToolResultImages(toolResults: ToolResultInfo[]): ParsedImageContent[] {
-  return collapseToolResultsByIdImpl(toolResults).flatMap((result) =>
+  return collapseToolResultsById(toolResults).flatMap((result) =>
     (result.images ?? []).map(cloneParsedImage),
   );
 }
@@ -381,9 +283,6 @@ function logFullHistoryRebuild(
   debugLog("metric.cursor_provider.rebuild_full_history", metricFields);
   emitMetric("metric.cursor_provider.rebuild_full_history", metricFields);
 }
-
-export type RecoveryDecision = ExtractedRecoveryDecision;
-export type PlanRecoveryInput = ExtractedPlanRecoveryInput;
 
 export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
   return planRecoveryImpl({
@@ -453,13 +352,6 @@ async function handleCursorNativeRequest(
     parsedMessages = parseMessages(body.messages, body.cursor_tool_result_images);
   } catch (error) {
     writer.error(error instanceof Error ? error.message : String(error), "error");
-    return;
-  }
-
-  const parameterError = nativeRequestParameterError(body);
-  if (parameterError) {
-    debugLog("native.unsupported_parameters", { requestId, message: parameterError });
-    writer.error(parameterError, "error");
     return;
   }
 
@@ -616,12 +508,15 @@ async function handleCursorNativeRequest(
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
+      // The checkpoint restores Cursor's state, not the prompt (AGENTS.md §5), so the turn that
+      // called these tools rides in `turns` for the model to see.
+      const requestTurns = inFlightTurn ? [...turns, inFlightTurn] : turns;
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
         userText: decision.wrappedText,
         userImages: recoveredUserImages,
-        turns,
+        turns: requestTurns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
         existingBlobStore: decision.blobStore,
@@ -640,6 +535,7 @@ async function handleCursorNativeRequest(
         bridgeKey,
         convKey,
         completedTurns: turns,
+        requestTurns,
         currentTurn: recoveredCurrentTurn,
         writer,
         options,
@@ -1749,11 +1645,12 @@ function handleNativeToolResultResume(
     restart(nextAttempt: number, _context: IdleRestartContext) {
       idleRetry.currentAttempt = nextAttempt;
       const stored = conversationStates.get(convKey);
+      const inFlightTurn = stripInFlightResults(ctx.inFlightTurn ?? currentTurn);
       const decision = planRecovery({
         stored,
         toolResults,
         completedTurns,
-        inFlightTurn: stripInFlightResults(ctx.inFlightTurn ?? currentTurn),
+        inFlightTurn,
         rebuildReason: "synthesized_after_idle",
         sessionId,
         requestId: requestId ?? "native-tool-idle-retry",
@@ -1853,12 +1750,14 @@ function handleNativeToolResultResume(
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
+      // The checkpoint restores Cursor's state, not the prompt (AGENTS.md §5).
+      const requestTurns = [...completedTurns, inFlightTurn];
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
         userText: decision.wrappedText,
         userImages: recoveredUserImages,
-        turns: completedTurns,
+        turns: requestTurns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
         existingBlobStore: decision.blobStore,
@@ -1878,6 +1777,7 @@ function handleNativeToolResultResume(
         bridgeKey,
         convKey,
         completedTurns,
+        requestTurns,
         currentTurn: recoveredCurrentTurn,
         clientTranscript: recoveredClientTranscript,
         writer,
@@ -1917,41 +1817,6 @@ function handleNativeToolResultResume(
     // snapshot so recovery can safely recreate that continuation.
     pendingExecs,
     resumeTranscript,
-  );
-}
-
-// ── Request handling ──
-
-export type ResolvedCursorModelRouting = ExtractedResolvedCursorModelRouting;
-export type CursorResolvableModel = ExtractedCursorResolvableModel;
-
-export function resolveModelId(model: string, reasoningEffort?: string): string {
-  return resolveModelIdImpl(model, reasoningEffort);
-}
-
-export function resolveRequestedModelId(
-  model: string,
-  reasoningEffort?: string,
-  cursorModelId?: string,
-): string;
-export function resolveRequestedModelId(
-  model: CursorResolvableModel,
-  reasoningEffort?: string,
-  routingByModelId?: Map<
-    string,
-    Record<string, CursorNativeModelRouting> | CursorNativeModelRouting
-  >,
-): ResolvedCursorModelRouting;
-export function resolveRequestedModelId(
-  model: string | CursorResolvableModel,
-  reasoningEffort?: string,
-  cursorModelIdOrRoutingByModelId?:
-    string | Map<string, Record<string, CursorNativeModelRouting> | CursorNativeModelRouting>,
-): string | ResolvedCursorModelRouting {
-  return resolveRequestedModelIdImpl(
-    model as any,
-    reasoningEffort,
-    cursorModelIdOrRoutingByModelId as any,
   );
 }
 
@@ -2018,21 +1883,29 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
         },
       );
 
-      // After the first attempt, prefer checkpoint continuation when available so we do not
-      // blind-replay a request that already produced partial assistant output.
+      // Resume the checkpoint whenever the previous stream left one; replaying the original request
+      // regenerates any answer Pi already showed. Idle recovery restarts at the same attempt
+      // number, so this must not wait for a later attempt. Without prompt history the
+      // continuation cannot show the question or the partial answer, so that mode keeps the rule
+      // from before it: only a later attempt (transport loss) continues, an idle stall replays.
       if (
-        nextAttempt > 1 &&
         context.latestCheckpoint &&
+        (isPromptHistoryEnabled() || nextAttempt > 1) &&
         typeof input.systemPrompt === "string" &&
         input.conversationId
       ) {
         try {
-          const continueText = CHECKPOINT_CONTINUATION_PROMPT;
+          // The checkpoint restores Cursor's state, not the prompt: the prompt is rebuilt from
+          // `turns` (AGENTS.md §5), so the interrupted turn rides there for the model to continue.
+          // Its images ride the continuation's own user message: rendered from `turns`, they
+          // would only become a note that they are not replayed.
+          const { userImages, ...interruptedTurn } = context.currentTurn;
           const payload = buildCursorRequest({
             modelId: input.modelId,
             systemPrompt: input.systemPrompt,
-            userText: continueText,
-            turns: context.completedTurns,
+            userText: CHECKPOINT_CONTINUATION_PROMPT,
+            userImages,
+            turns: [...(input.requestTurns ?? context.completedTurns), interruptedTurn],
             conversationId: input.conversationId,
             checkpoint: context.latestCheckpoint,
             existingBlobStore: context.blobStore,
@@ -2043,7 +1916,11 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           requestBytes = payload.requestBytes;
           blobStore = payload.blobStore;
           completedTurns = context.completedTurns;
-          currentTurn = { userText: continueText, steps: [] };
+          // The continuation extends Pi's turn instead of starting one, so a later loss and the
+          // final checkpoint commit see all of it. Fingerprints are cached per turn object and the
+          // commit below caches this one, so the stream extends a shallow copy that the final
+          // commit hashes afresh. The copy shares `steps`; the old object is never hashed again.
+          currentTurn = { ...context.currentTurn };
           const stored = conversationStates.get(input.convKey);
           if (stored) {
             commitStoredCheckpoint(

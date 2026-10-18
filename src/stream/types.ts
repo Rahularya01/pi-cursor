@@ -293,6 +293,13 @@ export interface NativeStreamAttemptInput {
   bridgeKey: string;
   convKey: string;
   completedTurns: ParsedTurn[];
+  /**
+   * The turns the request carries before `currentTurn`, when they differ from `completedTurns`.
+   * Checkpoint tool recovery adds Pi's in-flight turn here and not to `completedTurns`, which
+   * history fingerprints and checkpoint commits compare with Pi's next request. A checkpoint
+   * continuation rebuilds its request from these.
+   */
+  requestTurns?: ParsedTurn[];
   currentTurn: ParsedTurn;
   /** Pi's transcript when `completedTurns`/`currentTurn` are a recovered wire view. */
   clientTranscript?: ClientTranscript;

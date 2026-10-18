@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Continuing an interrupted answer now shows the model what it was answering.** When a Cursor stream dropped after it had streamed text and sent a checkpoint, the provider resumed the checkpoint with an instruction to continue, but the prompt it sent held only Pi's rules and that instruction. The model saw neither the question nor its partial answer, so it started over or replied that the original task was unclear. The continuation now carries the question and the answer so far, also when the continuation is itself interrupted, unless `PI_CURSOR_PROMPT_HISTORY=0` turns prompt history off. Images attached to the question are sent again with the continuation, so the model still sees them. The next turn also keeps the checkpoint the continued answer left, where it used to discard it and start a new Cursor conversation. An answer recovered from a lost tool call still drops its checkpoint on the next turn.
+- **An idle stall after streamed text no longer makes Cursor start the answer over.** When Cursor went silent past `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS` after it had already streamed text and sent a checkpoint, the restart replayed the original request, so Cursor answered from scratch and Pi appended the whole new answer after the partial one. The restart now continues from Cursor's checkpoint, the same way recovery from a lost connection already did. A stall that left a checkpoint but no text continues from it too. A stall with no checkpoint still replays the original request when nothing was streamed, and still fails when text was. With `PI_CURSOR_PROMPT_HISTORY=0`, recovery behaves as before: a continuation cannot show the model the question or its partial answer in that mode, so a stall replays the original request and a lost connection continues from the checkpoint.
+- **Recovering a lost tool call from Cursor's checkpoint now shows the model the question and the tool call.** When the connection dropped around a Pi tool call and the provider resumed from Cursor's saved checkpoint, the request carried the tool output, but the prompt held only Pi's rules before it. The model got a tool result with no question and no record of having asked for it. The recovery now carries the turn that called the tool, the same way the recovery without a checkpoint already did, and keeps carrying it when the recovered answer is interrupted and continues from a checkpoint. Like every prompt message, this needs prompt history on, the default.
+
 ## [1.4.39] - 2026-10-08
 
 ### Fixed

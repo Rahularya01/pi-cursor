@@ -62,8 +62,3 @@ export function getCursorAgentUrl(): string {
   cachedCursorAgentUrl = assertSafeCursorBaseUrl(resolved);
   return cachedCursorAgentUrl;
 }
-
-/** Test helper: clear cached URL between cases. */
-export function resetCursorAgentUrlCacheForTests(): void {
-  cachedCursorAgentUrl = undefined;
-}
