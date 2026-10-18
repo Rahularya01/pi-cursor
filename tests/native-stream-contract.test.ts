@@ -251,6 +251,7 @@ beforeEach(() => {
   process.env.PI_CURSOR_LIFECYCLE_LOG = join(cacheDir, "lifecycle.jsonl");
   delete process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES;
   delete process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS;
+  delete process.env.PI_CURSOR_PROMPT_HISTORY;
   resetCacheDirForTests();
   bridges = [];
   tokenRequests = [];
@@ -269,6 +270,7 @@ afterEach(() => {
   delete process.env.PI_CURSOR_CACHE_DIR;
   delete process.env.PI_CURSOR_LIFECYCLE_LOG;
   delete process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES;
+  delete process.env.PI_CURSOR_PROMPT_HISTORY;
   resetCacheDirForTests();
   // The lifecycle log appends asynchronously and can land mid-removal (ENOTEMPTY).
   rmSync(cacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -620,6 +622,36 @@ describe("native stream contract: transport loss and retries", () => {
     expect(textOf(message)).toBe("Partial answer and the rest.");
   });
 
+  describe("with prompt history off", () => {
+    beforeEach(() => {
+      process.env.PI_CURSOR_PROMPT_HISTORY = "0";
+    });
+
+    it.each([
+      ["before any text", ""],
+      ["after text", "Partial answer"],
+    ])(
+      "continues from Cursor's checkpoint when the connection drops %s",
+      async (_label, partial) => {
+        const stream = streamPi(context(user(PROMPT)));
+        const first = await spawned(0);
+        first.send(cursor.checkpoint(), ...(partial ? [cursor.text(partial)] : []));
+        first.goaway();
+
+        const second = await spawned(1);
+        const continued = onlyRunRequest(second);
+        expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+        expect(continued.conversationState?.readPaths, "resumes Cursor's checkpoint").toContain(
+          CHECKPOINT_MARKER,
+        );
+
+        const { message } = await finishWithText(second, stream);
+        expect(message.stopReason).toBe("stop");
+        expect(textOf(message)).toBe(`${partial}README describes the Pi provider.`);
+      },
+    );
+  });
+
   it("keeps the whole interrupted turn in view when the continuation is lost too", async () => {
     const stream = streamPi(context(user(PROMPT)));
     const first = await spawned(0);
@@ -830,20 +862,91 @@ describe("native stream contract: idle watchdog", () => {
     expect(bridges, "partial output is never blindly replayed").toHaveLength(1);
   });
 
-  it("replays the original request when a stream idles out after text and a checkpoint", async () => {
+  it("continues from Cursor's checkpoint when a stream idles out after text", async () => {
     const stream = streamPi(context(user(PROMPT)));
     const first = await spawned(0);
     first.send(cursor.checkpoint(), cursor.text("Partial answer"));
     idleOut();
 
     const second = await spawned(1);
-    const replay = onlyRunRequest(second);
-    expect(userText(replay)).toBe(PROMPT);
-    expect(replay.conversationState?.readPaths).not.toContain(CHECKPOINT_MARKER);
+    const continued = onlyRunRequest(second);
+    expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+    expect(continued.conversationState?.readPaths, "resumes Cursor's checkpoint").toContain(
+      CHECKPOINT_MARKER,
+    );
+    expect(continued.conversationId).toBe(onlyRunRequest(first).conversationId);
+    expectReferencedBlobsServed(second, continued);
+    expect(modelConversation(second, continued).slice(-3)).toEqual([
+      { role: "user", text: expect.stringContaining(PROMPT) },
+      { role: "assistant", text: "Partial answer" },
+      { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+    ]);
+
+    second.send(cursor.text(" and the rest."), cursor.turnEnded());
+    second.finishStream();
+    const { message, events } = await outcome(stream);
+    expect(events).toEqual(["start", "text_start", "text_delta", "text_delta", "text_end", "done"]);
+    expect(message.stopReason).toBe("stop");
+    expect(textOf(message)).toBe("Partial answer and the rest.");
+  });
+
+  it("continues from Cursor's checkpoint when a stream idles out before any text", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const first = await spawned(0);
+    first.send(cursor.checkpoint());
+    idleOut();
+
+    const second = await spawned(1);
+    const continued = onlyRunRequest(second);
+    expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+    expect(continued.conversationState?.readPaths, "resumes Cursor's checkpoint").toContain(
+      CHECKPOINT_MARKER,
+    );
+    expect(modelConversation(second, continued).slice(-2)).toEqual([
+      { role: "user", text: expect.stringContaining(PROMPT) },
+      { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+    ]);
 
     const { message } = await finishWithText(second, stream);
     expect(message.stopReason).toBe("stop");
-    // Pins current behavior: the partial text stays and the full answer is regenerated after it.
-    expect(textOf(message)).toBe("Partial answerREADME describes the Pi provider.");
+    expect(textOf(message)).toBe("README describes the Pi provider.");
+  });
+
+  describe("with prompt history off", () => {
+    beforeEach(() => {
+      process.env.PI_CURSOR_PROMPT_HISTORY = "0";
+    });
+
+    it("replays the question when a stream idles out before any text", async () => {
+      const stream = streamPi(context(user(PROMPT)));
+      const first = await spawned(0);
+      first.send(cursor.checkpoint());
+      idleOut();
+
+      const second = await spawned(1);
+      expect(userText(onlyRunRequest(second))).toBe(PROMPT);
+
+      const { message } = await finishWithText(second, stream);
+      expect(message.stopReason).toBe("stop");
+      expect(textOf(message)).toBe("README describes the Pi provider.");
+    });
+
+    it("replays the question when a stream idles out after text", async () => {
+      const stream = streamPi(context(user(PROMPT)));
+      const first = await spawned(0);
+      first.send(cursor.checkpoint(), cursor.text("Partial answer"));
+      idleOut();
+
+      const second = await spawned(1);
+      const replay = onlyRunRequest(second);
+      expect(userText(replay)).toBe(PROMPT);
+      expect(replay.conversationState?.readPaths).not.toContain(CHECKPOINT_MARKER);
+
+      const { message } = await finishWithText(second, stream);
+      expect(message.stopReason).toBe("stop");
+      // Pins the behavior from before prompt history: the partial text stays and the answer is
+      // regenerated after it.
+      expect(textOf(message)).toBe("Partial answerREADME describes the Pi provider.");
+    });
   });
 });
