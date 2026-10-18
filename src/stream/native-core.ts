@@ -1897,11 +1897,15 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
         try {
           // The checkpoint restores Cursor's state, not the prompt: the prompt is rebuilt from
           // `turns` (AGENTS.md §5), so the interrupted turn rides there for the model to continue.
+          // Its images ride the continuation's own user message: rendered from `turns`, they
+          // would only become a note that they are not replayed.
+          const { userImages, ...interruptedTurn } = context.currentTurn;
           const payload = buildCursorRequest({
             modelId: input.modelId,
             systemPrompt: input.systemPrompt,
             userText: CHECKPOINT_CONTINUATION_PROMPT,
-            turns: [...(input.requestTurns ?? context.completedTurns), context.currentTurn],
+            userImages,
+            turns: [...(input.requestTurns ?? context.completedTurns), interruptedTurn],
             conversationId: input.conversationId,
             checkpoint: context.latestCheckpoint,
             existingBlobStore: context.blobStore,
