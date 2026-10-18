@@ -19,8 +19,11 @@
  *     `tool-result` content parts, with MCP tool names in Cursor's
  *     `mcp_<provider>_<tool>` form.
  *
- * Only used when a request is built without an upstream checkpoint. With a
- * checkpoint the server already holds the rendered history and appends to it.
+ * When prompt history is enabled, every request publishes this list, with or
+ * without an upstream checkpoint: a checkpoint restores Cursor's state but not
+ * the prompt. A request whose user message is synthetic (a continuation,
+ * recovered tool output) must therefore pass the interrupted turn here too, or
+ * this list carries no trace of it.
  */
 import { createHash } from "node:crypto";
 
@@ -230,8 +233,8 @@ export function turnRootMessages(
 }
 
 /**
- * Full prompt history for a request built without an upstream checkpoint:
- * Pi's system prompt followed by every completed turn.
+ * Full prompt history for a request: Pi's system prompt followed by every turn
+ * given, before the request's own user message.
  */
 export function buildRootPromptMessages(
   systemPrompt: string,
