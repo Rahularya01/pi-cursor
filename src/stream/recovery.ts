@@ -13,8 +13,6 @@ import type {
   ToolResultInfo,
 } from "./types.js";
 
-export const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
-
 export type {
   ParsedImageContent,
   ParsedToolResult,
@@ -53,11 +51,7 @@ export type RecoveryDecision =
       kind: "skip";
       reason:
         | "no_stored_conversation"
-        | "no_midpause_snapshot"
         | "stale_checkpoint"
-        | "midpause_turn_count_mismatch"
-        | "midpause_history_fingerprint_mismatch"
-        | "midpause_metadata_stale"
         | "no_inflight_tool_continuation"
         | "session_mismatch"
         | "pending_tool_call_mismatch";
@@ -75,10 +69,6 @@ export interface PlanRecoveryInput {
   sessionId?: string;
   requestId: string;
   convKey: string;
-  /** Optional override for tests; defaults to env / 15m. */
-  midPauseRebuildMaxAgeMs?: number;
-  /** Optional clock for tests. */
-  nowMs?: number;
   /** Optional discard hook (native-core wires real checkpoint discard). */
   discardStaleCheckpoint?: (
     stored: StoredConversation,
@@ -86,14 +76,6 @@ export interface PlanRecoveryInput {
     requestId: string,
     convKey: string,
   ) => void;
-}
-
-export function resolveMidPauseRebuildMaxAgeMs(envValue?: string): number {
-  const normalized = envValue?.trim();
-  if (normalized === undefined || normalized === "") return DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS;
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS;
-  return Math.max(1_000, Math.floor(parsed));
 }
 
 export function lostToolContinuationMessage(): string {

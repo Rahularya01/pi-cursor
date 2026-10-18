@@ -1,5 +1,3 @@
-import { cursorEnv } from "./util.js";
-
 const ALLOWED_HOST_SUFFIXES = [".cursor.sh", ".cursor.com"];
 const ALLOWED_HOSTS = new Set([
   "cursor.sh",
@@ -53,16 +51,4 @@ export function redactSecrets(text: string): string {
       /("?(?:access_token|refresh_token|accessToken|refreshToken|token|authorization|code_verifier)"?\s*[:=]\s*)[^\s&,}]+/gi,
       "$1[redacted]",
     );
-}
-
-export function safeError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return redactSecrets(raw);
-}
-
-export function debugEnabled(): boolean {
-  const raw = (cursorEnv("DEBUG") || process.env.PI_CURSOR_PROVIDER_DEBUG || "")
-    .trim()
-    .toLowerCase();
-  return !!raw && raw !== "0" && raw !== "false" && raw !== "off";
 }

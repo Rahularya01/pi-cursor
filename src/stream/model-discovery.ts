@@ -29,14 +29,6 @@ import { getCursorAgentUrl } from "./config.js";
 import { writeCachedCatalog } from "./model-cache.js";
 import { inferCursorContextWindow, inferCursorMaxOutputTokens } from "../models/limits.js";
 
-// Re-exported so existing importers of the model-discovery surface keep working.
-export {
-  DEFAULT_CONTEXT_WINDOW,
-  DEFAULT_MAX_OUTPUT_TOKENS,
-  inferCursorContextWindow,
-  inferCursorMaxOutputTokens,
-} from "../models/limits.js";
-
 export async function callCursorUnaryRpc(options: {
   accessToken: string;
   rpcPath: string;

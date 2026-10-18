@@ -18,26 +18,6 @@ export function isFalsyEnv(value: string | undefined): boolean {
   return raw === "0" || raw === "false" || raw === "off" || raw === "deny" || raw === "no";
 }
 
-export function cursorEnvBoolean(name: string, defaultValue = false): boolean {
-  const env = cursorEnv(name);
-  if (env === undefined) return defaultValue;
-  if (isFalsyEnv(env)) return false;
-  if (isTruthyEnv(env)) return true;
-  return defaultValue;
-}
-
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined;
-}
-
-/** Replace lone (unpaired) surrogates with U+FFFD; valid surrogate pairs (e.g. emoji) pass through. */
-export function sanitizeText(text: unknown): string {
-  return String(text ?? "").replace(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-    "\uFFFD",
-  );
 }

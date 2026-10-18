@@ -439,10 +439,6 @@ export function contextToCursorChatCompletionRequest(
   return body;
 }
 
-export function nativeRequestParameterError(_body: ChatCompletionRequest): string | undefined {
-  return undefined;
-}
-
 export function resolveToolsForToolChoice(
   tools: OpenAIToolDef[],
   toolChoice: unknown,

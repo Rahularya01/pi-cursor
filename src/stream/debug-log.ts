@@ -39,11 +39,6 @@ export function isStreamDebugEnabled(): boolean {
   return streamDebugEnabled;
 }
 
-/** Test seam: re-read PI_CURSOR_PROVIDER_DEBUG after mutating process.env. */
-export function resetStreamDebugForTests(): void {
-  streamDebugEnabled = undefined;
-}
-
 export function truncateDebugString(value: string, max = 4000): string {
   return value.length > max
     ? `${value.slice(0, max)}…<truncated ${value.length - max} chars>`

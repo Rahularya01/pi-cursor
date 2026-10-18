@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resolveModelId } from "../src/stream/native-core.ts";
+import { resolveModelId } from "../src/stream/model-routing.ts";
 
 assert.equal(resolveModelId("gpt-5.5", "high"), "gpt-5.5-high");
 assert.equal(resolveModelId("gpt-5.5-fast", "medium"), "gpt-5.5-medium-fast");
