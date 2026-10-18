@@ -48,6 +48,7 @@ const TOOL_CALL_ID = "call-read-1";
 const EXEC_ID = "exec-read-1";
 const EXEC_MSG_ID = 7;
 const CHECKPOINT_MARKER = "file:///checkpoint-marker";
+const SCREENSHOT = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
 // Captured before any test fakes timers, so the never-finished guard still fires.
 const realSetTimeout = globalThis.setTimeout;
@@ -280,6 +281,17 @@ function user(text: string): Message {
   return { role: "user", content: text, timestamp: Date.now() };
 }
 
+function userWithImage(text: string): Message {
+  return {
+    role: "user",
+    content: [
+      { type: "text", text },
+      { type: "image", data: Buffer.from(SCREENSHOT).toString("base64"), mimeType: "image/png" },
+    ],
+    timestamp: Date.now(),
+  };
+}
+
 function readResult(text: string, toolCallId = TOOL_CALL_ID): Message {
   return {
     role: "toolResult",
@@ -352,6 +364,16 @@ function onlyRunRequest(bridge: FakeBridge): AgentRunRequest {
 function userText(run: AgentRunRequest): string | undefined {
   const action = run.action?.action;
   return action?.case === "userMessageAction" ? action.value.userMessage?.text : undefined;
+}
+
+/** The images Cursor receives with the run's user message, as the model will see them. */
+function userImages(run: AgentRunRequest): Array<{ mimeType: string; data: Uint8Array }> {
+  const action = run.action?.action;
+  if (action?.case !== "userMessageAction") return [];
+  return (action.value.userMessage?.selectedContext?.selectedImages ?? []).map((image) => ({
+    mimeType: image.mimeType ?? "",
+    data: new Uint8Array(image.dataOrBlobId.case === "data" ? image.dataOrBlobId.value : []),
+  }));
 }
 
 function lastAction(bridge: FakeBridge): string | undefined {
@@ -995,6 +1017,67 @@ describe("native stream contract: idle watchdog", () => {
     const { message } = await finishWithText(second, stream);
     expect(message.stopReason).toBe("stop");
     expect(textOf(message)).toBe("README describes the Pi provider.");
+  });
+
+  it.each([
+    ["a stream idles out before any text", "", idleOut],
+    ["a stream idles out after text", "Partial answer", idleOut],
+    ["the connection drops after text", "Partial answer", (bridge: FakeBridge) => bridge.goaway()],
+  ])(
+    "shows the model the question's image when %s and the answer continues",
+    async (_label, partial, lose) => {
+      const stream = streamPi(context(userWithImage(PROMPT)));
+      const first = await spawned(0);
+      const screenshot = [{ mimeType: "image/png", data: SCREENSHOT }];
+      expect(userImages(onlyRunRequest(first)), "the question carries the image").toEqual(
+        screenshot,
+      );
+      first.send(cursor.checkpoint(), ...(partial ? [cursor.text(partial)] : []));
+      lose(first);
+
+      const second = await spawned(1);
+      const continued = onlyRunRequest(second);
+      expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+      expect(userImages(continued), "the continuation carries the image again").toEqual(screenshot);
+      expect(
+        modelConversation(second, continued).filter((message) => message.role === "user"),
+        "the prompt does not tell the model the image is missing",
+      ).toEqual([
+        { role: "user", text: expect.stringContaining(SYSTEM_PROMPT) },
+        { role: "user", text: `<user_query>\n${PROMPT}\n</user_query>` },
+        { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+      ]);
+
+      const { message } = await finishWithText(second, stream);
+      expect(message.stopReason).toBe("stop");
+      expect(textOf(message)).toBe(`${partial}README describes the Pi provider.`);
+    },
+  );
+
+  it("keeps showing the model the question's image when the continuation stalls too", async () => {
+    const stream = streamPi(context(userWithImage(PROMPT)));
+    const first = await spawned(0);
+    first.send(cursor.checkpoint(), cursor.text("Partial answer"));
+    idleOut();
+    const second = await spawned(1);
+    second.send(cursor.checkpoint(), cursor.text(" and the"));
+    idleOut();
+
+    const third = await spawned(2);
+    const continued = onlyRunRequest(third);
+    expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+    expect(userImages(continued)).toEqual([{ mimeType: "image/png", data: SCREENSHOT }]);
+    expect(modelConversation(third, continued).slice(-3)).toEqual([
+      { role: "user", text: `<user_query>\n${PROMPT}\n</user_query>` },
+      { role: "assistant", text: "Partial answer and the" },
+      { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+    ]);
+
+    third.send(cursor.text(" rest."), cursor.turnEnded());
+    third.finishStream();
+    const { message } = await outcome(stream);
+    expect(message.stopReason).toBe("stop");
+    expect(textOf(message)).toBe("Partial answer and the rest.");
   });
 
   describe("with prompt history off", () => {
