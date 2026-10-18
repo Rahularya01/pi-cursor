@@ -111,7 +111,7 @@ const cursor = {
       message: { case: "turnEnded", value: create(TurnEndedUpdateSchema, {}) },
     }),
   }),
-  readFile: (path: string): ServerMessage => ({
+  readFile: (path: string, toolCallId = TOOL_CALL_ID): ServerMessage => ({
     case: "execServerMessage",
     value: create(ExecServerMessageSchema, {
       id: EXEC_MSG_ID,
@@ -122,7 +122,7 @@ const cursor = {
           name: "pi-mcp_pi_read",
           toolName: "mcp_pi_read",
           providerIdentifier: "pi",
-          toolCallId: TOOL_CALL_ID,
+          toolCallId,
           args: { path: mcpArg(path) },
         }),
       },
@@ -280,10 +280,10 @@ function user(text: string): Message {
   return { role: "user", content: text, timestamp: Date.now() };
 }
 
-function readResult(text: string): Message {
+function readResult(text: string, toolCallId = TOOL_CALL_ID): Message {
   return {
     role: "toolResult",
-    toolCallId: TOOL_CALL_ID,
+    toolCallId,
     toolName: "read",
     content: [{ type: "text", text }],
     isError: false,
@@ -724,7 +724,7 @@ describe("native stream contract: transport loss and retries", () => {
 describe("native stream contract: tool continuation after the bridge is lost", () => {
   async function expectRecoveredOnNewBridge(
     resumed: AssistantMessageEventStream,
-    expected: { checkpoint: boolean; sameConversation: boolean; replayedTurns: number },
+    expected: { checkpoint: boolean; sameConversation: boolean },
   ) {
     const recovery = await spawned(1);
     const run = onlyRunRequest(recovery);
@@ -732,9 +732,15 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     expect(text, "the tool output reaches Cursor").toContain(README);
     expect(text).toContain(TOOL_CALL_ID);
     expect(run.conversationState?.readPaths.includes(CHECKPOINT_MARKER)).toBe(expected.checkpoint);
-    expect(run.conversationState?.turns, "history replayed as turns").toHaveLength(
-      expected.replayedTurns,
-    );
+    expect(
+      modelConversation(recovery, run).slice(-3),
+      "the model sees the turn that called the tool before the recovered tool output",
+    ).toEqual([
+      { role: "user", text: expect.stringContaining(PROMPT) },
+      { role: "assistant", text: "mcp_pi_read" },
+      { role: "user", text },
+    ]);
+    expect(run.conversationState?.turns, "the interrupted turn is state").toHaveLength(1);
     const firstConversation = onlyRunRequest(bridges[0]!).conversationId;
     if (expected.sameConversation) expect(run.conversationId).toBe(firstConversation);
     else expect(run.conversationId).not.toBe(firstConversation);
@@ -755,7 +761,6 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     await expectRecoveredOnNewBridge(streamReadResult(toolUse), {
       checkpoint: false,
       sameConversation: true,
-      replayedTurns: 1,
     });
     expect(execReplies(bridge), "nothing is written to the dead bridge").toEqual([]);
   });
@@ -770,7 +775,6 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     await expectRecoveredOnNewBridge(streamReadResult(toolUse), {
       checkpoint: true,
       sameConversation: true,
-      replayedTurns: 0,
     });
   });
 
@@ -784,7 +788,6 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     await expectRecoveredOnNewBridge(streamReadResult(toolUse), {
       checkpoint: false,
       sameConversation: false,
-      replayedTurns: 1,
     });
   });
 
@@ -798,7 +801,6 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     await expectRecoveredOnNewBridge(resumed, {
       checkpoint: false,
       sameConversation: true,
-      replayedTurns: 1,
     });
   });
 
@@ -813,8 +815,91 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     await expectRecoveredOnNewBridge(resumed, {
       checkpoint: true,
       sameConversation: true,
-      replayedTurns: 0,
     });
+  });
+
+  it.each([
+    [
+      "a terminal error while parked",
+      async () => {
+        const { bridge, toolUse } = await pauseOnReadTool();
+        bridge.send(cursor.checkpoint());
+        bridge.failStream("invalid_argument", "request rejected");
+        await settle();
+        return streamReadResult(toolUse);
+      },
+    ],
+    [
+      "a GOAWAY after the result was sent",
+      async () => {
+        const { bridge, toolUse } = await pauseOnReadTool();
+        bridge.send(cursor.checkpoint());
+        const resumed = streamReadResult(toolUse);
+        await settle();
+        bridge.goaway();
+        return resumed;
+      },
+    ],
+  ])(
+    "keeps the question and the tool call in view when checkpoint recovery after %s is lost too",
+    async (_label, recoverFromCheckpoint) => {
+      const resumed = await recoverFromCheckpoint();
+      const recovery = await spawned(1);
+      expect(onlyRunRequest(recovery).conversationState?.readPaths).toContain(CHECKPOINT_MARKER);
+      recovery.send(cursor.checkpoint(), cursor.text("Partial answer"));
+      recovery.goaway();
+
+      const third = await spawned(2);
+      const continued = onlyRunRequest(third);
+      expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+      expect(modelConversation(third, continued).slice(-5)).toEqual([
+        { role: "user", text: expect.stringContaining(PROMPT) },
+        { role: "assistant", text: "mcp_pi_read" },
+        { role: "user", text: expect.stringContaining(README) },
+        { role: "assistant", text: "Partial answer" },
+        { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+      ]);
+
+      third.send(cursor.text(" and the rest."), cursor.turnEnded());
+      third.finishStream();
+      const { message } = await outcome(resumed);
+      expect(message.stopReason).toBe("stop");
+      expect(textOf(message)).toBe("Partial answer and the rest.");
+    },
+  );
+
+  it("recovers a later lost tool call from Cursor's checkpoint after a checkpoint recovery", async () => {
+    const { bridge, toolUse } = await pauseOnReadTool();
+    bridge.send(cursor.checkpoint());
+    bridge.failStream("invalid_argument", "request rejected");
+    await settle();
+    const resumed = streamReadResult(toolUse);
+    const recovery = await spawned(1);
+    recovery.send(cursor.checkpoint(), cursor.readFile("AGENTS.md", "call-read-2"));
+    const { message: secondToolUse } = await outcome(resumed);
+    expect(secondToolUse.stopReason).toBe("toolUse");
+    recovery.failStream("invalid_argument", "request rejected");
+    await settle();
+
+    const final = streamPi(
+      context(
+        user(PROMPT),
+        toolUse,
+        readResult(README),
+        secondToolUse,
+        readResult("# AGENTS.md", "call-read-2"),
+      ),
+    );
+    const again = await spawned(2);
+    const run = onlyRunRequest(again);
+    expect(run.conversationState?.readPaths, "resumes Cursor's checkpoint").toContain(
+      CHECKPOINT_MARKER,
+    );
+    expect(run.conversationId, "the Cursor conversation carries on").toBe(
+      onlyRunRequest(bridge).conversationId,
+    );
+    const { message } = await finishWithText(again, final);
+    expect(message.stopReason).toBe("stop");
   });
 });
 
