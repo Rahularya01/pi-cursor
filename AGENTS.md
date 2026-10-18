@@ -64,7 +64,6 @@ src/
 ├── index.ts                # Pi extension entrypoint & provider registration
 ├── usage.ts                # Usage quota dashboard & /cursor.usage handler
 ├── auth/                   # 4-tier credential resolution cascade
-│   ├── index.ts            # Auth exports & manager
 │   ├── cli-credentials.ts  # macOS Keychain, Cursor IDE SQLite DB, WSL path resolution
 │   ├── oauth.ts            # PKCE browser login flow & token refresh
 │   └── consent.ts          # System credentials privacy consent policy

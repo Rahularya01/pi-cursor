@@ -110,7 +110,3 @@ export function setLastIdleTimeout(info: {
     bag.lastStreamEvent = redactSecrets(info.event).slice(0, 200);
   }
 }
-
-export function resetDiagnosticsForTests(): void {
-  lastSnapshot = {};
-}
