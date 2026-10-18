@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Continuing an interrupted answer now shows the model what it was answering.** When a Cursor stream dropped after it had streamed text and sent a checkpoint, the provider resumed the checkpoint with an instruction to continue, but the prompt it sent held only Pi's rules and that instruction. The model saw neither the question nor its partial answer, so it started over or replied that the original task was unclear. The continuation now carries the question and the answer so far, also when the continuation is itself interrupted, unless `PI_CURSOR_PROMPT_HISTORY=0` turns prompt history off. The next turn also keeps the checkpoint the continued answer left, where it used to discard it and start a new Cursor conversation. An answer recovered from a lost tool call still drops its checkpoint on the next turn.
+
 ## [1.4.39] - 2026-10-08
 
 ### Fixed

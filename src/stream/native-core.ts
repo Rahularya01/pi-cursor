@@ -1884,12 +1884,13 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
         input.conversationId
       ) {
         try {
-          const continueText = CHECKPOINT_CONTINUATION_PROMPT;
+          // The checkpoint restores Cursor's state, not the prompt: the prompt is rebuilt from
+          // `turns` (AGENTS.md §5), so the interrupted turn rides there for the model to continue.
           const payload = buildCursorRequest({
             modelId: input.modelId,
             systemPrompt: input.systemPrompt,
-            userText: continueText,
-            turns: context.completedTurns,
+            userText: CHECKPOINT_CONTINUATION_PROMPT,
+            turns: [...context.completedTurns, context.currentTurn],
             conversationId: input.conversationId,
             checkpoint: context.latestCheckpoint,
             existingBlobStore: context.blobStore,
@@ -1900,7 +1901,11 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           requestBytes = payload.requestBytes;
           blobStore = payload.blobStore;
           completedTurns = context.completedTurns;
-          currentTurn = { userText: continueText, steps: [] };
+          // The continuation extends Pi's turn instead of starting one, so a later loss and the
+          // final checkpoint commit see all of it. Fingerprints are cached per turn object and the
+          // commit below caches this one, so the stream extends a shallow copy that the final
+          // commit hashes afresh. The copy shares `steps`; the old object is never hashed again.
+          currentTurn = { ...context.currentTurn };
           const stored = conversationStates.get(input.convKey);
           if (stored) {
             commitStoredCheckpoint(
