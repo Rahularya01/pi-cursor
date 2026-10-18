@@ -508,12 +508,15 @@ async function handleCursorNativeRequest(
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
+      // The checkpoint restores Cursor's state, not the prompt (AGENTS.md §5), so the turn that
+      // called these tools rides in `turns` for the model to see.
+      const requestTurns = inFlightTurn ? [...turns, inFlightTurn] : turns;
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
         userText: decision.wrappedText,
         userImages: recoveredUserImages,
-        turns,
+        turns: requestTurns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
         existingBlobStore: decision.blobStore,
@@ -532,6 +535,7 @@ async function handleCursorNativeRequest(
         bridgeKey,
         convKey,
         completedTurns: turns,
+        requestTurns,
         currentTurn: recoveredCurrentTurn,
         writer,
         options,
@@ -1641,11 +1645,12 @@ function handleNativeToolResultResume(
     restart(nextAttempt: number, _context: IdleRestartContext) {
       idleRetry.currentAttempt = nextAttempt;
       const stored = conversationStates.get(convKey);
+      const inFlightTurn = stripInFlightResults(ctx.inFlightTurn ?? currentTurn);
       const decision = planRecovery({
         stored,
         toolResults,
         completedTurns,
-        inFlightTurn: stripInFlightResults(ctx.inFlightTurn ?? currentTurn),
+        inFlightTurn,
         rebuildReason: "synthesized_after_idle",
         sessionId,
         requestId: requestId ?? "native-tool-idle-retry",
@@ -1745,12 +1750,14 @@ function handleNativeToolResultResume(
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
+      // The checkpoint restores Cursor's state, not the prompt (AGENTS.md §5).
+      const requestTurns = [...completedTurns, inFlightTurn];
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
         userText: decision.wrappedText,
         userImages: recoveredUserImages,
-        turns: completedTurns,
+        turns: requestTurns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
         existingBlobStore: decision.blobStore,
@@ -1770,6 +1777,7 @@ function handleNativeToolResultResume(
         bridgeKey,
         convKey,
         completedTurns,
+        requestTurns,
         currentTurn: recoveredCurrentTurn,
         clientTranscript: recoveredClientTranscript,
         writer,
@@ -1893,7 +1901,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
             modelId: input.modelId,
             systemPrompt: input.systemPrompt,
             userText: CHECKPOINT_CONTINUATION_PROMPT,
-            turns: [...context.completedTurns, context.currentTurn],
+            turns: [...(input.requestTurns ?? context.completedTurns), context.currentTurn],
             conversationId: input.conversationId,
             checkpoint: context.latestCheckpoint,
             existingBlobStore: context.blobStore,
