@@ -365,22 +365,57 @@ function execReplies(bridge: FakeBridge): ExecClientMessage[] {
     );
 }
 
-/** Cursor fetches every blob a run request points at; each fetch must come back with bytes. */
-function expectReferencedBlobsServed(bridge: FakeBridge, run: AgentRunRequest): void {
-  const state = run.conversationState;
-  const ids = [...(state?.rootPromptMessagesJson ?? []), ...(state?.turns ?? [])];
+/** Asks the client for each blob the way Cursor does and returns what it served, in order. */
+function fetchBlobs(bridge: FakeBridge, ids: Uint8Array[]): Uint8Array[] {
   const before = bridge.received().length;
   bridge.send(...ids.map((blobId, index) => cursor.getBlob(index + 1, blobId)));
-  const served = bridge
+  return bridge
     .received()
     .slice(before)
     .flatMap((message) =>
       message.message.case === "kvClientMessage" &&
       message.message.value.message.case === "getBlobResult"
-        ? [(message.message.value.message.value.blobData?.byteLength ?? 0) > 0]
+        ? [message.message.value.message.value.blobData ?? new Uint8Array()]
         : [],
     );
+}
+
+/** Cursor fetches every blob a run request points at; each fetch must come back with bytes. */
+function expectReferencedBlobsServed(bridge: FakeBridge, run: AgentRunRequest): void {
+  const state = run.conversationState;
+  const ids = [...(state?.rootPromptMessagesJson ?? []), ...(state?.turns ?? [])];
+  const served = fetchBlobs(bridge, ids).map((blob) => blob.byteLength > 0);
   expect(served, "every referenced blob is served").toEqual(ids.map(() => true));
+}
+
+interface PromptMessage {
+  role: string;
+  content: string | Array<{ type: string; text?: string; toolName?: string }>;
+}
+
+/**
+ * The conversation the model reads: Cursor renders the root prompt messages it fetches, drops
+ * system entries, and appends the run's user message (AGENTS.md §5).
+ */
+function modelConversation(
+  bridge: FakeBridge,
+  run: AgentRunRequest,
+): Array<{ role: string; text: string }> {
+  const messages = fetchBlobs(bridge, run.conversationState?.rootPromptMessagesJson ?? []).map(
+    (blob) => JSON.parse(Buffer.from(blob).toString("utf8")) as PromptMessage,
+  );
+  return [
+    ...messages
+      .filter((message) => message.role !== "system")
+      .map((message) => ({
+        role: message.role,
+        text:
+          typeof message.content === "string"
+            ? message.content
+            : message.content.map((part) => part.text ?? part.toolName ?? "").join(""),
+      })),
+    { role: "user", text: userText(run) ?? "" },
+  ];
 }
 
 async function finishWithText(bridge: FakeBridge, stream: AssistantMessageEventStream) {
@@ -568,6 +603,14 @@ describe("native stream contract: transport loss and retries", () => {
     );
     expect(continued.conversationId).toBe(onlyRunRequest(first).conversationId);
     expectReferencedBlobsServed(second, continued);
+    expect(
+      modelConversation(second, continued).slice(-3),
+      "the model sees the interrupted turn before the instruction to continue it",
+    ).toEqual([
+      { role: "user", text: expect.stringContaining(PROMPT) },
+      { role: "assistant", text: "Partial answer" },
+      { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+    ]);
 
     second.send(cursor.text(" and the rest."), cursor.turnEnded());
     second.finishStream();
@@ -575,6 +618,57 @@ describe("native stream contract: transport loss and retries", () => {
     expect(events).toEqual(["start", "text_start", "text_delta", "text_delta", "text_end", "done"]);
     expect(message.stopReason).toBe("stop");
     expect(textOf(message)).toBe("Partial answer and the rest.");
+  });
+
+  it("keeps the whole interrupted turn in view when the continuation is lost too", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const first = await spawned(0);
+    first.send(cursor.checkpoint(), cursor.text("Partial answer"));
+    first.goaway();
+    const second = await spawned(1);
+    second.send(cursor.checkpoint(), cursor.text(" and the"));
+    second.goaway();
+
+    const third = await spawned(2);
+    const continued = onlyRunRequest(third);
+    expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+    expect(modelConversation(third, continued).slice(-3)).toEqual([
+      { role: "user", text: expect.stringContaining(PROMPT) },
+      { role: "assistant", text: "Partial answer and the" },
+      { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },
+    ]);
+
+    third.send(cursor.text(" rest."), cursor.turnEnded());
+    third.finishStream();
+    const { message } = await outcome(stream);
+    expect(message.stopReason).toBe("stop");
+    expect(textOf(message)).toBe("Partial answer and the rest.");
+  });
+
+  it("keeps Cursor's checkpoint for the turn after a continued answer", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const first = await spawned(0);
+    first.send(cursor.checkpoint(), cursor.text("Partial answer"));
+    first.goaway();
+    const second = await spawned(1);
+    second.send(cursor.text(" and the rest."), cursor.checkpoint(), cursor.turnEnded());
+    second.finishStream();
+    const { message: answer } = await outcome(stream);
+    expect(textOf(answer)).toBe("Partial answer and the rest.");
+
+    const next = streamPi(context(user(PROMPT), answer, user("Which file did you read?")));
+    await settle();
+    const nextRun = runRequests(second).at(-1)!;
+    expect(userText(nextRun)).toBe("Which file did you read?");
+    expect(nextRun.conversationId, "the Cursor conversation carries on").toBe(
+      onlyRunRequest(first).conversationId,
+    );
+    expect(nextRun.conversationState?.readPaths, "Cursor's checkpoint state carries on").toContain(
+      CHECKPOINT_MARKER,
+    );
+
+    const { message } = await finishWithText(second, next);
+    expect(message.stopReason).toBe("stop");
   });
 
   it("cancels the run and closes the bridge when Pi aborts mid-stream", async () => {
